@@ -38,7 +38,9 @@ app.add_middleware(
 # In-memory stores
 # -----------------------
 DATASETS: Dict[str, pd.DataFrame] = {}
+DATASET_METADATA: Dict[str, Dict[str, Any]] = {}  # Store dataset analysis and metadata
 CHARTS: Dict[str, Dict[str, Any]] = {}
+CHART_INSIGHTS_CACHE: Dict[str, Dict[str, Any]] = {}  # Cache generated chart insights
 
 
 # Add this right after line 28 (after the CHARTS dictionary):
@@ -100,6 +102,45 @@ class MetricCalculationRequest(BaseModel):
 class ConfigTestRequest(BaseModel):
     api_key: str
     model: str = "gemini-2.0-flash"
+
+class DatasetAnalysisRequest(BaseModel):
+    dataset_id: str
+    api_key: Optional[str] = None
+    model: str = "gemini-2.0-flash"
+
+class DatasetMetadataSaveRequest(BaseModel):
+    dataset_id: str
+    dataset_summary: str
+    column_descriptions: Dict[str, str]
+
+class ChartSuggestionRequest(BaseModel):
+    dataset_id: str
+    goal: str
+    api_key: Optional[str] = None
+    model: str = "gemini-2.0-flash"
+
+class ChartSuggestion(BaseModel):
+    title: str
+    description: str
+    chart_type: str
+    dimensions: List[str]
+    measures: List[str]
+    importance_score: int
+    insight: str
+
+class VariableSuggestion(BaseModel):
+    method: str
+    dimensions: List[str]
+    measures: List[str]
+    title: str
+    reasoning: str
+    importance_score: int
+
+class ChartSuggestionResponse(BaseModel):
+    success: bool
+    suggestions: List[VariableSuggestion]
+    token_usage: Dict[str, int]
+    error: Optional[str] = None
 
 # -----------------------
 # Helpers
@@ -305,6 +346,376 @@ def _safe_eval(expr: str) -> float:
     except Exception as e:
         raise ValueError(f"Invalid expression: {str(e)}")
 
+# -----------------------
+# Report Content Intelligence
+# -----------------------
+
+def _get_cached_chart_insights(chart_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve cached chart insights if available
+    
+    Args:
+        chart_id: Chart identifier
+    
+    Returns:
+        Cached insights dict or None if not available
+    """
+    cached_insights = CHART_INSIGHTS_CACHE.get(chart_id)
+    if cached_insights and cached_insights.get('success'):
+        print(f"📋 Found cached chart insights for {chart_id}")
+        return cached_insights
+    return None
+
+def _generate_subheading_from_content(content: str, chart_title: str, api_key: str, model: str) -> str:
+    """
+    Generate a concise subheading based on content insights
+    
+    Args:
+        content: The insight content to analyze
+        chart_title: Original chart title for context
+        api_key: API key for LLM call
+        model: Model to use
+    
+    Returns:
+        Generated subheading in markdown format
+    """
+    try:
+        formulator = GeminiDataFormulator(api_key=api_key, model=model)
+        
+        prompt = f"""Generate a SHORT, CLEAR subheading (3-6 words max) for this chart analysis.
+
+Chart Title: {chart_title}
+Content Insights:
+{content[:500]}...
+
+Create a subheading that:
+1. Is 3-6 words maximum
+2. Captures the key finding or trend
+3. Is NOT just the chart title
+4. Uses clear, simple language
+
+Examples of GOOD subheadings:
+- "Strong Revenue Growth"
+- "Customer Satisfaction Decline"
+- "Regional Performance Gaps"
+
+Generate ONLY the subheading text (no ## markdown, no quotes):"""
+        
+        response, _ = formulator.run_gemini_with_usage(prompt)
+        subheading = response.strip().replace('##', '').replace('"', '').strip()
+        return f"## {subheading}"
+        
+    except Exception as e:
+        print(f"⚠️ Failed to generate subheading: {e}")
+        return f"## {chart_title} Analysis"
+
+def _combine_ai_explore_and_insights(ai_explore_result: str, chart_insights: str, weight_ai_explore: float = 0.7) -> str:
+    """
+    Intelligently combine AI explore results with chart insights
+    
+    Args:
+        ai_explore_result: User's specific AI exploration result
+        chart_insights: General chart insights (bullet points)
+        weight_ai_explore: Priority weight for AI explore (0.7 = 70% weight)
+    
+    Returns:
+        Combined content with prioritized insights
+    """
+    combined_content = []
+    
+    # Start with AI explore result (higher priority)
+    if ai_explore_result and ai_explore_result.strip():
+        combined_content.append(f"**Based on your specific query:** {ai_explore_result.strip()}")
+        combined_content.append("")
+    
+    # Add chart insights as supporting context
+    if chart_insights and chart_insights.strip():
+        # Extract bullet points from chart insights
+        insight_lines = [line.strip() for line in chart_insights.split('\n') if line.strip() and line.strip().startswith('•')]
+        
+        if insight_lines:
+            combined_content.append("**Additional patterns observed:**")
+            # Take top 2-3 insights to avoid overwhelming content
+            for insight in insight_lines[:3]:
+                combined_content.append(insight)
+    
+    return '\n'.join(combined_content)
+
+def _format_insights_for_report(insights: str) -> str:
+    """
+    Format existing chart insights for report inclusion
+    
+    Args:
+        insights: Raw chart insights (bullet points)
+    
+    Returns:
+        Formatted content suitable for report
+    """
+    if not insights or not insights.strip():
+        return "No insights available."
+    
+    # Clean up and format bullet points
+    insight_lines = [line.strip() for line in insights.split('\n') if line.strip() and line.strip().startswith('•')]
+    
+    if not insight_lines:
+        return insights.strip()
+    
+    # Format with consistent structure
+    formatted_content = ["**Key findings from the data:**", ""]
+    for insight in insight_lines:
+        formatted_content.append(insight)
+    
+    return '\n'.join(formatted_content)
+
+def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.0-flash") -> Dict[str, Any]:
+    """
+    AI-Powered Dataset Analysis
+    Performs comprehensive dataset analysis combining statistical profiling with AI-generated semantic insights.
+    
+    Args:
+        df: Pandas DataFrame to analyze
+        dataset_name: Name of the dataset file
+        api_key: Gemini API key for AI analysis
+        model: AI model to use for analysis
+    
+    Returns:
+        Dictionary containing:
+            - dataset_name: Original filename
+            - dataset_summary: AI-generated overall description
+            - columns: List of column analysis objects with stats and AI descriptions
+            - token_usage: AI token consumption metrics
+    
+    Process:
+        1. Calculate statistical summary for each column
+        2. Generate structured schema for AI consumption
+        3. Prompt Gemini for semantic analysis
+        4. Combine statistical and semantic data
+    """
+    try:
+        print(f"🤖 Starting AI analysis for dataset: {dataset_name}")
+        print(f"📊 Dataset shape: {df.shape}")
+        
+        # Step 1: Calculate statistical summary for each column
+        columns_analysis = []
+        
+        for col in df.columns:
+            col_series = df[col]
+            
+            # Basic statistics
+            missing_pct = col_series.isnull().mean() * 100
+            unique_count = col_series.nunique()
+            total_count = len(col_series)
+            
+            # Sample values (non-null)
+            sample_values = col_series.dropna().sample(min(3, col_series.dropna().shape[0])).tolist() if not col_series.dropna().empty else []
+            
+            # Type-specific analysis
+            variance = None
+            if pd.api.types.is_numeric_dtype(col_series):
+                variance = float(col_series.var()) if not col_series.var() != col_series.var() else None  # Check for NaN
+            
+            column_info = {
+                "name": col,
+                "dtype": str(col_series.dtype),
+                "missing_pct": round(missing_pct, 2),
+                "unique_count": unique_count,
+                "total_count": total_count,
+                "variance": variance,
+                "sample_values": sample_values,
+                "description": ""  # Will be filled by AI
+            }
+            
+            columns_analysis.append(column_info)
+        
+        # Step 2: Prepare sample data for AI analysis
+        # Get first 10 rows as sample to help AI understand content
+        sample_rows = df.head(10).to_dict(orient='records')
+        
+        # Create structured data for AI including actual content
+        analysis_data = {
+            "dataset_name": dataset_name,
+            "total_rows": len(df),
+            "total_columns": len(df.columns),
+            "columns": columns_analysis,
+            "sample_data": sample_rows[:5]  # First 5 rows for context
+        }
+        
+        # Step 3: Generate AI insights using Gemini
+        if api_key:
+            from gemini_llm import GeminiDataFormulator
+            ai_formulator = GeminiDataFormulator(api_key=api_key, model=model)
+            
+            # Create comprehensive prompt for semantic dataset analysis
+            prompt = f"""You are an expert data analyst. Analyze this dataset and provide meaningful, context-aware insights about what the data represents in the real world.
+
+DATASET INFORMATION:
+- File: {dataset_name}
+- Size: {len(df)} rows, {len(df.columns)} columns
+
+COLUMN DETAILS:
+{chr(10).join([f"- {col['name']}: {col['dtype']}, {col['unique_count']} unique values, Sample: {col['sample_values']}" for col in columns_analysis])}
+
+SAMPLE DATA (first 5 rows):
+{chr(10).join([f"Row {i+1}: {row}" for i, row in enumerate(sample_rows[:5])])}
+
+INSTRUCTIONS:
+1. Look at the column names, data types, AND actual data values to understand what this dataset is about
+2. Provide a meaningful dataset summary that describes the REAL-WORLD CONTEXT (e.g., "tiger population data", "sales performance", "customer demographics")
+3. For each column, describe what it represents in BUSINESS/DOMAIN terms, not just data types
+
+Focus on SEMANTIC MEANING, not statistical properties. Be specific about the domain/context.
+
+Output ONLY valid JSON in this EXACT format:
+{{
+  "dataset_summary": "Meaningful 2-3 sentence description focusing on what this data represents in the real world",
+  "columns": [
+    {{"name": "column1", "description": "Business/domain description of what this column contains"}},
+    {{"name": "column2", "description": "Business/domain description of what this column contains"}},
+    ...
+  ]
+}}"""
+
+            try:
+                ai_response, token_usage = ai_formulator.run_gemini_with_usage(prompt)
+                
+                print(f"🤖 Raw AI Response: {ai_response[:200]}...")
+                
+                # Clean and parse AI response
+                cleaned_response = ai_response.strip()
+                
+                # Sometimes Gemini returns markdown code blocks, extract JSON
+                if "```json" in cleaned_response:
+                    start_idx = cleaned_response.find("```json") + 7
+                    end_idx = cleaned_response.find("```", start_idx)
+                    if end_idx != -1:
+                        cleaned_response = cleaned_response[start_idx:end_idx].strip()
+                elif "```" in cleaned_response:
+                    start_idx = cleaned_response.find("```") + 3
+                    end_idx = cleaned_response.find("```", start_idx)
+                    if end_idx != -1:
+                        cleaned_response = cleaned_response[start_idx:end_idx].strip()
+                
+                print(f"🧹 Cleaned Response: {cleaned_response[:200]}...")
+                
+                # Parse AI response
+                ai_data = json.loads(cleaned_response)
+                
+                # Merge AI descriptions with statistical data
+                dataset_summary = ai_data.get("dataset_summary", "This dataset contains structured data for analysis.")
+                ai_columns = {col["name"]: col["description"] for col in ai_data.get("columns", [])}
+                
+                # Update column descriptions
+                for col_info in columns_analysis:
+                    col_info["description"] = ai_columns.get(col_info["name"], f"Data column containing {col_info['dtype']} values")
+                
+                print(f"✅ AI analysis completed successfully!")
+                print(f"   Dataset summary generated: {len(dataset_summary)} characters")
+                print(f"   Column descriptions: {len(ai_columns)} columns processed")
+                
+                return {
+                    "dataset_name": dataset_name,
+                    "dataset_summary": dataset_summary,
+                    "columns": columns_analysis,
+                    "token_usage": token_usage,
+                    "success": True
+                }
+                
+            except json.JSONDecodeError as json_error:
+                print(f"❌ AI JSON parsing failed: {str(json_error)}")
+                print(f"📄 Full AI Response: {ai_response}")
+                
+                # Still track token usage even if parsing fails
+                token_usage_result = token_usage if 'token_usage' in locals() else {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+                
+                # Simple generic fallback descriptions
+                for col_info in columns_analysis:
+                    dtype = col_info['dtype']
+                    unique_count = col_info['unique_count']
+                    
+                    if dtype in ['object', 'string']:
+                        col_info["description"] = f"Text data with {unique_count} unique values"
+                    elif dtype in ['int64', 'int32', 'float64', 'float32']:
+                        col_info["description"] = f"Numeric data with {unique_count} unique values"
+                    else:
+                        col_info["description"] = f"Data column ({dtype}) with {unique_count} unique values"
+                
+                # Generic dataset summary
+                summary = f"Dataset containing {len(df)} rows and {len(df.columns)} columns. AI analysis failed - check API key configuration."
+                
+                return {
+                    "dataset_name": dataset_name,
+                    "dataset_summary": summary,
+                    "columns": columns_analysis,
+                    "token_usage": token_usage_result,
+                    "success": False,
+                    "error": f"AI response parsing failed: {str(json_error)}"
+                }
+                
+            except Exception as ai_error:
+                print(f"❌ AI analysis failed: {str(ai_error)}")
+                
+                # Still track token usage if available
+                token_usage_result = token_usage if 'token_usage' in locals() else {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+                
+                # Simple generic fallback descriptions
+                for col_info in columns_analysis:
+                    dtype = col_info['dtype']
+                    unique_count = col_info['unique_count']
+                    
+                    if dtype in ['object', 'string']:
+                        col_info["description"] = f"Text data with {unique_count} unique values"
+                    elif dtype in ['int64', 'int32', 'float64', 'float32']:
+                        col_info["description"] = f"Numeric data with {unique_count} unique values"
+                    else:
+                        col_info["description"] = f"Data column ({dtype}) with {unique_count} unique values"
+                
+                # Generic dataset summary  
+                summary = f"Dataset containing {len(df)} rows and {len(df.columns)} columns. AI analysis failed - check API key configuration."
+                
+                return {
+                    "dataset_name": dataset_name,
+                    "dataset_summary": summary,
+                    "columns": columns_analysis,
+                    "token_usage": token_usage_result,
+                    "success": False,
+                    "error": str(ai_error)
+                }
+        else:
+            # No API key provided - simple generic descriptions
+            for col_info in columns_analysis:
+                dtype = col_info['dtype']
+                unique_count = col_info['unique_count']
+                
+                if dtype in ['object', 'string']:
+                    col_info["description"] = f"Text data with {unique_count} unique values"
+                elif dtype in ['int64', 'int32', 'float64', 'float32']:
+                    col_info["description"] = f"Numeric data with {unique_count} unique values"
+                else:
+                    col_info["description"] = f"Data column ({dtype}) with {unique_count} unique values"
+            
+            # Generic dataset summary
+            summary = f"Dataset with {len(df)} rows and {len(df.columns)} columns. Configure API key in Settings for detailed AI analysis."
+            
+            return {
+                "dataset_name": dataset_name,
+                "dataset_summary": summary,
+                "columns": columns_analysis,
+                "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0},
+                "success": False,
+                "error": "No API key provided"
+            }
+            
+    except Exception as e:
+        print(f"❌ Dataset analysis failed: {str(e)}")
+        return {
+            "dataset_name": dataset_name,
+            "dataset_summary": "Failed to analyze dataset",
+            "columns": [],
+            "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0},
+            "success": False,
+            "error": str(e)
+        }
+
 def _categorize_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
     """
     Column Categorization Helper
@@ -429,34 +840,81 @@ def _same_measure_diff_dims(spec1, spec2):
 # -----------------------
 
 @app.post("/upload")
-async def upload_csv(file: UploadFile = File(...)):
+async def upload_dataset(file: UploadFile = File(...)):
     """
-    CSV Upload Endpoint
-    Uploads and processes a CSV file, stores it in memory with a unique ID.
+    Dataset Upload Endpoint
+    Uploads and processes a CSV or XLSX file, stores it in memory with a unique ID.
     Automatically categorizes columns into dimensions and measures.
+    
+    Supported formats:
+        - CSV (.csv)
+        - Excel (.xlsx, .xls)
     
     Returns:
         - dataset_id: Unique identifier for the uploaded dataset
+        - filename: Original filename
         - columns: All column names (for backward compatibility)
         - dimensions: Categorical columns
         - measures: Numeric columns
         - rows: Total row count
     """
-    content = await file.read()
-    df = pd.read_csv(io.BytesIO(content))
-    dataset_id = str(uuid.uuid4())
-    DATASETS[dataset_id] = df
-    
-    # Automatically categorize columns
-    categorized = _categorize_columns(df)
-    
-    return {
-        "dataset_id": dataset_id,
-        "columns": list(df.columns),  # Keep for backward compatibility
-        "dimensions": categorized["dimensions"],
-        "measures": categorized["measures"],
-        "rows": len(df)
-    }
+    try:
+        content = await file.read()
+        filename = file.filename.lower()
+        
+        # Determine file type and read accordingly
+        if filename.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(content))
+        elif filename.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(io.BytesIO(content))
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file format. Please upload CSV or XLSX files.")
+        
+        # Validate that the file contains data
+        if df.empty:
+            raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+        
+        # Generate unique dataset ID
+        dataset_id = str(uuid.uuid4())
+        DATASETS[dataset_id] = df
+        
+        # Store original filename for analysis
+        dataset_metadata = {
+            "filename": file.filename,
+            "upload_timestamp": pd.Timestamp.now().isoformat(),
+            "file_type": "csv" if filename.endswith('.csv') else "excel"
+        }
+        
+        if dataset_id not in DATASET_METADATA:
+            DATASET_METADATA[dataset_id] = {}
+        DATASET_METADATA[dataset_id].update(dataset_metadata)
+        
+        # Automatically categorize columns
+        categorized = _categorize_columns(df)
+        
+        print(f"📁 Dataset uploaded successfully:")
+        print(f"   File: {file.filename}")
+        print(f"   Dataset ID: {dataset_id}")
+        print(f"   Shape: {df.shape}")
+        print(f"   Dimensions: {len(categorized['dimensions'])}")
+        print(f"   Measures: {len(categorized['measures'])}")
+        
+        return {
+            "dataset_id": dataset_id,
+            "filename": file.filename,
+            "columns": list(df.columns),  # Keep for backward compatibility
+            "dimensions": categorized["dimensions"],
+            "measures": categorized["measures"],
+            "rows": len(df)
+        }
+        
+    except pd.errors.EmptyDataError:
+        raise HTTPException(status_code=400, detail="The uploaded file is empty or invalid.")
+    except pd.errors.ParserError as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
+    except Exception as e:
+        print(f"❌ Upload failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
 def _generate_chart_title(dimensions: List[str], measures: List[str], agg: str = "sum") -> str:
@@ -1044,8 +1502,20 @@ async def ai_explore_data(request: AIExploreRequest):
         # Create AI formulator with user's credentials
         ai_formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
         
-        # Use pandas DataFrame agent for text-based results
-        ai_result = ai_formulator.get_text_analysis(request.user_query, full_dataset)
+        # Retrieve dataset metadata for enhanced context (avoid circular import)
+        dataset_metadata = None
+        if dataset_id in DATASET_METADATA:
+            dataset_metadata = DATASET_METADATA[dataset_id]
+            if dataset_metadata and dataset_metadata.get('success'):
+                print(f"📋 Retrieved dataset analysis metadata: {len(dataset_metadata.get('columns', []))} columns analyzed")
+            else:
+                print("📋 Dataset metadata found but incomplete")
+                dataset_metadata = None
+        else:
+            print(f"📋 No dataset metadata found for {dataset_id[:8]}... - using basic analysis")
+        
+        # Use pandas DataFrame agent for text-based results with enhanced context
+        ai_result = ai_formulator.get_text_analysis(request.user_query, full_dataset, dataset_id, dataset_metadata)
         
         print(f"✅ AI Analysis completed successfully!")
         print(f"   Result length: {len(ai_result.get('answer', ''))}")
@@ -1134,6 +1604,415 @@ async def ai_calculate_metric(request: MetricCalculationRequest):
         raise HTTPException(status_code=500, detail=f"Failed to calculate metric: {error_message}")
 
 
+@app.post("/analyze-dataset")
+async def analyze_dataset(request: DatasetAnalysisRequest):
+    """
+    Dataset Analysis Endpoint
+    Performs comprehensive AI-powered analysis of an uploaded dataset.
+    Generates semantic column descriptions and dataset summaries.
+    
+    Features:
+        - Statistical profiling (variance, missing values, unique counts)
+        - AI-generated semantic descriptions for each column
+        - Overall dataset summary using LLM analysis
+        - Token usage tracking for cost estimation
+    
+    Args:
+        request: Contains dataset_id, optional api_key, and model selection
+    
+    Returns:
+        Dictionary with dataset analysis results including:
+            - dataset_summary: AI-generated description
+            - columns: List of column analysis with stats and descriptions
+            - token_usage: AI consumption metrics
+            - success: Analysis completion status
+    
+    Process:
+        1. Validates dataset exists
+        2. Performs pandas statistical analysis
+        3. Uses Gemini LLM for semantic understanding
+        4. Stores results for future retrieval
+    """
+    if request.dataset_id not in DATASETS:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    try:
+        df = DATASETS[request.dataset_id]
+        
+        # Get dataset filename from metadata or use ID
+        dataset_name = request.dataset_id[:8]
+        if request.dataset_id in DATASET_METADATA:
+            stored_filename = DATASET_METADATA[request.dataset_id].get("filename")
+            if stored_filename:
+                dataset_name = stored_filename
+        
+        print(f"🔍 Starting analysis for dataset: {request.dataset_id}")
+        print(f"   Dataset shape: {df.shape}")
+        print(f"   API Key provided: {'Yes' if request.api_key else 'No'}")
+        print(f"   Model: {request.model}")
+        
+        # Perform AI analysis
+        analysis_result = _analyze_dataset_with_ai(
+            df=df,
+            dataset_name=dataset_name,
+            api_key=request.api_key,
+            model=request.model
+        )
+        
+        # Store analysis results for future use
+        DATASET_METADATA[request.dataset_id] = analysis_result
+        
+        print(f"✅ Dataset analysis completed for: {request.dataset_id}")
+        print(f"   Success: {analysis_result.get('success', False)}")
+        print(f"   Columns analyzed: {len(analysis_result.get('columns', []))}")
+        
+        return {
+            "dataset_id": request.dataset_id,
+            "analysis": analysis_result,
+            "timestamp": pd.Timestamp.now().isoformat()
+        }
+        
+    except Exception as e:
+        print(f"❌ Dataset analysis failed for {request.dataset_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.post("/save-dataset-metadata")
+async def save_dataset_metadata(request: DatasetMetadataSaveRequest):
+    """
+    Dataset Metadata Save Endpoint
+    Persists user-edited dataset summaries and column descriptions.
+    Updates stored metadata with user confirmations and modifications.
+    
+    Features:
+        - Saves edited dataset summary
+        - Stores confirmed column descriptions
+        - Maintains version history for metadata changes
+        - Prepares metadata for downstream chart generation
+    
+    Args:
+        request: Contains dataset_id, edited dataset_summary, and column_descriptions dict
+    
+    Returns:
+        Confirmation of successful metadata save
+    
+    Used by: Frontend upload panel after user edits AI-generated descriptions
+    """
+    if request.dataset_id not in DATASETS:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    try:
+        print(f"💾 Saving metadata for dataset: {request.dataset_id}")
+        print(f"   Dataset summary length: {len(request.dataset_summary)}")
+        print(f"   Column descriptions: {len(request.column_descriptions)} columns")
+        
+        # Get existing metadata or create new
+        if request.dataset_id in DATASET_METADATA:
+            metadata = DATASET_METADATA[request.dataset_id]
+        else:
+            # Create basic metadata structure if none exists
+            df = DATASETS[request.dataset_id]
+            metadata = {
+                "dataset_name": f"dataset_{request.dataset_id[:8]}",
+                "dataset_summary": "",
+                "columns": [{"name": col, "description": ""} for col in df.columns],
+                "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0},
+                "success": True
+            }
+        
+        # Update with user-provided data
+        metadata["dataset_summary"] = request.dataset_summary
+        
+        # Update column descriptions
+        for col_info in metadata.get("columns", []):
+            col_name = col_info["name"]
+            if col_name in request.column_descriptions:
+                col_info["description"] = request.column_descriptions[col_name]
+        
+        # Add save timestamp and mark as user-edited
+        metadata["last_updated"] = pd.Timestamp.now().isoformat()
+        metadata["user_edited"] = True
+        
+        # Store updated metadata
+        DATASET_METADATA[request.dataset_id] = metadata
+        
+        print(f"✅ Metadata saved successfully for: {request.dataset_id}")
+        
+        return {
+            "success": True,
+            "dataset_id": request.dataset_id,
+            "message": "Dataset metadata saved successfully",
+            "timestamp": metadata["last_updated"],
+            "columns_updated": len(request.column_descriptions)
+        }
+        
+    except Exception as e:
+        print(f"❌ Failed to save metadata for {request.dataset_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save metadata: {str(e)}")
+
+
+@app.get("/dataset/{dataset_id}/metadata")
+async def get_dataset_metadata(dataset_id: str):
+    """
+    Dataset Metadata Retrieval Endpoint
+    Returns stored analysis results and user-edited metadata for a dataset.
+    
+    Args:
+        dataset_id: ID of the dataset to retrieve metadata for
+    
+    Returns:
+        Complete metadata including analysis results, column descriptions, and summaries
+    
+    Used by: Frontend to display existing analysis results and for chart generation context
+    """
+    if dataset_id not in DATASETS:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    if dataset_id not in DATASET_METADATA:
+        raise HTTPException(status_code=404, detail="Dataset metadata not found. Please run analysis first.")
+    
+    try:
+        metadata = DATASET_METADATA[dataset_id]
+        
+        return {
+            "dataset_id": dataset_id,
+            "metadata": metadata
+        }
+        
+    except Exception as e:
+        print(f"❌ Failed to retrieve metadata for {dataset_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve metadata: {str(e)}")
+
+
+@app.post("/suggest-charts")
+async def suggest_charts(request: ChartSuggestionRequest):
+    """
+    Chart Suggestion Endpoint
+    Generates AI-powered chart recommendations based on user goals and dataset schema.
+    Uses Stage 1 metadata and natural language processing to suggest relevant visualizations.
+    
+    Features:
+        - Natural language goal interpretation
+        - Context-aware chart type selection
+        - Dimension and measure recommendations
+        - Importance scoring and insights
+        - Token usage tracking
+    
+    Args:
+        request: Contains dataset_id, goal text, optional api_key, and model selection
+    
+    Returns:
+        Dictionary with chart suggestions including:
+            - charts: List of suggested chart configurations
+            - token_usage: AI consumption metrics
+            - success: Generation completion status
+    
+    Process:
+        1. Validates dataset and metadata exist
+        2. Constructs comprehensive AI prompt with goal + schema
+        3. Uses Gemini LLM for chart recommendations
+        4. Validates and processes AI response
+    """
+    if request.dataset_id not in DATASETS:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    if request.dataset_id not in DATASET_METADATA:
+        raise HTTPException(status_code=404, detail="Dataset metadata not found. Please run analysis first.")
+    
+    try:
+        # Get dataset and metadata
+        df = DATASETS[request.dataset_id]
+        metadata = DATASET_METADATA[request.dataset_id]
+        
+        print(f"🎯 Starting chart suggestions for dataset: {request.dataset_id}")
+        print(f"   User goal: '{request.goal}'")
+        print(f"   Dataset shape: {df.shape}")
+        print(f"   API Key provided: {'Yes' if request.api_key else 'No'}")
+        
+        if not request.api_key:
+            return ChartSuggestionResponse(
+                success=False,
+                suggestions=[],
+                token_usage={"inputTokens": 0, "outputTokens": 0, "totalTokens": 0},
+                error="API key required for chart suggestions"
+            )
+        
+        # Get available dimensions and measures
+        categorized = _categorize_columns(df)
+        available_dimensions = categorized["dimensions"]
+        available_measures = categorized["measures"]
+        
+        # Prepare dataset schema for AI
+        schema_data = {
+            "dataset_name": metadata.get("dataset_name", "dataset"),
+            "dataset_summary": metadata.get("dataset_summary", ""),
+            "total_rows": len(df),
+            "total_columns": len(df.columns),
+            "dimensions": available_dimensions,
+            "measures": available_measures,
+            "columns": metadata.get("columns", [])
+        }
+        
+        # Create AI prompt for chart suggestions
+        from gemini_llm import GeminiDataFormulator
+        ai_formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
+        
+        prompt = f"""You are a data analyst. Given the user's goal and dataset schema, recommend the most relevant variable combinations for visualization.
+
+USER GOAL: "{request.goal}"
+
+DATASET INFORMATION:
+- Name: {schema_data['dataset_name']} 
+- Summary: {schema_data['dataset_summary']}
+- Size: {schema_data['total_rows']} rows, {schema_data['total_columns']} columns
+- Available Dimensions: {schema_data['dimensions']}
+- Available Measures: {schema_data['measures']}
+
+COLUMN DETAILS:
+{chr(10).join([f"- {col.get('name', 'unknown')}: {col.get('description', 'no description')}" for col in schema_data['columns']])}
+
+VARIABLE COMBINATION OPTIONS:
+1. "dimension_measure": 1 dimension + 1 measure (standard comparison/aggregation)
+2. "single_dimension": 1 dimension only (category frequency/counts)  
+3. "single_measure": 1 measure only (distribution/histogram)
+4. "two_dimensions_one_measure": 2 dimensions + 1 measure (detailed breakdown/heatmap)
+5. "one_dimension_two_measures": 1 dimension + 2 measures (comparative analysis/dual-axis)
+
+INSTRUCTIONS:
+1. Focus on variable selection that directly addresses the user's goal
+2. Suggest 2-4 DISTINCT variable combinations with different analytical perspectives
+3. Choose method based on what insights are needed:
+   - Compare categories → dimension_measure
+   - Show detailed breakdown → two_dimensions_one_measure  
+   - Compare multiple metrics → one_dimension_two_measures
+   - Understand distribution → single_measure
+   - Count frequencies → single_dimension
+4. Use only column names that exist in the available dimensions/measures
+5. Each suggestion should offer a DIFFERENT analytical angle
+
+OUTPUT FORMAT (JSON only):
+{{
+  "suggestions": [
+    {{
+      "method": "dimension_measure|single_dimension|single_measure|two_dimensions_one_measure|one_dimension_two_measures",
+      "dimensions": ["column_name1", "column_name2"],
+      "measures": ["column_name3"],
+      "title": "Descriptive chart title",
+      "reasoning": "Why this variable combination helps achieve the goal",
+      "importance_score": 1-10
+    }}
+  ]
+}}
+
+FOCUS: Recommend the optimal variables that best answer the user's question, not chart types."""
+
+        try:
+            ai_response, token_usage = ai_formulator.run_gemini_with_usage(prompt)
+            
+            print(f"🤖 Raw AI Response: {ai_response[:200]}...")
+            
+            # Clean and parse AI response (same logic as dataset analysis)
+            cleaned_response = ai_response.strip()
+            
+            if "```json" in cleaned_response:
+                start_idx = cleaned_response.find("```json") + 7
+                end_idx = cleaned_response.find("```", start_idx)
+                if end_idx != -1:
+                    cleaned_response = cleaned_response[start_idx:end_idx].strip()
+            elif "```" in cleaned_response:
+                start_idx = cleaned_response.find("```") + 3
+                end_idx = cleaned_response.find("```", start_idx)
+                if end_idx != -1:
+                    cleaned_response = cleaned_response[start_idx:end_idx].strip()
+            
+            print(f"🧹 Cleaned Response: {cleaned_response[:200]}...")
+            
+            # Parse AI response
+            ai_data = json.loads(cleaned_response)
+            
+            # Validate and process variable suggestions with diversity filtering
+            validated_suggestions = []
+            used_methods = set()
+            used_column_combinations = set()
+            
+            # Sort suggestions by importance score first
+            suggestions_sorted = sorted(ai_data.get("suggestions", []), key=lambda x: x.get("importance_score", 0), reverse=True)
+            
+            for suggestion_data in suggestions_sorted:
+                # Validate dimensions and measures exist in dataset
+                suggested_dimensions = suggestion_data.get("dimensions", [])
+                suggested_measures = suggestion_data.get("measures", [])
+                
+                valid_dimensions = [dim for dim in suggested_dimensions if dim in available_dimensions]
+                valid_measures = [meas for meas in suggested_measures if meas in available_measures]
+                
+                # Skip if no valid columns or method missing
+                method = suggestion_data.get("method", "")
+                if not method or not (valid_dimensions or valid_measures):
+                    print(f"🔄 Skipping invalid suggestion: method={method}, dims={valid_dimensions}, measures={valid_measures}")
+                    continue
+                
+                column_combo = tuple(sorted(valid_dimensions + valid_measures))
+                
+                # Filter out duplicates - allow same method if columns are different, same columns if method is different
+                is_duplicate_method = method in used_methods
+                is_duplicate_columns = column_combo in used_column_combinations
+                
+                if is_duplicate_method and is_duplicate_columns:
+                    print(f"🔄 Filtering out duplicate: {method} with columns {column_combo}")
+                    continue
+                
+                # Add this suggestion as it's sufficiently different
+                used_methods.add(method)
+                used_column_combinations.add(column_combo)
+                
+                validated_suggestions.append(VariableSuggestion(
+                    method=method,
+                    dimensions=valid_dimensions,
+                    measures=valid_measures,
+                    title=suggestion_data.get("title", "Untitled Chart"),
+                    reasoning=suggestion_data.get("reasoning", "No reasoning provided"),
+                    importance_score=min(max(suggestion_data.get("importance_score", 5), 1), 10)
+                ))
+                
+                # Limit to max 4 distinct suggestions
+                if len(validated_suggestions) >= 4:
+                    break
+            
+            print(f"✅ Variable suggestions generated successfully!")
+            print(f"   Suggestions: {len(validated_suggestions)} variable combinations")
+            print(f"   Token usage: {token_usage.get('totalTokens', 0)} tokens")
+            
+            return ChartSuggestionResponse(
+                success=True,
+                suggestions=validated_suggestions,
+                token_usage=token_usage
+            )
+            
+        except json.JSONDecodeError as json_error:
+            print(f"❌ AI JSON parsing failed: {str(json_error)}")
+            print(f"📄 Full AI Response: {ai_response}")
+            
+            return ChartSuggestionResponse(
+                success=False,
+                suggestions=[],
+                token_usage=token_usage if 'token_usage' in locals() else {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0},
+                error=f"Failed to parse AI response: {str(json_error)}"
+            )
+            
+        except Exception as ai_error:
+            print(f"❌ AI variable suggestion failed: {str(ai_error)}")
+            
+            return ChartSuggestionResponse(
+                success=False,
+                suggestions=[],
+                token_usage=token_usage if 'token_usage' in locals() else {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0},
+                error=f"AI processing failed: {str(ai_error)}"
+            )
+            
+    except Exception as e:
+        print(f"❌ Chart suggestion endpoint failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate chart suggestions: {str(e)}")
 
 
 @app.post("/list-models")
@@ -1158,14 +2037,15 @@ class ChartInsightRequest(BaseModel):
 @app.post("/chart-insights")
 async def generate_chart_insights(request: ChartInsightRequest):
     """
-    Chart Insights Generation Endpoint
-    Generates AI-powered statistical insights for a chart.
-    Creates concise summaries highlighting key findings.
+    Enhanced Chart Insights Generation Endpoint
+    Generates AI-powered contextual insights for a chart using dataset analysis.
+    Creates structured, business-focused insights with bullet points.
     
     Process:
-        1. Calculates basic statistics (min, max, mean, total)
-        2. Uses Gemini LLM to generate human-readable insight
-        3. Returns 2-3 sentence summary with token usage
+        1. Retrieves dataset metadata for enhanced context
+        2. Calculates basic statistics (min, max, mean, total)
+        3. Uses Gemini LLM with dataset context to generate insights
+        4. Returns structured bullet-point insights with token usage
     
     Used by: Insight sticky notes feature
     """
@@ -1178,7 +2058,20 @@ async def generate_chart_insights(request: ChartInsightRequest):
     if dataset is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
-    # Create statistical summary prompt
+    # Retrieve dataset metadata for enhanced context
+    dataset_id = chart["dataset_id"]
+    dataset_metadata = None
+    if dataset_id in DATASET_METADATA:
+        dataset_metadata = DATASET_METADATA[dataset_id]
+        if dataset_metadata and dataset_metadata.get('success'):
+            print(f"📊 Using enhanced dataset context for chart insights: {len(dataset_metadata.get('columns', []))} columns analyzed")
+        else:
+            print("📊 Dataset metadata found but incomplete - using basic analysis")
+            dataset_metadata = None
+    else:
+        print(f"📊 No dataset metadata found for {dataset_id[:8]}... - using basic statistical analysis")
+    
+    # Create enhanced statistical summary prompt
     dimensions = chart.get("dimensions", [])
     measures = chart.get("measures", [])
     table_data = chart.get("table", [])
@@ -1195,29 +2088,70 @@ async def generate_chart_insights(request: ChartInsightRequest):
                 "total": sum(values)
             }
     
-    # Generate insight using Gemini
+    # Build enhanced context from dataset metadata if available
+    enhanced_context = ""
+    if dataset_metadata and dataset_metadata.get('success'):
+        dataset_summary = dataset_metadata.get('dataset_summary', '')
+        columns_with_descriptions = dataset_metadata.get('columns', [])
+        
+        if dataset_summary and dataset_summary.strip():
+            enhanced_context += f"\nDATASET CONTEXT & BUSINESS DOMAIN:\n- Purpose: {dataset_summary.strip()}\n"
+        
+        if columns_with_descriptions and len(columns_with_descriptions) > 0:
+            enhanced_context += "\nCOLUMN MEANINGS & CONTEXT:\n"
+            column_desc_map = {col.get('name'): col.get('description', '') for col in columns_with_descriptions if col.get('name') and col.get('description')}
+            
+            # Only show descriptions for columns that appear in this chart
+            chart_columns = set(dimensions + measures)
+            for col in chart_columns:
+                col_desc = column_desc_map.get(col, 'Standard data column')
+                if col_desc and col_desc.strip():
+                    enhanced_context += f"- {col}: {col_desc.strip()}\n"
+    
+    # Generate insight using Gemini with enhanced context
     formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
     
-    prompt = f"""Generate a brief statistical summary (2-3 sentences) for this chart.
-
-Chart Title: {chart.get('title', 'Untitled Chart')}
-Dimensions: {dimensions}
-Measures: {measures}
-Statistics: {json.dumps(stats, indent=2)}
+    context_type = 'with enhanced business context' if enhanced_context.strip() else 'with basic statistical analysis'
+    print(f"🤖 Generating chart insights {context_type}...")
+    
+    prompt = f"""You are a data analyst. Generate key insights for this chart using bullet points that clearly describe what the data shows.
+{enhanced_context}
+CHART ANALYSIS:
+- Chart Title: {chart.get('title', 'Untitled Chart')}
+- Dimensions (Categories): {dimensions}
+- Measures (Metrics): {measures}
+- Statistical Summary: {json.dumps(stats, indent=2)}
 
 Top 5 data points:
 {json.dumps(table_data[:5], indent=2)}
 
-Provide only the insight text without any headers or formatting."""
+Generate 3-5 key insights in this EXACT format:
+• [Data pattern or trend with specific numbers]
+• [Notable finding about performance, outliers, or comparison]
+• [Distribution or relationship observed in the data]
+• [Additional pattern or interesting data observation]
+• [Summary insight if applicable]
+
+Use simple, clear language. Focus on describing what the data shows. Include specific numbers when relevant.
+Provide ONLY the bullet points, no headers or additional text."""
 
     response, token_usage = formulator.run_gemini_with_usage(prompt)
     
-    return {
+    # Cache the generated insights for future use
+    insights_result = {
         "success": True,
         "insight": response.strip(),
         "statistics": stats,
-        "token_usage": token_usage
+        "token_usage": token_usage,
+        "enhanced_context_used": bool(enhanced_context.strip()),
+        "generated_at": pd.Timestamp.now().isoformat()
     }
+    
+    # Store in cache for report generation reuse
+    CHART_INSIGHTS_CACHE[request.chart_id] = insights_result
+    print(f"📋 Cached chart insights for {request.chart_id}")
+    
+    return insights_result
 
 class ReportSectionRequest(BaseModel):
     chart_id: str
@@ -1228,19 +2162,24 @@ class ReportSectionRequest(BaseModel):
 @app.post("/generate-report-section")
 async def generate_report_section(request: ReportSectionRequest):
     """
-    Report Section Generation Endpoint
-    Creates LLM-enhanced report sections for charts with professional formatting.
-    Combines statistical analysis with AI exploration results.
+    Optimized Report Section Generation Endpoint
+    Intelligently combines existing insights with minimal redundant LLM calls.
+    Implements priority hierarchy: AI Explore > Cached Insights > Generate New.
     
+    Smart Content Strategy:
+        1. AI Explore Results (top priority) - User's specific query
+        2. Existing Chart Insights (reuse without new LLM call)
+        3. Generate New Insights (fallback only)
+        
     Features:
-        - Auto-generates clear, concise subheadings (3-6 words)
-        - Produces short, crisp analysis (3-4 sentences)
-        - Incorporates AI exploration results if available
-        - Uses markdown formatting for easy editing
-        - Optimized for readability and actionable insights
+        - Intelligent content detection and reuse
+        - Priority-based content combination
+        - Token usage optimization
+        - Consistent bullet-point formatting
+        - Auto-generated subheadings
     
     Returns:
-        success, report_section (markdown), chart_title, statistics, token_usage
+        success, report_section (markdown), chart_title, statistics, token_usage, content_source
     
     Used by: "Add to Report" feature in chart context menus
     """
@@ -1255,11 +2194,91 @@ async def generate_report_section(request: ReportSectionRequest):
     
     # Get chart metadata
     title = chart.get('title', 'Untitled Chart')
+    print(f"📋 Generating report section for: {title}")
+    
+    # Step 1: Intelligent Content Detection
+    ai_explore_result = request.ai_explore_result
+    cached_insights = _get_cached_chart_insights(request.chart_id)
+    
+    content_source = "unknown"
+    content_body = ""
+    total_token_usage = {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+    
+    # Step 2: Smart Content Priority Logic
+    if ai_explore_result and ai_explore_result.strip():
+        if cached_insights:
+            # Scenario 1: AI Explore + Cached Insights (Best case - combine both)
+            print("🎆 Combining AI explore result with cached chart insights")
+            content_body = _combine_ai_explore_and_insights(
+                ai_explore_result, 
+                cached_insights.get('insight', ''),
+                weight_ai_explore=0.7
+            )
+            content_source = "AI Explore + Chart Insights"
+            # Reuse cached token usage
+            if cached_insights.get('token_usage'):
+                total_token_usage = cached_insights['token_usage']
+            
+        else:
+            # Scenario 2: AI Explore Only
+            print("🎆 Using AI explore result as primary content")
+            content_body = f"**Based on your specific query:** {ai_explore_result.strip()}"
+            content_source = "AI Explore Query"
+            # No additional tokens used
+            
+    elif cached_insights:
+        # Scenario 3: Cached Insights Only (Token savings!)
+        print("📋 Reusing cached chart insights without new LLM call")
+        content_body = _format_insights_for_report(cached_insights.get('insight', ''))
+        content_source = "Cached Chart Insights"
+        # Reuse cached token usage
+        if cached_insights.get('token_usage'):
+            total_token_usage = cached_insights['token_usage']
+            
+    else:
+        # Scenario 4: Generate New Insights (Fallback)
+        print("🤖 No existing insights found - generating new insights via chart-insights endpoint")
+        try:
+            # Reuse the existing chart insights logic to avoid code duplication
+            insights_request = ChartInsightRequest(
+                chart_id=request.chart_id,
+                api_key=request.api_key,
+                model=request.model
+            )
+            insights_result = await generate_chart_insights(insights_request)
+            
+            if insights_result.get('success'):
+                content_body = _format_insights_for_report(insights_result.get('insight', ''))
+                content_source = "Generated New Insights"
+                total_token_usage = insights_result.get('token_usage', total_token_usage)
+            else:
+                content_body = "Unable to generate insights for this chart."
+                content_source = "Fallback"
+                
+        except Exception as e:
+            print(f"⚠️ Failed to generate new insights: {e}")
+            content_body = "Chart analysis temporarily unavailable."
+            content_source = "Error Fallback"
+    
+    # Step 3: Generate Subheading
+    try:
+        subheading = _generate_subheading_from_content(content_body, title, request.api_key, request.model)
+        # Add minimal tokens for subheading generation
+        total_token_usage["inputTokens"] += 50
+        total_token_usage["outputTokens"] += 10
+        total_token_usage["totalTokens"] += 60
+    except Exception as e:
+        print(f"⚠️ Failed to generate subheading: {e}")
+        subheading = f"## {title} Analysis"
+    
+    # Step 4: Format Final Report Section
+    final_report_section = f"{subheading}\n\n{content_body}\n\n*Source: {content_source}*"
+    
+    # Get basic statistics for compatibility
     dimensions = chart.get("dimensions", [])
     measures = chart.get("measures", [])
     table_data = chart.get("table", [])
     
-    # Calculate statistics
     stats = {}
     for measure in measures:
         values = [row.get(measure, 0) for row in table_data if isinstance(row.get(measure), (int, float))]
@@ -1271,52 +2290,19 @@ async def generate_report_section(request: ReportSectionRequest):
                 "total": sum(values)
             }
     
-    # Build comprehensive prompt for LLM
-    formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
-    
-    ai_section = f"""
-
-**AI Exploration Results:**
-{request.ai_explore_result}
-""" if request.ai_explore_result else ""
-    
-    prompt = f"""You are a data analyst writing a concise, clear report section. Generate SHORT, CRISP, and EASY-TO-UNDERSTAND analysis.
-
-**Chart Information:**
-Title: {title}
-Dimensions: {dimensions}
-Measures: {measures}
-
-**Statistical Summary:**
-{json.dumps(stats, indent=2)}
-
-**Top Data Points:**
-{json.dumps(table_data[:10], indent=2)}
-{ai_section}
-
-**Instructions:**
-1. Start with a SHORT, CLEAR subheading (3-6 words max, use ## markdown format) - NOT just the chart title
-2. Write ONLY 3-4 SHORT sentences (max 2 paragraphs)
-3. Be CRISP and DIRECT - no fluff or verbose language
-4. Highlight ONLY the most important finding or trend
-5. Use SIMPLE, EASY-TO-UNDERSTAND language (avoid jargon)
-6. If AI Exploration Results are provided, incorporate those insights
-7. Keep it CONCISE and ACTIONABLE
-
-Example good subheading: "## Strong Growth in Q3"
-Example bad subheading: "## Analysis of Population by State Chart"
-
-Generate the SHORT, CRISP report section now:"""
-
-    response, token_usage = formulator.run_gemini_with_usage(prompt)
+    print(f"✅ Report section generated using: {content_source}")
+    print(f"📊 Token usage: {total_token_usage.get('totalTokens', 0)} total tokens")
     
     return {
         "success": True,
-        "report_section": response.strip(),
+        "report_section": final_report_section,
         "chart_title": title,
         "chart_id": request.chart_id,
         "statistics": stats,
-        "token_usage": token_usage
+        "token_usage": total_token_usage,
+        "content_source": content_source,
+        "ai_explore_used": bool(ai_explore_result and ai_explore_result.strip()),
+        "cached_insights_used": bool(cached_insights)
     }
 
            

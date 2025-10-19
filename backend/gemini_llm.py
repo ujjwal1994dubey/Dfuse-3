@@ -249,7 +249,7 @@ class GeminiDataFormulator:
                 "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
             }
     
-    def get_text_analysis(self, user_query: str, dataset: pd.DataFrame) -> Dict[str, Any]:
+    def get_text_analysis(self, user_query: str, dataset: pd.DataFrame, dataset_id: Optional[str] = None, dataset_metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Main AI Data Analysis Pipeline
         Primary entry point for AI-powered data exploration.
@@ -264,6 +264,8 @@ class GeminiDataFormulator:
         Args:
             user_query: Natural language question (e.g., "Which state has the highest revenue?")
             dataset: Pandas DataFrame to analyze
+            dataset_id: Optional dataset ID (for logging purposes)
+            dataset_metadata: Optional pre-loaded dataset analysis metadata for enhanced context
         
         Returns:
             Dict containing:
@@ -284,8 +286,18 @@ class GeminiDataFormulator:
             print(f"📊 Dataset: {dataset.shape[0]} rows, {dataset.shape[1]} columns")
             print(f"🔍 Columns: {list(dataset.columns)}")
             
-            # Generate Python code using Gemini
-            code, token_usage = self._generate_pandas_code(user_query, dataset)
+            # Log dataset context usage
+            if dataset_metadata and dataset_metadata.get('success'):
+                summary_preview = dataset_metadata.get('dataset_summary', '')[:100] + '...' if len(dataset_metadata.get('dataset_summary', '')) > 100 else dataset_metadata.get('dataset_summary', '')
+                print(f"📋 Using enhanced dataset context: {summary_preview}")
+                print(f"📊 Enhanced column descriptions: {len(dataset_metadata.get('columns', []))} columns")
+            elif dataset_id:
+                print(f"📋 Dataset ID provided ({dataset_id[:8]}...) but no metadata available - using basic analysis")
+            else:
+                print("📋 No enhanced context available - using basic dataset analysis")
+            
+            # Generate Python code using Gemini with enhanced context
+            code, token_usage = self._generate_pandas_code(user_query, dataset, dataset_metadata)
             
             if not code:
                 return {
@@ -371,7 +383,7 @@ print(result)"""
             "sample_data": dataset.head(3).to_string(index=False)
         }
     
-    def _generate_pandas_code(self, user_query: str, dataset: pd.DataFrame) -> tuple[str, dict]:
+    def _generate_pandas_code(self, user_query: str, dataset: pd.DataFrame, dataset_metadata: Optional[Dict[str, Any]] = None) -> tuple[str, dict]:
         """
         Pandas Code Generator
         Uses Gemini LLM to generate executable pandas code from natural language queries.
@@ -380,6 +392,7 @@ print(result)"""
         Args:
             user_query: Natural language question about the data
             dataset: The actual DataFrame to analyze
+            dataset_metadata: Optional AI-generated dataset analysis with semantic context
         
         Returns:
             tuple: (generated_code, token_usage)
@@ -402,10 +415,37 @@ print(result)"""
             # Analyze dataset structure
             dataset_info = self._analyze_dataset_structure(dataset)
             
-            # Create code generation prompt
+            # Build enhanced context from metadata if available
+            enhanced_context = ""
+            if dataset_metadata and dataset_metadata.get('success'):
+                dataset_summary = dataset_metadata.get('dataset_summary', '')
+                columns_with_descriptions = dataset_metadata.get('columns', [])
+                
+                if dataset_summary and dataset_summary.strip():
+                    enhanced_context += f"\nDATASET CONTEXT & BUSINESS MEANING:\n- Purpose: {dataset_summary.strip()}\n"
+                
+                if columns_with_descriptions and len(columns_with_descriptions) > 0:
+                    enhanced_context += "\nENHANCED COLUMN CONTEXT:\n"
+                    column_desc_map = {col.get('name'): col.get('description', '') for col in columns_with_descriptions if col.get('name') and col.get('description')}
+                    
+                    for col in dataset.columns:
+                        col_desc = column_desc_map.get(col, 'Standard data column')
+                        if col_desc and col_desc.strip():
+                            enhanced_context += f"- {col}: {dict(dataset.dtypes.astype(str))[col]} | {col_desc.strip()}\n"
+                        else:
+                            enhanced_context += f"- {col}: {dict(dataset.dtypes.astype(str))[col]} | Standard data column\n"
+                            
+                if not enhanced_context.strip():
+                    print("⚠️ Metadata available but empty - falling back to basic analysis")
+            
+            # Determine context type for logging
+            context_type = 'with enhanced semantic context' if (dataset_metadata and dataset_metadata.get('success') and enhanced_context.strip()) else 'with basic structure analysis'
+            print(f"📝 Context type: {context_type}")
+            
+            # Create code generation prompt with enhanced context
             code_generation_prompt = f"""You are a data analyst. Generate Python pandas code to answer the user's query using the provided DataFrame.
-
-REAL DATASET CONTEXT:
+{enhanced_context}
+REAL DATASET STRUCTURE:
 - Variable name: 'df' 
 - Shape: {dataset.shape[0]} rows, {dataset.shape[1]} columns
 - Columns: {list(dataset.columns)}
@@ -418,10 +458,11 @@ USER QUERY: "{user_query}"
 Generate ONLY Python pandas code that:
 1. Uses ONLY the variable 'df' (which contains the real data above)
 2. NEVER creates or recreates the DataFrame 
-3. Uses appropriate pandas methods (nlargest, groupby, mean, sum, etc.)
+3. Uses appropriate pandas methods based on the business context and column meanings
 4. Includes print statements to show results clearly
 5. Provides the exact answer to the user's question
 6. Works with the actual column names and data types shown above
+7. Consider the business/domain context when selecting columns and operations
 
 Example format:
 ```python
