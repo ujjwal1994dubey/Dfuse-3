@@ -2388,50 +2388,67 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
     setAiLoading(true);
     
     try {
-      // Step 1: Capture chart as image using canvas
+      // Step 1: Capture chart as image using Plotly's toImage which includes all elements
       const chartElement = document.querySelector(`[data-id="${id}"] .js-plotly-plot`);
       if (!chartElement) {
         throw new Error('Chart not found');
       }
       
-      // Find the SVG element inside the plot
-      const svgElement = chartElement.querySelector('.main-svg');
-      if (!svgElement) {
-        throw new Error('Chart SVG not found');
+      // Try to use Plotly.toImage (includes all chart elements) with fallback to canvas method
+      let chartImage;
+      const Plotly = window.Plotly;
+      
+      if (Plotly && Plotly.toImage) {
+        // Preferred method: Use Plotly.toImage to capture complete chart with title, axes, and legend
+        try {
+          chartImage = await Plotly.toImage(chartElement, {
+            format: 'png',
+            width: chartDimensions.width || 800,
+            height: chartDimensions.height || 500,
+            scale: 2 // Higher resolution for better quality in reports
+          });
+        } catch (error) {
+          console.warn('Plotly.toImage failed, falling back to canvas method:', error);
+          chartImage = null;
+        }
       }
       
-      // Get the SVG dimensions
-      const bbox = svgElement.getBoundingClientRect();
-      const width = bbox.width || 800;
-      const height = bbox.height || 500;
-      
-      // Create a canvas to draw the chart
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      
-      // Create an image from the SVG
-      const svgData = new XMLSerializer().serializeToString(svgElement);
-      const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-      const url = URL.createObjectURL(svgBlob);
-      
-      // Load the SVG as an image and draw it on canvas
-      const chartImage = await new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => {
-          ctx.fillStyle = 'white';
-          ctx.fillRect(0, 0, width, height);
-          ctx.drawImage(img, 0, 0, width, height);
-          URL.revokeObjectURL(url);
-          resolve(canvas.toDataURL('image/png'));
-        };
-        img.onerror = () => {
-          URL.revokeObjectURL(url);
-          reject(new Error('Failed to load chart image'));
-        };
-        img.src = url;
-      });
+      // Fallback: Canvas-based capture if Plotly.toImage is not available or fails
+      if (!chartImage) {
+        const svgElement = chartElement.querySelector('.main-svg');
+        if (!svgElement) {
+          throw new Error('Chart SVG not found');
+        }
+        
+        const bbox = svgElement.getBoundingClientRect();
+        const width = bbox.width || 800;
+        const height = bbox.height || 500;
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        
+        const svgData = new XMLSerializer().serializeToString(svgElement);
+        const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(svgBlob);
+        
+        chartImage = await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, width, height);
+            ctx.drawImage(img, 0, 0, width, height);
+            URL.revokeObjectURL(url);
+            resolve(canvas.toDataURL('image/png'));
+          };
+          img.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error('Failed to load chart image'));
+          };
+          img.src = url;
+        });
+      }
       
       // Step 2: Call backend to generate report section
       const response = await fetch(`${API}/generate-report-section`, {
@@ -3840,7 +3857,6 @@ function ReportPanel({ isOpen, onClose, reportItems, onUpdateItems }) {
   };
 
   const handlePrint = () => {
-    // COMPLETELY NEW APPROACH - Clone and restructure content for print
     const reportContent = document.getElementById('report-content');
     
     if (!reportContent) {
@@ -3857,255 +3873,95 @@ function ReportPanel({ isOpen, onClose, reportItems, onUpdateItems }) {
       return;
     }
 
-    // Create a completely new DOM structure for printing
+    // Remove any existing print container to avoid duplication
+    const existingContainer = document.getElementById('print-only-container');
+    if (existingContainer) {
+      document.body.removeChild(existingContainer);
+    }
+
+    // Create print container
     const printContainer = document.createElement('div');
     printContainer.id = 'print-only-container';
     printContainer.style.cssText = `
       position: fixed;
-      top: -9999px;
-      left: -9999px;
-      width: 210mm;
-      min-height: 297mm;
+      top: -10000px;
+      left: 0;
+      width: 100%;
       background: white;
-      padding: 15mm;
-      box-sizing: border-box;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      font-size: 12pt;
-      line-height: 1.5;
-      color: black;
-      z-index: 99999;
+      padding: 0;
     `;
 
-    // Get the actual values from the original inputs before cloning
+    // Get input values before cloning
     const originalInputs = reportContent.querySelectorAll('input[type="text"]');
     const inputValues = Array.from(originalInputs).map(input => ({
       value: input.value,
       placeholder: input.placeholder
     }));
-    
-    // Original input values captured
 
-    // Clone the report content
+    // Clone content
     const clonedContent = reportContent.cloneNode(true);
     clonedContent.id = 'cloned-report-content';
     
-    // Clean up the cloned content and add debugging
-    const buttons = clonedContent.querySelectorAll('button');
-    buttons.forEach(btn => btn.remove());
+    // Remove buttons
+    clonedContent.querySelectorAll('button').forEach(btn => btn.remove());
     
-    // Debug: Log the cloned content structure
-    // Cloned content for print
-    
-    // Style the cloned content for print
-    clonedContent.style.cssText = `
-      width: 100%;
-      max-width: 100%;
-      margin: 0;
-      padding: 0;
-    `;
+    // Style cloned content
+    clonedContent.style.cssText = 'width: 100%; padding: 15mm; box-sizing: border-box;';
 
-    // Also ensure the heading container gets proper styling
-    const headingContainer = clonedContent.querySelector('.space-y-3');
-    if (headingContainer) {
-      headingContainer.style.cssText = `
-        margin-bottom: 30px;
-        padding-bottom: 20px;
-        border-bottom: none;
-      `;
-      // Found and styled heading container
-    }
-
-    // Style all images in cloned content
-    const images = clonedContent.querySelectorAll('img');
-    images.forEach(img => {
-      img.style.cssText = `
-        width: 85%;
-        max-width: 85%;
-        height: auto;
-        display: block;
-        margin: 20px auto;
-        page-break-inside: avoid;
-      `;
+    // Style images - prevent page breaks after them
+    clonedContent.querySelectorAll('img').forEach(img => {
+      img.style.cssText = 'width: 90%; max-width: 90%; height: auto; display: block; margin: 10pt auto 8pt auto; page-break-inside: avoid; page-break-after: avoid;';
     });
 
-    // Style all text inputs (headings) with proper differentiation
-    const inputs = clonedContent.querySelectorAll('input[type="text"]');
-    // Found inputs for styling
-    
-    inputs.forEach((input, index) => {
-      const span = document.createElement('div');
+    // Style all report items to keep them together
+    clonedContent.querySelectorAll('.border, .border-l-4, .rounded-lg').forEach(item => {
+      item.style.cssText = item.style.cssText + ' page-break-before: avoid; page-break-inside: avoid; margin-top: 0;';
+    });
+
+    // Convert input fields to styled divs
+    clonedContent.querySelectorAll('input[type="text"]').forEach((input, index) => {
+      const div = document.createElement('div');
+      const data = inputValues[index] || {};
+      div.textContent = data.value || data.placeholder || '';
       
-      // Use the captured value from original input, fallback to placeholder if empty
-      const originalData = inputValues[index] || {};
-      const text = originalData.value || originalData.placeholder || '';
-      span.textContent = text;
-      
-      // Processing input for print
-      
-      // Check if this is likely the main heading (first input or contains "Heading")
-      if (index === 0 || originalData.placeholder === 'Heading') {
-        // Main heading (first input)
-        span.style.cssText = `
-          font-size: 36pt !important;
-          font-weight: bold !important;
-          text-align: center !important;
-          margin: 0 0 25px 0 !important;
-          color: red !important;
-          padding: 20px 0 !important;
-          border: 5px solid red !important;
-          text-transform: uppercase !important;
-          letter-spacing: 2px !important;
-          display: block !important;
-          width: 100% !important;
-          line-height: 1.2 !important;
-          background: #ffeeee !important;
-        `;
-        // Applied main heading style
-      } else if (index === 1 || originalData.placeholder === 'Subheading') {
-        // Subheading (second input)
-        span.style.cssText = `
-          font-size: 18pt !important;
-          font-weight: 600 !important;
-          text-align: center !important;
-          margin: 10px 0 30px 0 !important;
-          color: #555 !important;
-          font-style: italic !important;
-          padding: 5px 0 !important;
-          display: block !important;
-          width: 100% !important;
-          line-height: 1.3 !important;
-        `;
-        // Applied subheading style
+      if (index === 0 || data.placeholder === 'Heading') {
+        div.style.cssText = 'font-size: 24pt; font-weight: bold; text-align: center; margin: 0 0 15pt 0; color: #000; page-break-after: avoid;';
+      } else if (index === 1 || data.placeholder === 'Subheading') {
+        div.style.cssText = 'font-size: 16pt; font-weight: 600; text-align: center; margin: 0 0 20pt 0; color: #555; page-break-after: avoid;';
       } else {
-        // Any other inputs (fallback)
-        span.style.cssText = `
-          font-size: 14pt !important;
-          font-weight: bold !important;
-          text-align: center !important;
-          margin: 15px 0 !important;
-          color: black !important;
-          display: block !important;
-          width: 100% !important;
-        `;
-        // Applied fallback style
+        div.style.cssText = 'font-size: 14pt; font-weight: bold; margin: 10pt 0; color: #000;';
       }
       
-      // Replace the input with the styled span
-      if (input.parentNode) {
-        // Replacing input with span
-        input.parentNode.replaceChild(span, input);
-      } else {
-        console.error('No parent node found for input:', text);
-      }
+      input.parentNode?.replaceChild(div, input);
     });
 
-    // Debug: Log the modified content structure
-    // Modified content after input replacement
-
-    // Style all formatted content
-    const formattedDivs = clonedContent.querySelectorAll('.formatted-content, div');
-    formattedDivs.forEach(div => {
-      // Skip if this div contains headings (already processed)
-      if (div.querySelector('h1, h2, h3, h4, h5, h6')) {
-        return;
-      }
-      
-      div.style.cssText = `
-        width: 100%;
-        margin: 15px 0;
-        padding: 0;
-        text-align: justify;
-        line-height: 1.6;
-        color: black;
-      `;
+    // Style headings in rich text - prevent page breaks after them
+    clonedContent.querySelectorAll('h2').forEach(h => {
+      h.style.cssText = 'font-size: 16pt; font-weight: bold; margin: 12pt 0 8pt 0; color: #000; page-break-after: avoid;';
     });
 
-    // Style any H1, H2, H3 tags within rich text content
-    const headings = clonedContent.querySelectorAll('h1, h2, h3, h4, h5, h6');
-    headings.forEach(heading => {
-      const tagName = heading.tagName.toLowerCase();
-      if (tagName === 'h1') {
-        heading.style.cssText = `
-          font-size: 20pt;
-          font-weight: bold;
-          text-align: left;
-          margin: 25px 0 15px 0;
-          color: black;
-          border-bottom: 1px solid #ccc;
-          padding-bottom: 5px;
-        `;
-      } else if (tagName === 'h2') {
-        heading.style.cssText = `
-          font-size: 16pt;
-          font-weight: bold;
-          text-align: left;
-          margin: 20px 0 10px 0;
-          color: black;
-        `;
-      } else if (tagName === 'h3') {
-        heading.style.cssText = `
-          font-size: 14pt;
-          font-weight: bold;
-          text-align: left;
-          margin: 15px 0 8px 0;
-          color: black;
-        `;
-      }
-    });
-
-    // Add the print container to body
+    // Append to DOM
     printContainer.appendChild(clonedContent);
     document.body.appendChild(printContainer);
 
-    // Wait for images to load
-    const imagePromises = Array.from(images).map(img => {
-      return new Promise((resolve) => {
-        if (img.complete && img.naturalWidth > 0) {
-          resolve();
-        } else {
-          img.onload = () => resolve();
-          img.onerror = () => resolve();
-          setTimeout(() => resolve(), 2000);
-        }
-      });
-    });
+    // Wait for images to load then print
+    const images = Array.from(clonedContent.querySelectorAll('img'));
+    const imagePromises = images.map(img => new Promise(resolve => {
+      if (img.complete) resolve();
+      else {
+        img.onload = () => resolve();
+        img.onerror = () => resolve();
+        setTimeout(resolve, 1500);
+      }
+    }));
 
     Promise.all(imagePromises).then(() => {
-      // Create print-specific styles
-      const printStyles = document.createElement('style');
-      printStyles.innerHTML = `
-        @media print {
-          body * {
-            visibility: hidden !important;
-          }
-          #print-only-container,
-          #print-only-container * {
-            visibility: visible !important;
-          }
-          #print-only-container {
-            position: absolute !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 100% !important;
-            height: auto !important;
-            padding: 10mm !important;
-          }
-          @page {
-            size: A4;
-            margin: 0;
-          }
-        }
-      `;
-      document.head.appendChild(printStyles);
-
-      // Print
       setTimeout(() => {
         window.print();
-        
-        // Cleanup after print
+        // Cleanup after print dialog closes
         setTimeout(() => {
-          document.body.removeChild(printContainer);
-          document.head.removeChild(printStyles);
+          const container = document.getElementById('print-only-container');
+          if (container) document.body.removeChild(container);
         }, 1000);
       }, 100);
     });
@@ -6836,26 +6692,15 @@ function ReactFlowWrapper() {
               {/* Analysis Section */}
               {datasetId && (
                 <div className="border-t border-gray-200 pt-4">
-                  <div className="flex items-center justify-between mb-3">
+                  <div className="mb-3">
                     <h3 className="font-medium text-gray-900">Dataset Analysis</h3>
-                    {!datasetAnalysis && !analysisLoading && (
-                      <Button 
-                        size="sm" 
-                        onClick={() => analyzeDataset()}
-                        disabled={!apiKey}
-                        className="flex items-center gap-1"
-                      >
-                        <Sparkles size={14} />
-                        {apiKey ? 'Analyze with AI' : 'API Key Required'}
-                      </Button>
-                    )}
                   </div>
 
                   {/* Prominent Analysis CTA when no analysis exists */}
                   {!datasetAnalysis && !analysisLoading && !analysisError && (
                     <div className="text-center py-6 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200">
                       <Sparkles size={24} className="mx-auto mb-2 text-blue-500" />
-                      <h4 className="font-medium text-gray-900 mb-1">Get AI-Powered Insights</h4>
+                      <h4 className="font-medium text-gray-900 mb-1">Let AI Analyze Your Dataset</h4>
                       <p className="text-sm text-gray-600 mb-4">
                         Analyze your dataset to get meaningful column descriptions and context
                       </p>
@@ -7023,55 +6868,16 @@ function ReactFlowWrapper() {
       {variablesPanelOpen && (
         <SlidingPanel 
           isOpen={variablesPanelOpen} 
-          title="Select Variables"
+          title="Create Charts"
           onClose={() => setVariablesPanelOpen(false)}
         >
           <div className="p-4">
             <div className="space-y-4">
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-sm font-medium">Dimensions</h3>
-                </div>
-                <RadioGroup
-                  options={availableDimensions}
-                  value={selectedDimension}
-                  onChange={setSelectedDimension}
-                  name="dimensions"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-sm font-medium">Measures</h3>
-                </div>
-                <RadioGroup
-                  options={availableMeasures}
-                  value={selectedMeasure}
-                  onChange={setSelectedMeasure}
-                  name="measures"
-                />
-              </div>
-
-              {/* Manual Chart Creation Button */}
-              <div className="space-y-2">
-                <Button 
-                  className="w-full gap-2 bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800 disabled:bg-gray-300 disabled:text-gray-500" 
-                  onClick={createVisualization}
-                  disabled={!selectedDimension && !selectedMeasure}
-                >
-                  <ChartColumn size={16} />
-                  Visualise
-                </Button>
-              </div>
-
-              {/* Divider */}
-              <div className="border-t border-gray-200 my-4"></div>
-
               {/* Goal-Oriented Chart Suggestion */}
               <div className="space-y-4">
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-sm font-medium">Describe your goal</h3>
+                    <h3 className="text-sm font-medium">Use AI to visualise data</h3>
                     {suggestions.length > 0 && (
                       <Button 
                         onClick={clearSuggestions}
@@ -7132,6 +6938,50 @@ function ReactFlowWrapper() {
                     </div>
                   )}
                 </div>
+              </div>
+
+              {/* Divider */}
+              <div className="border-t border-gray-200 my-4"></div>
+
+              {/* Select Variables Section */}
+              <div>
+                <h3 className="text-sm font-medium mb-3">Select variables</h3>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-medium">Dimensions</h3>
+                </div>
+                <RadioGroup
+                  options={availableDimensions}
+                  value={selectedDimension}
+                  onChange={setSelectedDimension}
+                  name="dimensions"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-medium">Measures</h3>
+                </div>
+                <RadioGroup
+                  options={availableMeasures}
+                  value={selectedMeasure}
+                  onChange={setSelectedMeasure}
+                  name="measures"
+                />
+              </div>
+
+              {/* Manual Chart Creation Button */}
+              <div className="space-y-2">
+                <Button 
+                  className="w-full gap-2 bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800 disabled:bg-gray-300 disabled:text-gray-500" 
+                  onClick={createVisualization}
+                  disabled={!selectedDimension && !selectedMeasure}
+                >
+                  <ChartColumn size={16} />
+                  Visualise
+                </Button>
               </div>
             </div>
           </div>

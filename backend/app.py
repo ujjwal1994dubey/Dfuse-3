@@ -409,59 +409,116 @@ Generate ONLY the subheading text (no ## markdown, no quotes):"""
         print(f"⚠️ Failed to generate subheading: {e}")
         return f"## {chart_title} Analysis"
 
-def _combine_ai_explore_and_insights(ai_explore_result: str, chart_insights: str, weight_ai_explore: float = 0.7) -> str:
+def _synthesize_report_content_with_llm(ai_explore_result: str, chart_insights: str, api_key: str, model: str = "gemini-2.0-flash") -> str:
     """
-    Intelligently combine AI explore results with chart insights
+    Use LLM to synthesize AI explore results and chart insights into clean, professional report content.
+    Generic approach that handles any content type without hardcoded parsing.
+    
+    Args:
+        ai_explore_result: Raw AI exploration result (user's specific query answer)
+        chart_insights: Raw chart insights (general patterns/findings)
+        api_key: Gemini API key
+        model: Model to use for synthesis
+    
+    Returns:
+        Synthesized, clean report content in markdown format
+    """
+    from gemini_llm import GeminiDataFormulator
+    
+    # Build content synthesis prompt
+    prompt = f"""You are a data analyst creating a professional report section. You have two pieces of information that need to be synthesized into clean, cohesive report content.
+
+QUERY-SPECIFIC FINDINGS:
+{ai_explore_result.strip() if ai_explore_result else "Not available"}
+
+GENERAL CHART INSIGHTS:
+{chart_insights.strip() if chart_insights else "Not available"}
+
+Your task: Synthesize the above into a clear, professional report section with the following requirements:
+
+1. Remove any redundant preambles like "Based on your dataset" or "here are the results"
+2. Present findings directly and concisely
+3. Clean up any awkward formatting (arrays, technical output, etc.)
+4. Structure with markdown headers (## for sections)
+5. Use bullet points (•) for lists
+6. Prioritize the query-specific findings, then add supporting general insights
+7. Keep it concise - max 5 bullet points total
+8. Use natural, business-appropriate language
+
+Format your response with:
+## Query Results
+[clean findings from the query]
+
+## Additional Insights  
+• [key pattern 1]
+• [key pattern 2]
+• [key pattern 3]
+
+Provide ONLY the formatted content, no meta-commentary."""
+
+    formulator = GeminiDataFormulator(api_key=api_key, model=model)
+    synthesized_content, _ = formulator.run_gemini_with_usage(prompt)
+    
+    return synthesized_content.strip()
+
+
+def _combine_ai_explore_and_insights(ai_explore_result: str, chart_insights: str, api_key: str, model: str, weight_ai_explore: float = 0.7) -> str:
+    """
+    Combine AI explore results with chart insights using LLM synthesis.
+    Simple, generic approach that works for any content type.
     
     Args:
         ai_explore_result: User's specific AI exploration result
         chart_insights: General chart insights (bullet points)
-        weight_ai_explore: Priority weight for AI explore (0.7 = 70% weight)
+        api_key: Gemini API key for synthesis
+        model: Model to use
+        weight_ai_explore: Priority weight (kept for backward compatibility, now handled in prompt)
     
     Returns:
-        Combined content with prioritized insights
+        Synthesized professional report content
     """
-    combined_content = []
-    
-    # Start with AI explore result (higher priority)
-    if ai_explore_result and ai_explore_result.strip():
-        combined_content.append(f"**Based on your specific query:** {ai_explore_result.strip()}")
-        combined_content.append("")
-    
-    # Add chart insights as supporting context
-    if chart_insights and chart_insights.strip():
-        # Extract bullet points from chart insights
-        insight_lines = [line.strip() for line in chart_insights.split('\n') if line.strip() and line.strip().startswith('•')]
-        
-        if insight_lines:
-            combined_content.append("**Additional patterns observed:**")
-            # Take top 2-3 insights to avoid overwhelming content
-            for insight in insight_lines[:3]:
-                combined_content.append(insight)
-    
-    return '\n'.join(combined_content)
+    # Use LLM to synthesize both pieces of content
+    try:
+        synthesized = _synthesize_report_content_with_llm(
+            ai_explore_result=ai_explore_result,
+            chart_insights=chart_insights,
+            api_key=api_key,
+            model=model
+        )
+        return synthesized
+    except Exception as e:
+        print(f"⚠️ LLM synthesis failed: {e}, falling back to simple concatenation")
+        # Fallback: simple concatenation if LLM fails
+        parts = []
+        if ai_explore_result:
+            parts.append(f"## Query Results\n\n{ai_explore_result.strip()}")
+        if chart_insights:
+            parts.append(f"## Chart Insights\n\n{chart_insights.strip()}")
+        return "\n\n".join(parts) if parts else "No insights available."
 
 def _format_insights_for_report(insights: str) -> str:
     """
-    Format existing chart insights for report inclusion
+    Format existing chart insights for report inclusion with professional structure.
     
     Args:
         insights: Raw chart insights (bullet points)
     
     Returns:
-        Formatted content suitable for report
+        Well-formatted markdown content suitable for report
     """
     if not insights or not insights.strip():
-        return "No insights available."
+        return "No insights available for this chart."
     
-    # Clean up and format bullet points
-    insight_lines = [line.strip() for line in insights.split('\n') if line.strip() and line.strip().startswith('•')]
+    # Extract bullet points from insights
+    insight_lines = [line.strip() for line in insights.split('\n') 
+                    if line.strip() and line.strip().startswith('•')]
     
     if not insight_lines:
-        return insights.strip()
+        # If no bullet points found, return as paragraph
+        return f"## Key Findings\n\n{insights.strip()}"
     
-    # Format with consistent structure
-    formatted_content = ["**Key findings from the data:**", ""]
+    # Format with clear structure
+    formatted_content = ["## Key Findings", ""]
     for insight in insight_lines:
         formatted_content.append(insight)
     
@@ -2058,6 +2115,12 @@ async def generate_chart_insights(request: ChartInsightRequest):
     if dataset is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
+    # Clear any stale cached insights for this chart to ensure fresh generation
+    # This is especially important for merged charts
+    if request.chart_id in CHART_INSIGHTS_CACHE:
+        print(f"🗑️  Clearing stale cached insights for chart {request.chart_id}")
+        del CHART_INSIGHTS_CACHE[request.chart_id]
+    
     # Retrieve dataset metadata for enhanced context
     dataset_id = chart["dataset_id"]
     dataset_metadata = None
@@ -2075,6 +2138,16 @@ async def generate_chart_insights(request: ChartInsightRequest):
     dimensions = chart.get("dimensions", [])
     measures = chart.get("measures", [])
     table_data = chart.get("table", [])
+    
+    # Debug logging for merged charts
+    print(f"📊 Chart Insights Debug:")
+    print(f"   - Chart ID: {request.chart_id}")
+    print(f"   - Title: {chart.get('title', 'Untitled')}")
+    print(f"   - Dimensions: {dimensions}")
+    print(f"   - Measures: {measures}")
+    print(f"   - Total rows: {len(table_data)}")
+    if table_data:
+        print(f"   - Sample row: {table_data[0]}")
     
     # Calculate basic statistics
     stats = {}
@@ -2114,6 +2187,12 @@ async def generate_chart_insights(request: ChartInsightRequest):
     context_type = 'with enhanced business context' if enhanced_context.strip() else 'with basic statistical analysis'
     print(f"🤖 Generating chart insights {context_type}...")
     
+    # For insights, send all data points (up to 50 rows for token efficiency)
+    # This ensures merged charts have complete data for accurate insights
+    data_sample_size = min(50, len(table_data))
+    data_sample = table_data[:data_sample_size]
+    data_note = f"All {len(table_data)} data points:" if len(table_data) <= data_sample_size else f"Top {data_sample_size} of {len(table_data)} data points:"
+    
     prompt = f"""You are a data analyst. Generate key insights for this chart using bullet points that clearly describe what the data shows.
 {enhanced_context}
 CHART ANALYSIS:
@@ -2122,8 +2201,10 @@ CHART ANALYSIS:
 - Measures (Metrics): {measures}
 - Statistical Summary: {json.dumps(stats, indent=2)}
 
-Top 5 data points:
-{json.dumps(table_data[:5], indent=2)}
+{data_note}
+{json.dumps(data_sample, indent=2)}
+
+IMPORTANT: Only reference data points that exist in the data provided above. Do not invent or hallucinate product names or values.
 
 Generate 3-5 key insights in this EXACT format:
 • [Data pattern or trend with specific numbers]
@@ -2207,24 +2288,38 @@ async def generate_report_section(request: ReportSectionRequest):
     # Step 2: Smart Content Priority Logic
     if ai_explore_result and ai_explore_result.strip():
         if cached_insights:
-            # Scenario 1: AI Explore + Cached Insights (Best case - combine both)
-            print("🎆 Combining AI explore result with cached chart insights")
+            # Scenario 1: AI Explore + Cached Insights (Best case - combine both with LLM synthesis)
+            print("🎆 Combining AI explore result with cached chart insights using LLM synthesis")
             content_body = _combine_ai_explore_and_insights(
-                ai_explore_result, 
-                cached_insights.get('insight', ''),
+                ai_explore_result=ai_explore_result, 
+                chart_insights=cached_insights.get('insight', ''),
+                api_key=request.api_key,
+                model=request.model,
                 weight_ai_explore=0.7
             )
-            content_source = "AI Explore + Chart Insights"
-            # Reuse cached token usage
+            content_source = "AI Explore + Chart Insights (LLM Synthesized)"
+            # Track token usage from both original insights and synthesis
             if cached_insights.get('token_usage'):
                 total_token_usage = cached_insights['token_usage']
+            # Add estimated tokens for synthesis (~200 tokens)
+            total_token_usage["inputTokens"] += 150
+            total_token_usage["outputTokens"] += 50
+            total_token_usage["totalTokens"] += 200
             
         else:
-            # Scenario 2: AI Explore Only
-            print("🎆 Using AI explore result as primary content")
-            content_body = f"**Based on your specific query:** {ai_explore_result.strip()}"
-            content_source = "AI Explore Query"
-            # No additional tokens used
+            # Scenario 2: AI Explore Only - use LLM to clean up the content
+            print("🎆 Using AI explore result with LLM cleanup")
+            content_body = _combine_ai_explore_and_insights(
+                ai_explore_result=ai_explore_result,
+                chart_insights="",
+                api_key=request.api_key,
+                model=request.model
+            )
+            content_source = "AI Explore Query (LLM Cleaned)"
+            # Add estimated tokens for cleanup (~150 tokens)
+            total_token_usage["inputTokens"] += 100
+            total_token_usage["outputTokens"] += 50
+            total_token_usage["totalTokens"] += 150
             
     elif cached_insights:
         # Scenario 3: Cached Insights Only (Token savings!)
