@@ -47,7 +47,7 @@ class GeminiDataFormulator:
         Initialize Gemini Data Formulator
         
         Args:
-            api_key: Google Gemini API key (uses default if not provided)
+            api_key: Google Gemini API key (required)
             model: Gemini model name (default: "gemini-2.0-flash-exp")
         
         Sets up:
@@ -55,7 +55,10 @@ class GeminiDataFormulator:
             - Model instance
             - LangChain pandas agent (if available)
         """
-        self.api_key = api_key or "AIzaSyDTs3BYcLe_1XF8q3VW-blr_6wcG_mepgE"
+        if not api_key:
+            raise ValueError("API key is required. Please provide a valid Gemini API key.")
+        
+        self.api_key = api_key
         self.model_name = model
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel(self.model_name)
@@ -100,7 +103,6 @@ class GeminiDataFormulator:
         """
         Basic Gemini API Call
         Sends a prompt to Gemini LLM and returns the text response.
-        Includes fallback simulation if API fails.
         
         Args:
             prompt: Natural language prompt/question
@@ -109,15 +111,28 @@ class GeminiDataFormulator:
         Returns:
             str: Generated response text
         
+        Raises:
+            Exception: For authentication errors or API connection issues
+        
         Note: For token tracking, use run_gemini_with_usage() instead
         """
         try:
             response = self.model.generate_content(prompt)
             return response.text
         except Exception as e:
-            print(f"Gemini API error: {e}")
-            # Fallback to simulation if API fails
-            return self._simulate_gemini_response(prompt)
+            error_msg = str(e).lower()
+            # Check for authentication/API key errors
+            if any(keyword in error_msg for keyword in ['api key', 'api_key', 'authentication', 'unauthorized', '401', '403', 'permission', 'invalid key']):
+                print(f"❌ Gemini API authentication error: {e}")
+                raise Exception(f"Invalid API key or authentication failed: {str(e)}")
+            # Check for network/connection errors
+            elif any(keyword in error_msg for keyword in ['connection', 'network', 'timeout', 'unreachable']):
+                print(f"❌ Gemini API connection error: {e}")
+                raise Exception(f"Unable to connect to Gemini API: {str(e)}")
+            else:
+                # For other errors, log and re-raise
+                print(f"❌ Gemini API error: {e}")
+                raise Exception(f"Gemini API error: {str(e)}")
     
     def run_gemini_with_usage(self, prompt: str, model: str = "gemini-2.0-flash-exp") -> tuple[str, dict]:
         """
@@ -137,6 +152,9 @@ class GeminiDataFormulator:
         Token Estimation:
             - Tries to extract from response.usage_metadata
             - Falls back to word-count estimation if unavailable
+        
+        Raises:
+            Exception: For authentication errors or API connection issues
         """
         try:
             response = self.model.generate_content(prompt)
@@ -161,9 +179,19 @@ class GeminiDataFormulator:
             
             return response.text, token_usage
         except Exception as e:
-            print(f"Gemini API error: {e}")
-            # Fallback to simulation if API fails
-            return self._simulate_gemini_response(prompt), {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+            error_msg = str(e).lower()
+            # Check for authentication/API key errors
+            if any(keyword in error_msg for keyword in ['api key', 'api_key', 'authentication', 'unauthorized', '401', '403', 'permission', 'invalid key']):
+                print(f"❌ Gemini API authentication error: {e}")
+                raise Exception(f"Invalid API key or authentication failed: {str(e)}")
+            # Check for network/connection errors
+            elif any(keyword in error_msg for keyword in ['connection', 'network', 'timeout', 'unreachable']):
+                print(f"❌ Gemini API connection error: {e}")
+                raise Exception(f"Unable to connect to Gemini API: {str(e)}")
+            else:
+                # For other errors, log and re-raise to avoid silent failures
+                print(f"❌ Gemini API error: {e}")
+                raise Exception(f"Gemini API error: {str(e)}")
     
     def _simulate_gemini_response(self, prompt: str) -> str:
         """

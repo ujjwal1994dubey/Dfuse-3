@@ -67,6 +67,13 @@ class FuseRequest(BaseModel):
     chart1_id: str
     chart2_id: str
 
+class FuseWithAIRequest(BaseModel):
+    chart1_id: str
+    chart2_id: str
+    user_goal: str
+    api_key: Optional[str] = None
+    model: str = "gemini-2.0-flash"
+
 class ChartTableRequest(BaseModel):
     chart_id: str
 
@@ -1371,6 +1378,220 @@ async def fuse(req: FuseRequest):
     }
     CHARTS[chart_id] = fused_payload
     return fused_payload
+
+
+@app.post("/fuse-with-ai")
+async def fuse_with_ai(req: FuseWithAIRequest):
+    """
+    AI-Assisted Chart Fusion Endpoint
+    Uses AI to intelligently select the best 3 variables when merging two 1D+1M charts
+    with no common variables. AI analyzes user goal and dataset context to pick optimal combination.
+    
+    Process:
+        1. Validates both charts are 1D+1M
+        2. Extracts all 4 variables (2 dimensions + 2 measures)
+        3. Gets dataset metadata for enhanced context
+        4. Calls Gemini to select best 3 variables based on user goal
+        5. Returns selected dimensions and measures for chart creation
+    
+    Args:
+        chart1_id: First chart ID
+        chart2_id: Second chart ID
+        user_goal: User's analysis goal/context
+        api_key: Gemini API key
+        model: Gemini model to use
+    
+    Returns:
+        Dictionary with:
+            - dimensions: Selected dimension columns (1 or 2)
+            - measures: Selected measure columns (1 or 2)
+            - reasoning: AI explanation for selection
+            - title: Suggested chart title
+            - token_usage: Token consumption metrics
+    """
+    if req.chart1_id not in CHARTS or req.chart2_id not in CHARTS:
+        raise HTTPException(status_code=404, detail="One or both charts not found")
+    
+    c1 = CHARTS[req.chart1_id]
+    c2 = CHARTS[req.chart2_id]
+    
+    # Validate same dataset
+    if c1["dataset_id"] != c2["dataset_id"]:
+        raise HTTPException(status_code=400, detail="Charts must be from the same dataset")
+    
+    dataset_id = c1["dataset_id"]
+    df = DATASETS.get(dataset_id)
+    
+    if df is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # Validate both are 1D+1M
+    def is_1d_1m(chart):
+        dims = [d for d in chart.get("dimensions", []) if d != "count"]
+        meas = chart.get("measures", [])
+        return len(dims) == 1 and len(meas) == 1
+    
+    if not (is_1d_1m(c1) and is_1d_1m(c2)):
+        raise HTTPException(
+            status_code=400, 
+            detail="AI-assisted merge requires both charts to be 1 dimension + 1 measure"
+        )
+    
+    # Extract all 4 variables
+    dims1 = [d for d in c1.get("dimensions", []) if d != "count"]
+    dims2 = [d for d in c2.get("dimensions", []) if d != "count"]
+    meas1 = c1.get("measures", [])
+    meas2 = c2.get("measures", [])
+    
+    all_dimensions = list(set(dims1 + dims2))
+    all_measures = list(set(meas1 + meas2))
+    
+    print(f"🤖 AI-assisted merge requested:")
+    print(f"   Chart 1: {dims1} + {meas1}")
+    print(f"   Chart 2: {dims2} + {meas2}")
+    print(f"   All variables: dimensions={all_dimensions}, measures={all_measures}")
+    print(f"   User goal: {req.user_goal}")
+    
+    # Get dataset metadata for context
+    dataset_metadata = DATASET_METADATA.get(dataset_id, {})
+    
+    # Build context string
+    context_str = ""
+    if dataset_metadata.get('success'):
+        dataset_summary = dataset_metadata.get('dataset_summary', '')
+        columns_info = dataset_metadata.get('columns', [])
+        
+        if dataset_summary:
+            context_str += f"Dataset Purpose: {dataset_summary}\n\n"
+        
+        if columns_info:
+            context_str += "Column Descriptions:\n"
+            col_desc_map = {col.get('name'): col.get('description', '') for col in columns_info}
+            
+            for var in all_dimensions + all_measures:
+                desc = col_desc_map.get(var, 'No description available')
+                col_type = dict(df.dtypes.astype(str)).get(var, 'unknown')
+                context_str += f"- {var} ({col_type}): {desc}\n"
+    else:
+        # Fallback to basic column info
+        context_str = "Column Types:\n"
+        for var in all_dimensions + all_measures:
+            col_type = dict(df.dtypes.astype(str)).get(var, 'unknown')
+            context_str += f"- {var}: {col_type}\n"
+    
+    # Create AI prompt
+    prompt = f"""You are a data visualization expert. Two charts are being merged, and you need to select the best 3 variables.
+
+{context_str}
+
+USER'S GOAL: {req.user_goal}
+
+AVAILABLE VARIABLES:
+- Dimensions (categorical): {all_dimensions}
+- Measures (numeric): {all_measures}
+
+TASK: Select exactly 3 variables that best address the user's goal. You must choose either:
+- Option A: 1 dimension + 2 measures (for grouped bar, dual-axis, scatter plots)
+- Option B: 2 dimensions + 1 measure (for stacked bar, bubble charts, heatmaps)
+
+Consider:
+1. Which combination best answers the user's question?
+2. Which variables have the most relevant relationship?
+3. What visualization would provide the most insight?
+
+Respond ONLY with valid JSON (no markdown, no code blocks):
+{{
+  "selected_dimensions": ["dimension_name"],
+  "selected_measures": ["measure1", "measure2"],
+  "reasoning": "Brief explanation of why this combination is optimal",
+  "title": "Descriptive chart title"
+}}
+
+OR
+
+{{
+  "selected_dimensions": ["dimension1", "dimension2"],
+  "selected_measures": ["measure_name"],
+  "reasoning": "Brief explanation of why this combination is optimal",
+  "title": "Descriptive chart title"
+}}"""
+
+    try:
+        # Call Gemini for variable selection
+        if not req.api_key:
+            raise HTTPException(status_code=400, detail="API key required for AI-assisted merge")
+        
+        ai_formulator = GeminiDataFormulator(api_key=req.api_key, model=req.model)
+        response_text, token_usage = ai_formulator.run_gemini_with_usage(prompt)
+        
+        print(f"🤖 Raw AI Response: {response_text[:200]}...")
+        
+        # Clean and parse response
+        cleaned_response = response_text.strip()
+        
+        # Remove markdown code blocks if present
+        if "```json" in cleaned_response:
+            start_idx = cleaned_response.find("```json") + 7
+            end_idx = cleaned_response.find("```", start_idx)
+            if end_idx != -1:
+                cleaned_response = cleaned_response[start_idx:end_idx].strip()
+        elif "```" in cleaned_response:
+            start_idx = cleaned_response.find("```") + 3
+            end_idx = cleaned_response.find("```", start_idx)
+            if end_idx != -1:
+                cleaned_response = cleaned_response[start_idx:end_idx].strip()
+        
+        # Parse JSON
+        ai_result = json.loads(cleaned_response)
+        
+        selected_dimensions = ai_result.get("selected_dimensions", [])
+        selected_measures = ai_result.get("selected_measures", [])
+        reasoning = ai_result.get("reasoning", "AI selected these variables")
+        title = ai_result.get("title", f"{', '.join(selected_dimensions)} × {', '.join(selected_measures)}")
+        
+        # Validate selection
+        total_vars = len(selected_dimensions) + len(selected_measures)
+        if total_vars != 3:
+            raise ValueError(f"AI must select exactly 3 variables, got {total_vars}")
+        
+        if not ((len(selected_dimensions) == 1 and len(selected_measures) == 2) or 
+                (len(selected_dimensions) == 2 and len(selected_measures) == 1)):
+            raise ValueError("AI must select either (1D+2M) or (2D+1M)")
+        
+        # Validate variables exist in available set
+        for dim in selected_dimensions:
+            if dim not in all_dimensions:
+                raise ValueError(f"Selected dimension '{dim}' not in available dimensions")
+        
+        for meas in selected_measures:
+            if meas not in all_measures:
+                raise ValueError(f"Selected measure '{meas}' not in available measures")
+        
+        print(f"✅ AI Selection validated:")
+        print(f"   Dimensions: {selected_dimensions}")
+        print(f"   Measures: {selected_measures}")
+        print(f"   Reasoning: {reasoning}")
+        
+        return {
+            "success": True,
+            "dimensions": selected_dimensions,
+            "measures": selected_measures,
+            "reasoning": reasoning,
+            "title": title,
+            "token_usage": token_usage,
+            "dataset_id": dataset_id
+        }
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ Failed to parse AI response: {e}")
+        print(f"   Response was: {cleaned_response}")
+        raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {str(e)}")
+    except ValueError as e:
+        print(f"❌ Invalid AI selection: {e}")
+        raise HTTPException(status_code=500, detail=f"Invalid AI selection: {str(e)}")
+    except Exception as e:
+        print(f"❌ AI-assisted merge failed: {e}")
+        raise HTTPException(status_code=500, detail=f"AI-assisted merge failed: {str(e)}")
 
 
 @app.post("/histogram")

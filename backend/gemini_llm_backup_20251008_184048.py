@@ -44,7 +44,10 @@ class GeminiDataFormulator:
     }
     
     def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.0-flash-exp"):
-        self.api_key = api_key or "AIzaSyCme3aE7H9TmRgKqHCqhqV8f-9FhIqDfOM"
+        if not api_key:
+            raise ValueError("API key is required. Please provide a valid Gemini API key.")
+        
+        self.api_key = api_key
         self.model_name = model
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel(self.model_name)

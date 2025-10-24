@@ -4171,6 +4171,11 @@ function ReactFlowWrapper() {
   const [edges, setEdges] = useState([]);
   const [selectedCharts, setSelectedCharts] = useState([]);
   
+  // AI-assisted merge state
+  const [mergePanelOpen, setMergePanelOpen] = useState(false);
+  const [mergeContextText, setMergeContextText] = useState('');
+  const [pendingMergeCharts, setPendingMergeCharts] = useState(null);
+  
   // Toolbar and tools state
   const [activeTool, setActiveTool] = useState('select');
   const [arrowStart, setArrowStart] = useState(null);
@@ -4604,6 +4609,68 @@ function ReactFlowWrapper() {
     }
 
     const [c1, c2] = selectedCharts;
+    
+    // Get node data for both charts
+    const node1 = nodes.find(n => n.id === c1);
+    const node2 = nodes.find(n => n.id === c2);
+    
+    if (!node1 || !node2) {
+      alert('Could not find chart data for selected charts');
+      return;
+    }
+    
+    const data1 = node1.data;
+    const data2 = node2.data;
+    
+    // Check if both are 1D+1M charts
+    const is1D1M = (dims, measures) => {
+      const dimCount = (dims || []).filter(d => d !== 'count').length;
+      const measCount = (measures || []).length;
+      return dimCount === 1 && measCount === 1;
+    };
+    
+    const chart1Is1D1M = is1D1M(data1.dimensions, data1.measures);
+    const chart2Is1D1M = is1D1M(data2.dimensions, data2.measures);
+    
+    // Check for common variables
+    const dims1 = new Set((data1.dimensions || []).filter(d => d !== 'count'));
+    const dims2 = new Set((data2.dimensions || []).filter(d => d !== 'count'));
+    const meas1 = new Set(data1.measures || []);
+    const meas2 = new Set(data2.measures || []);
+    
+    const hasCommonDim = [...dims1].some(d => dims2.has(d));
+    const hasCommonMeas = [...meas1].some(m => meas2.has(m));
+    const hasCommonVariable = hasCommonDim || hasCommonMeas;
+    
+    // Determine if AI-assisted merge is needed
+    const needsAIAssist = chart1Is1D1M && chart2Is1D1M && !hasCommonVariable;
+    
+    if (needsAIAssist) {
+      console.log('🤖 AI-assisted merge needed: two 1D+1M charts with no common variables');
+      
+      // Check if both charts have user_goal (AI-generated)
+      const userGoal1 = data1.user_goal || '';
+      const userGoal2 = data2.user_goal || '';
+      
+      if (userGoal1 || userGoal2) {
+        // Use stored user goals directly
+        const combinedGoal = [userGoal1, userGoal2].filter(Boolean).join(' and ');
+        console.log('✅ Using stored user goals:', combinedGoal);
+        await performAIAssistedMerge(c1, c2, combinedGoal);
+      } else {
+        // No stored goals - prompt user for context
+        console.log('⚠️ No stored user goals - requesting context from user');
+        setPendingMergeCharts({ c1, c2 });
+        setMergeContextText('');
+        // Close other panels and open merge panel
+        setUploadPanelOpen(false);
+        setVariablesPanelOpen(false);
+        setMergePanelOpen(true);
+      }
+      return;
+    }
+    
+    // Standard merge flow (has common variables or not 1D+1M)
     try {
       const res = await fetch(`${API}/fuse`, { 
         method: 'POST', 
@@ -5097,6 +5164,149 @@ function ReactFlowWrapper() {
     console.log('AI exploration (text-based):', aiResult);
   }, []);
 
+  // AI-assisted merge function (defined after all dependencies to avoid initialization errors)
+  const performAIAssistedMerge = useCallback(async (c1, c2, userGoal) => {
+    try {
+      console.log('🤖 Calling AI to select best 3 variables...');
+      
+      // Get node data for dataset ID
+      const node1 = nodes.find(n => n.id === c1);
+      const nodeDatasetId = node1?.data?.datasetId;
+      
+      if (!nodeDatasetId) {
+        throw new Error('Dataset ID not found for charts');
+      }
+      
+      // Call AI variable selection endpoint
+      const aiRes = await fetch(`${API}/fuse-with-ai`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chart1_id: c1,
+          chart2_id: c2,
+          user_goal: userGoal,
+          api_key: apiKey,
+          model: selectedModel
+        })
+      });
+      
+      if (!aiRes.ok) {
+        const errorText = await aiRes.text();
+        throw new Error(errorText);
+      }
+      
+      const aiResult = await aiRes.json();
+      console.log('✅ AI selected variables:', aiResult);
+      
+      // Update token usage if provided
+      if (aiResult.token_usage) {
+        updateTokenUsage(aiResult.token_usage);
+      }
+      
+      // Create chart with AI-selected variables using /charts endpoint
+      const chartRes = await fetch(`${API}/charts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dataset_id: nodeDatasetId,
+          dimensions: aiResult.dimensions || [],
+          measures: aiResult.measures || [],
+          title: aiResult.title || `AI-Merged: ${aiResult.dimensions?.join(', ')} × ${aiResult.measures?.join(', ')}`
+        })
+      });
+      
+      if (!chartRes.ok) {
+        throw new Error('Failed to create merged chart');
+      }
+      
+      const chart = await chartRes.json();
+      const newId = chart.chart_id;
+      const position = getViewportCenter();
+      const figure = figureFromPayload(chart);
+      
+      // Add the AI-merged chart to canvas
+      setNodes(nds => nds.concat({
+        id: newId,
+        type: 'chart',
+        position,
+        draggable: true,
+        selectable: true,
+        data: {
+          title: chart.title,
+          figure,
+          selected: false,
+          onSelect: handleChartSelect,
+          onShowTable: handleShowTable,
+          onAggChange: updateChartAgg,
+          onAIExplore: handleAIExplore,
+          isFused: true,
+          isAIMerged: true,
+          ai_reasoning: aiResult.reasoning,
+          dimensions: aiResult.dimensions || [],
+          measures: aiResult.measures || [],
+          agg: chart.agg || 'sum',
+          datasetId: nodeDatasetId,
+          table: chart.table || []
+        }
+      }));
+      
+      // Create edges from parent charts
+      setEdges(currentEdges => currentEdges.concat([
+        {
+          id: `${c1}-${newId}`,
+          source: c1,
+          target: newId,
+          type: 'default',
+          style: { stroke: '#7c3aed', strokeWidth: 2 },
+          markerEnd: { type: 'arrowclosed', color: '#7c3aed' }
+        },
+        {
+          id: `${c2}-${newId}`,
+          source: c2,
+          target: newId,
+          type: 'default',
+          style: { stroke: '#7c3aed', strokeWidth: 2 },
+          markerEnd: { type: 'arrowclosed', color: '#7c3aed' }
+        }
+      ]));
+      
+      // Clear selections
+      setSelectedCharts([]);
+      
+      // Show success message with AI reasoning
+      if (aiResult.reasoning) {
+        console.log('🎯 AI reasoning:', aiResult.reasoning);
+      }
+      
+    } catch (error) {
+      console.error('AI-assisted merge failed:', error);
+      alert('AI-assisted merge failed: ' + error.message);
+    }
+  }, [nodes, apiKey, selectedModel, updateTokenUsage, getViewportCenter, handleChartSelect, handleShowTable, updateChartAgg, handleAIExplore, setNodes, setEdges, setSelectedCharts]);
+
+  // Handle merge context submission
+  const handleMergeContextSubmit = useCallback(async () => {
+    if (!mergeContextText.trim()) {
+      alert('Please provide context about what you want to analyze');
+      return;
+    }
+    
+    if (!pendingMergeCharts) {
+      alert('No pending merge found');
+      return;
+    }
+    
+    // Close panel and perform merge
+    setMergePanelOpen(false);
+    await performAIAssistedMerge(
+      pendingMergeCharts.c1,
+      pendingMergeCharts.c2,
+      mergeContextText
+    );
+    setPendingMergeCharts(null);
+    setMergeContextText('');
+  }, [mergeContextText, pendingMergeCharts, performAIAssistedMerge]);
+
   const uploadCSV = async (file) => {
     try {
       const fd = new FormData();
@@ -5428,7 +5638,8 @@ function ReactFlowWrapper() {
             table: chart.table || [],
             ai_generated: true,
             ai_method: method,
-            ai_reasoning: suggestion.reasoning
+            ai_reasoning: suggestion.reasoning,
+            user_goal: goalText  // Store original user query for AI-assisted merging
           } 
         }));
       }
@@ -5502,7 +5713,8 @@ function ReactFlowWrapper() {
             onAggChange: updateChartAgg,
             ai_generated: true,
             ai_method: method,
-            ai_reasoning: suggestion.reasoning
+            ai_reasoning: suggestion.reasoning,
+            user_goal: goalText  // Store original user query for AI-assisted merging
           } 
         }));
       }
@@ -5587,7 +5799,8 @@ function ReactFlowWrapper() {
             table: tableData,
             ai_generated: true,
             ai_method: method,
-            ai_reasoning: suggestion.reasoning
+            ai_reasoning: suggestion.reasoning,
+            user_goal: goalText  // Store original user query for AI-assisted merging
           } 
         }));
       }
@@ -6069,7 +6282,8 @@ function ReactFlowWrapper() {
   );
 
   // Settings panel component - now using Modal from design system
-  const SettingsPanel = React.memo(() => {
+  // Render function - returns JSX directly to avoid component recreation issues
+  const renderSettingsPanel = () => {
     const handleTestConfiguration = async () => {
       if (!apiKey.trim()) {
         setConfigStatus('error');
@@ -6160,6 +6374,7 @@ function ReactFlowWrapper() {
             </label>
             <div className="relative">
               <input
+                key="gemini-api-key-input"
                 type={showApiKey ? "text" : "password"}
                 placeholder="Enter your Gemini API key"
                 value={apiKey}
@@ -6324,7 +6539,7 @@ function ReactFlowWrapper() {
         </div>
       </Modal>
     );
-  });
+  };
 
   // Learning Modal component with instruction panel
   const LearningModal = React.memo(() => {
@@ -6988,6 +7203,83 @@ function ReactFlowWrapper() {
         </SlidingPanel>
       )}
 
+      {/* AI-Assisted Merge Panel */}
+      {mergePanelOpen && (
+        <SlidingPanel
+          isOpen={mergePanelOpen}
+          title="Merge Charts"
+          onClose={() => {
+            setMergePanelOpen(false);
+            setPendingMergeCharts(null);
+            setMergeContextText('');
+          }}
+          size="md"
+        >
+          <div className="p-4">
+            <div className="space-y-6">
+              {/* Info Section */}
+              <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                <div className="flex items-start gap-3">
+                  <Sparkles className="text-purple-600 mt-1" size={20} />
+                  <p className="text-sm text-purple-900">
+                    These charts have no common variables. Please describe what insight you're trying to gain, 
+                    and AI will select the best 3 variables from the 4 available to create a meaningful visualization.
+                  </p>
+                </div>
+              </div>
+
+              {/* Input Section */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  What are you trying to analyze?
+                </label>
+                <textarea
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
+                  rows={6}
+                  value={mergeContextText}
+                  onChange={(e) => setMergeContextText(e.target.value)}
+                  placeholder="e.g., I want to understand the relationship between sales and customer segments..."
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  Provide context about your analysis goal to help AI select the most relevant variables.
+                </p>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-2 pt-2">
+                <Button
+                  onClick={() => {
+                    setMergePanelOpen(false);
+                    setPendingMergeCharts(null);
+                    setMergeContextText('');
+                  }}
+                  className="flex-1 bg-gray-200 text-gray-700 hover:bg-gray-300"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleMergeContextSubmit}
+                  disabled={!mergeContextText.trim() || !apiKey}
+                  className="flex-1 bg-purple-600 text-white hover:bg-purple-700 disabled:bg-gray-300 disabled:text-gray-500 flex items-center justify-center gap-2"
+                >
+                  <Sparkles size={16} />
+                  {apiKey ? 'Merge with AI' : 'Configure API Key First'}
+                </Button>
+              </div>
+
+              {/* API Key Warning */}
+              {!apiKey && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  <p className="text-xs text-amber-800">
+                    ⚠️ Please configure your API key in Settings to use AI-assisted merge.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </SlidingPanel>
+      )}
+
       {/* Main Canvas - Responsive to Report Panel */}
       <div className="flex-1 relative flex">
         {/* Canvas Area */}
@@ -7130,7 +7422,7 @@ function ReactFlowWrapper() {
                 border: '1px solid var(--color-border)'
               }}
             />
-            {showSettings && <SettingsPanel />}
+            {showSettings && renderSettingsPanel()}
           </div>
         </div>
         
