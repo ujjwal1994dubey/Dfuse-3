@@ -2311,6 +2311,7 @@ class ChartInsightRequest(BaseModel):
     chart_id: str
     api_key: str
     model: str = "gemini-2.0-flash"
+    user_context: Optional[str] = None  # User's original goal/query for context-aware insights
 
 @app.post("/chart-insights")
 async def generate_chart_insights(request: ChartInsightRequest):
@@ -2414,7 +2415,46 @@ async def generate_chart_insights(request: ChartInsightRequest):
     data_sample = table_data[:data_sample_size]
     data_note = f"All {len(table_data)} data points:" if len(table_data) <= data_sample_size else f"Top {data_sample_size} of {len(table_data)} data points:"
     
-    prompt = f"""You are a data analyst. Generate key insights for this chart using bullet points that clearly describe what the data shows.
+    # Build prompt based on whether user_context is provided
+    has_context = bool(request.user_context and request.user_context.strip())
+    
+    if has_context:
+        # Context-aware insights mode: generate separated insights
+        print(f"🎯 Generating context-aware insights for user goal: '{request.user_context}'")
+        prompt = f"""You are a data analyst. Generate insights for this chart in TWO separate sections.
+
+USER'S ORIGINAL GOAL: "{request.user_context}"
+{enhanced_context}
+CHART ANALYSIS:
+- Chart Title: {chart.get('title', 'Untitled Chart')}
+- Dimensions (Categories): {dimensions}
+- Measures (Metrics): {measures}
+- Statistical Summary: {json.dumps(stats, indent=2)}
+
+{data_note}
+{json.dumps(data_sample, indent=2)}
+
+IMPORTANT: Only reference data points that exist in the data provided above. Do not invent or hallucinate product names or values.
+
+Generate insights in TWO sections with this EXACT format:
+
+CONTEXT-AWARE INSIGHTS:
+• [Insight directly related to the user's goal above]
+• [Another insight addressing the user's goal]
+• [Third insight relevant to the user's goal]
+
+GENERIC INSIGHTS:
+• [Data pattern or trend with specific numbers]
+• [Notable finding about performance, outliers, or comparison]
+• [Distribution or relationship observed in the data]
+• [Additional pattern or interesting data observation]
+• [Summary insight if applicable]
+
+Use simple, clear language. Focus on describing what the data shows. Include specific numbers when relevant.
+Provide ONLY the two labeled sections with bullet points, no other text."""
+    else:
+        # Standard insights mode: generate single set of insights
+        prompt = f"""You are a data analyst. Generate key insights for this chart using bullet points that clearly describe what the data shows.
 {enhanced_context}
 CHART ANALYSIS:
 - Chart Title: {chart.get('title', 'Untitled Chart')}
@@ -2439,10 +2479,39 @@ Provide ONLY the bullet points, no headers or additional text."""
 
     response, token_usage = formulator.run_gemini_with_usage(prompt)
     
-    # Cache the generated insights for future use
+    # Parse response based on mode
+    context_insights = ""
+    generic_insights = ""
+    
+    if has_context:
+        # Split response into two sections
+        response_text = response.strip()
+        
+        # Try to extract the two sections
+        if "CONTEXT-AWARE INSIGHTS:" in response_text and "GENERIC INSIGHTS:" in response_text:
+            parts = response_text.split("GENERIC INSIGHTS:")
+            context_part = parts[0].replace("CONTEXT-AWARE INSIGHTS:", "").strip()
+            generic_part = parts[1].strip()
+            
+            context_insights = context_part
+            generic_insights = generic_part
+        else:
+            # Fallback: if sections not properly separated, split by line count
+            lines = [line.strip() for line in response_text.split('\n') if line.strip().startswith('•')]
+            mid = len(lines) // 2
+            context_insights = '\n'.join(lines[:mid]) if mid > 0 else response_text
+            generic_insights = '\n'.join(lines[mid:]) if mid > 0 else ""
+    else:
+        # Standard mode: all insights are generic
+        generic_insights = response.strip()
+    
+    # Build response
     insights_result = {
         "success": True,
-        "insight": response.strip(),
+        "context_insights": context_insights,
+        "generic_insights": generic_insights,
+        "has_context": has_context,
+        "insight": response.strip(),  # Keep for backward compatibility
         "statistics": stats,
         "token_usage": token_usage,
         "enhanced_context_used": bool(enhanced_context.strip()),

@@ -1900,6 +1900,14 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
   const [showTableView, setShowTableView] = useState(false);
   const [insightSticky, setInsightSticky] = useState(null);
   
+  // Auto-display preloaded insights for AI-generated charts
+  React.useEffect(() => {
+    if (data.preloadedInsights && !insightSticky) {
+      console.log(`🎯 Auto-displaying preloaded insights for chart ${id}`);
+      setInsightSticky(data.preloadedInsights);
+    }
+  }, [data.preloadedInsights, id]);
+  
   // Resize functionality state
   const [isResizing, setIsResizing] = useState(false);
   const [resizeHandle, setResizeHandle] = useState(null);
@@ -2341,13 +2349,17 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
     
     setAiLoading(true);
     try {
+      // Extract user_goal from chart data for context-aware insights
+      const userGoal = data.user_goal;
+      
       const response = await fetch(`${API}/chart-insights`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chart_id: id,
           api_key: currentApiKey,
-          model: currentModel
+          model: currentModel,
+          user_context: userGoal || null  // Pass user's original goal if available
         })
       });
       
@@ -2363,9 +2375,12 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
         updateTokenUsage(result.token_usage);
       }
       
-      // Show sticky note with insights
+      // Show sticky note with insights (supporting both new and legacy formats)
       setInsightSticky({
-        insight: result.insight,
+        contextInsights: result.context_insights || '',
+        genericInsights: result.generic_insights || '',
+        hasContext: result.has_context || false,
+        insight: result.insight,  // Legacy support
         statistics: result.statistics
       });
       
@@ -2791,11 +2806,15 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
               </div>
               <Button
                 onClick={handleGenerateInsights}
-                disabled={aiLoading}
+                disabled={aiLoading || insightSticky !== null}
                 variant="ghost"
                 size="sm"
-                className="text-blue-600 hover:text-blue-700 hover:bg-blue-50 px-2 py-1 h-auto transition-all duration-200"
-                title="Generate automatic insights for this chart"
+                className={`px-2 py-1 h-auto transition-all duration-200 ${
+                  insightSticky !== null 
+                    ? "text-gray-400 cursor-not-allowed opacity-50" 
+                    : "text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                }`}
+                title={insightSticky !== null ? "Insights already shown" : "Generate automatic insights for this chart"}
               >
                 <Sparkles className="w-4 h-4 mr-1" />
                 Insights
@@ -3107,6 +3126,9 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
       {insightSticky && (
         <div className="absolute top-0 right-0 transform translate-x-full ml-4 z-50">
           <InsightStickyNote
+            contextInsights={insightSticky.contextInsights}
+            genericInsights={insightSticky.genericInsights}
+            hasContext={insightSticky.hasContext}
             insight={insightSticky.insight}
             onClose={() => setInsightSticky(null)}
           />
@@ -3217,13 +3239,19 @@ function RichTextEditor({ content, onChange, showToolbar = true, className = '' 
 /**
  * InsightStickyNote Component
  * A draggable sticky note that displays AI-generated chart insights.
- * Automatically adjusts height to accommodate content without scrolling.
+ * Shows context-aware insights if user query exists, otherwise shows generic insights.
  * 
- * @param {string} insight - The insight text to display
- * @param {Function} onClose - Callback when sticky note is closed (optional, not used in UI)
+ * @param {string} contextInsights - Context-aware insights (when user query exists)
+ * @param {string} genericInsights - Generic insights (when no user query)
+ * @param {boolean} hasContext - Whether context-aware insights are available
+ * @param {string} insight - Legacy: full insight text for backward compatibility
+ * @param {Function} onClose - Callback when sticky note is closed (optional)
  */
 function InsightStickyNote({ 
-  insight, 
+  contextInsights,
+  genericInsights,
+  hasContext,
+  insight, // For backward compatibility
   onClose
 }) {
   const [isDragging, setIsDragging] = useState(false);
@@ -3252,7 +3280,6 @@ function InsightStickyNote({
     setIsDragging(false);
   };
 
-
   // Add global mouse event listeners
   React.useEffect(() => {
     if (isDragging) {
@@ -3264,6 +3291,11 @@ function InsightStickyNote({
       };
     }
   }, [isDragging, dragStart, currentPosition]);
+
+  // Determine what to display: context-aware if available, otherwise generic
+  const displayInsight = hasContext 
+    ? (contextInsights || genericInsights || insight)
+    : (genericInsights || insight);
 
   return (
     <div 
@@ -3281,9 +3313,9 @@ function InsightStickyNote({
         <h4 className="font-semibold text-yellow-800 text-sm">Chart Insights</h4>
       </div>
       
-      {/* Content */}
+      {/* Content - Single insight display */}
       <div className="text-xs text-yellow-900 whitespace-pre-wrap leading-relaxed">
-        {insight}
+        {displayInsight}
       </div>
     </div>
   );
@@ -4165,6 +4197,7 @@ function ReactFlowWrapper() {
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [suggestionsError, setSuggestionsError] = useState(null);
+  const [aiGeneratedChartCount, setAiGeneratedChartCount] = useState(0);  // Track count for auto-insights
   const [selectedDimension, setSelectedDimension] = useState('');
   const [selectedMeasure, setSelectedMeasure] = useState('');
   const [nodes, setNodes] = useState([]);
@@ -5502,6 +5535,10 @@ function ReactFlowWrapper() {
       setSuggestionsError('Please analyze the dataset first to enable chart suggestions');
       return;
     }
+    
+    // Reset AI-generated chart counter for new Smart Visualise session
+    setAiGeneratedChartCount(0);
+    console.log('🔄 Reset AI chart counter for new Smart Visualise session');
 
     setSuggestionsLoading(true);
     setSuggestionsError(null);
@@ -5803,6 +5840,61 @@ function ReactFlowWrapper() {
             user_goal: goalText  // Store original user query for AI-assisted merging
           } 
         }));
+      }
+      
+      // Auto-generate insights for first 4 AI-generated charts
+      if (aiGeneratedChartCount < 4 && apiKey && apiKey.trim()) {
+        try {
+          console.log(`🎯 Auto-generating insights for chart ${aiGeneratedChartCount + 1}/4`);
+          
+          const insightsResponse = await fetch(`${API}/chart-insights`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chart_id: id,
+              api_key: apiKey,
+              model: selectedModel,
+              user_context: goalText  // Pass user's Smart Visualise goal as context
+            })
+          });
+          
+          if (insightsResponse.ok) {
+            const insightsResult = await insightsResponse.json();
+            
+            // Track token usage
+            if (insightsResult.token_usage) {
+              updateTokenUsage(insightsResult.token_usage);
+            }
+            
+            // Update the chart node with pre-loaded insights
+            setNodes(nds => nds.map(node => 
+              node.id === id 
+                ? {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      preloadedInsights: {
+                        contextInsights: insightsResult.context_insights || '',
+                        genericInsights: insightsResult.generic_insights || '',
+                        hasContext: insightsResult.has_context || false,
+                        insight: insightsResult.insight,
+                        statistics: insightsResult.statistics
+                      }
+                    }
+                  }
+                : node
+            ));
+            
+            console.log(`✅ Auto-insights generated for chart ${id}`);
+          }
+          
+          // Increment counter after attempt (success or fail)
+          setAiGeneratedChartCount(prev => prev + 1);
+        } catch (insightError) {
+          console.error('Failed to auto-generate insights:', insightError);
+          // Still increment counter to avoid retrying
+          setAiGeneratedChartCount(prev => prev + 1);
+        }
       }
 
     } catch (error) {
