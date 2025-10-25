@@ -58,6 +58,84 @@ function debounce(func, wait) {
 }
 
 /**
+ * Throttle utility for performance optimization
+ * Limits function execution rate during continuous events like resize/drag
+ */
+function throttle(func, wait) {
+  let timeout;
+  let lastRan;
+  return function executedFunction(...args) {
+    const context = this;
+    if (!lastRan) {
+      func.apply(context, args);
+      lastRan = Date.now();
+    } else {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        if ((Date.now() - lastRan) >= wait) {
+          func.apply(context, args);
+          lastRan = Date.now();
+        }
+      }, wait - (Date.now() - lastRan));
+    }
+  };
+}
+
+/**
+ * Text Truncation Utility for Chart Labels
+ * Truncates long text strings with ellipses to prevent overflow in charts
+ * @param {string|number} text - The text to truncate
+ * @param {number} maxLength - Maximum length before truncation (default: 20)
+ * @returns {string} Truncated text with ellipses if needed
+ */
+function truncateText(text, maxLength = 20) {
+  if (text == null) return '';
+  const textStr = String(text);
+  if (textStr.length <= maxLength) return textStr;
+  return textStr.substring(0, maxLength) + '...';
+}
+
+/**
+ * Data Sampling Utility for Performance Optimization
+ * Samples large datasets to improve rendering performance with Plotly
+ * @param {Array} data - Array of Plotly trace objects
+ * @param {number} maxPoints - Maximum number of points to render per trace
+ * @returns {Array} Sampled data with original length stored
+ */
+function sampleData(data, maxPoints = 1000) {
+  if (!Array.isArray(data) || data.length === 0) return data;
+  
+  return data.map(trace => {
+    if (!trace.x || !Array.isArray(trace.x) || trace.x.length <= maxPoints) {
+      return trace; // No sampling needed
+    }
+    
+    // Sample evenly across the dataset
+    const step = Math.ceil(trace.x.length / maxPoints);
+    const sampledX = [];
+    const sampledY = [];
+    const sampledText = trace.text ? [] : undefined;
+    const sampledMarker = trace.marker ? { ...trace.marker } : undefined;
+    
+    for (let i = 0; i < trace.x.length; i += step) {
+      sampledX.push(trace.x[i]);
+      if (trace.y) sampledY.push(trace.y[i]);
+      if (trace.text) sampledText.push(trace.text[i]);
+    }
+    
+    return {
+      ...trace,
+      x: sampledX,
+      y: sampledY,
+      text: sampledText,
+      marker: sampledMarker,
+      _fullDataLength: trace.x.length, // Store original length for reference
+      _sampled: true
+    };
+  });
+}
+
+/**
  * Viewport Visibility Utilities - Performance Optimization
  * Calculate if nodes are visible within current viewport to optimize rendering
  */
@@ -130,11 +208,14 @@ const CHART_TYPES = {
     createFigure: (data, payload) => {
       const xKey = payload.dimensions[0];
       const yKey = payload.measures[0];
+      const xValues = data.map(r => r[xKey]);
       return {
         data: [{
           type: 'bar',
-          x: data.map(r => r[xKey]),
+          x: xValues.map(v => truncateText(v)),
           y: data.map(r => r[yKey] || 0),
+          text: xValues.map(v => String(v)), // Full text for hover
+          hovertemplate: '%{text}<br>%{y}<extra></extra>',
           marker: { color: DEFAULT_COLORS.categorical[0] }
         }],
         layout: {
@@ -164,11 +245,14 @@ const CHART_TYPES = {
     createFigure: (data, payload) => {
       const labelKey = payload.dimensions[0];
       const valueKey = payload.measures[0];
+      const labels = data.map(r => r[labelKey]);
       return {
         data: [{
           type: 'pie',
-          labels: data.map(r => r[labelKey]),
+          labels: labels.map(l => truncateText(l)),
           values: data.map(r => r[valueKey] || 0),
+          text: labels.map(l => String(l)), // Full text for hover
+          hovertemplate: '%{text}<br>%{value}<extra></extra>',
           hole: 0.3,
           marker: {
             colors: DEFAULT_COLORS.categorical.slice(0, data.length)
@@ -199,13 +283,14 @@ const CHART_TYPES = {
       const labelKey = payload.dimensions[0];
       const xKey = payload.measures[0];
       const yKey = payload.measures[1];
+      const labels = data.map(r => r[labelKey]);
       return {
         data: [{
           type: 'scatter',
           mode: 'markers',
           x: data.map(r => r[xKey] || 0),
           y: data.map(r => r[yKey] || 0),
-          text: data.map(r => r[labelKey]),
+          text: labels.map(l => String(l)), // Full text for hover
           marker: { 
             size: 10, 
             color: DEFAULT_COLORS.quantitative[0],
@@ -247,9 +332,11 @@ const CHART_TYPES = {
       return {
         data: measureKeys.map((measure, i) => ({
           type: 'bar',
-          name: truncateLabel(measure), // Truncate long legend labels
-          x: xValues,
+          name: truncateText(measure), // Truncate long legend labels
+          x: xValues.map(v => truncateText(v)), // Truncate x-axis labels
           y: xValues.map(v => (data.find(r => r[xKey] === v)?.[measure]) ?? 0),
+          text: xValues.map(v => String(v)), // Full text for hover
+          hovertemplate: '%{text}<br>%{y}<extra></extra>',
           marker: { color: DEFAULT_COLORS.comparative[i % DEFAULT_COLORS.comparative.length] }
         })),
         layout: {
@@ -301,8 +388,10 @@ const CHART_TYPES = {
             type: 'scatter',
             mode: 'lines+markers',
             name: m1,
-            x: xValues,
+            x: xValues.map(v => truncateText(v)),
             y: m1Values,
+            text: xValues.map(v => String(v)), // Full text for hover
+            hovertemplate: '%{text}<br>%{y}<extra></extra>',
             yaxis: 'y',
             line: { color: '#3182ce', width: 3 },
             marker: { color: '#3182ce', size: 8 }
@@ -311,8 +400,10 @@ const CHART_TYPES = {
             type: 'scatter',
             mode: 'lines+markers',
             name: m2,
-            x: xValues,
+            x: xValues.map(v => truncateText(v)),
             y: m2Values,
+            text: xValues.map(v => String(v)), // Full text for hover
+            hovertemplate: '%{text}<br>%{y}<extra></extra>',
             yaxis: 'y2',
             line: { color: '#38a169', width: 3 },
             marker: { color: '#38a169', size: 8 }
@@ -391,9 +482,11 @@ const CHART_TYPES = {
       
       const chartData = uniqueProducts.map((product, i) => ({
         type: 'bar',
-        name: truncateLabel(product), // Truncate long legend labels
-        x: uniqueCategories,
+        name: truncateText(product), // Truncate long legend labels
+        x: uniqueCategories.map(cat => truncateText(cat)), // Truncate x-axis labels
         y: uniqueCategories.map(cat => groups[product]?.[cat] || 0),
+        text: uniqueCategories.map(cat => String(cat)), // Full text for hover
+        hovertemplate: '%{text}<br>%{y}<extra></extra>',
         marker: { color: ['#3182ce', '#38a169', '#d69e2e', '#e53e3e', '#805ad5', '#dd6b20', '#38b2ac', '#ed64a6'][i % 8] }
       }));
       
@@ -474,8 +567,8 @@ const CHART_TYPES = {
         data: [{
           type: 'scatter',
           mode: 'markers',
-          x: validData.map(r => r[dim2]), // Product names directly
-          y: validData.map(r => r[dim1]), // Category names directly
+          x: validData.map(r => truncateText(r[dim2])), // Truncate x-axis labels
+          y: validData.map(r => truncateText(r[dim1])), // Truncate y-axis labels
           text: validData.map(r => `${dim1}: ${r[dim1]}<br>${dim2}: ${r[dim2]}<br>${measure}: ${r[measure]}`),
           marker: {
             size: validData.map(r => Math.max(8, Math.sqrt(r[measure] / maxValue * 2000) + 5)),
@@ -529,12 +622,15 @@ const CHART_TYPES = {
       const xKey = payload.dimensions[0];
       const yKey = payload.measures[0];
       const lineColor = DEFAULT_COLORS.quantitative[0];
+      const xValues = data.map(r => r[xKey]);
       return {
         data: [{
           type: 'scatter',
           mode: 'lines+markers',
-          x: data.map(r => r[xKey]),
+          x: xValues.map(v => truncateText(v)),
           y: data.map(r => r[yKey] || 0),
+          text: xValues.map(v => String(v)), // Full text for hover
+          hovertemplate: '%{text}<br>%{y}<extra></extra>',
           line: { color: lineColor, width: 3 },
           marker: { color: lineColor, size: 6 }
         }],
@@ -1889,7 +1985,7 @@ function ChartTypeSelector({ dimensions = [], measures = [], currentType, onType
  * @param {Function} updateTokenUsage - Updates token usage metrics
  * @param {Function} onAddToReport - Callback to add chart to report document
  */
-const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, selectedModel, setShowSettings, updateTokenUsage, onAddToReport, setReportPanelOpen, onResizeStart, onResizeEnd }) {
+const ChartNode = React.memo(function ChartNode({ data, id, selected, onSelect, apiKey, selectedModel, setShowSettings, updateTokenUsage, onAddToReport, setReportPanelOpen, onResizeStart, onResizeEnd }) {
   const { title, figure, isFused, strategy, stats, agg, dimensions = [], measures = [], onAggChange, onShowTable, table = [] } = data;
   const [menuOpen, setMenuOpen] = useState(false);
   const [statsVisible, setStatsVisible] = useState(false);
@@ -1934,19 +2030,19 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
     return { width, height };
   });
   
+  // Throttled dimension setter for performance during resize
+  const throttledSetDimensions = useMemo(
+    () => throttle((newDims) => {
+      setChartDimensions(newDims);
+    }, 16), // ~60fps max
+    []
+  );
+  
   // Use ref to prevent state reset during React Flow re-renders
   const aiExploreRef = useRef(false);
   const plotlyRef = useRef(null);
   const chartContainerRef = useRef(null);
-  
-  // Cleanup Plotly instance on unmount for performance
-  useEffect(() => {
-    // Completely remove cleanup to avoid any interference with Plotly's internal state
-    // Let React and Plotly handle their own cleanup naturally
-    return () => {
-      // No cleanup to avoid null reference errors
-    };
-  }, []);
+  const plotlyDivRef = useRef(null);
   
   // Chart type switching state
   const defaultChartType = getDefaultChartType(dimensions.length, measures.length);
@@ -1985,54 +2081,6 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
     }
   }, [figure, chartType, hasUserChangedType, table, dimensions, measures, strategy]);
 
-  // Cleanup effect to prevent memory leaks
-  useEffect(() => {
-    return () => {
-      // Comprehensive Plotly cleanup when component unmounts
-      try {
-        // Find all Plotly divs that might be related to this chart
-        const plotlyDivs = document.querySelectorAll('.js-plotly-plot');
-        plotlyDivs.forEach(plotlyDiv => {
-          if (plotlyDiv && plotlyDiv._fullLayout) {
-            // Clean up Plotly internal references
-            plotlyDiv._hoverlayer = null;
-            plotlyDiv._fullLayout = null;
-            plotlyDiv._fullData = null;
-            plotlyDiv._context = null;
-            plotlyDiv._rehover = null;
-            plotlyDiv._hoversubplot = null;
-            plotlyDiv._hoverdata = null;
-            plotlyDiv._hoverpoints = null;
-            plotlyDiv._maindrag = null;
-            plotlyDiv._mainhover = null;
-            
-            // Remove event listeners
-            if (plotlyDiv.removeAllListeners) {
-              plotlyDiv.removeAllListeners();
-            }
-          }
-        });
-        
-        // Also try to find by data-id attribute
-        const specificDiv = document.querySelector(`[data-id="${id}"]`);
-        if (specificDiv) {
-          specificDiv._hoverlayer = null;
-          specificDiv._fullLayout = null;
-          specificDiv._fullData = null;
-          specificDiv._context = null;
-          specificDiv._rehover = null;
-          specificDiv._hoversubplot = null;
-          specificDiv._hoverdata = null;
-          specificDiv._hoverpoints = null;
-          specificDiv._maindrag = null;
-          specificDiv._mainhover = null;
-        }
-      } catch (error) {
-        console.warn('Plotly cleanup warning:', error);
-      }
-    };
-  }, [id]);
-
   // Restore AI explore state if it gets reset by React Flow
   useEffect(() => {
     if (aiExploreRef.current && !aiExploreOpen) {
@@ -2040,27 +2088,27 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
     }
   }, [aiExploreOpen]);
 
-  // Additional cleanup effect to handle node deletion
+  // Consolidated cleanup effect - single cleanup on unmount for performance
   useEffect(() => {
     return () => {
-      // This runs when the component is about to be unmounted
-      // Clean up any remaining Plotly references
-      try {
-        // Use a timeout to ensure cleanup happens after React Flow processes the deletion
-        setTimeout(() => {
-          const plotlyDivs = document.querySelectorAll('.js-plotly-plot');
-          plotlyDivs.forEach(plotlyDiv => {
-            if (plotlyDiv && plotlyDiv._hoverlayer) {
-              // Set hoverlayer to null to prevent errors
-              plotlyDiv._hoverlayer = null;
-            }
-          });
-        }, 100);
-      } catch (error) {
-        // Silently handle any cleanup errors
+      // Single cleanup on unmount using ref for targeted cleanup
+      if (plotlyDivRef.current) {
+        try {
+          const div = plotlyDivRef.current;
+          div._hoverlayer = null;
+          div._fullLayout = null;
+          div._fullData = null;
+          div._context = null;
+        } catch (e) {
+          // Silent fail
+        }
+      }
+      // Cleanup throttled function
+      if (throttledSetDimensions.cancel) {
+        throttledSetDimensions.cancel();
       }
     };
-  }, []);
+  }, [throttledSetDimensions]);
 
   // Resize functionality
   const handleResizeStart = useCallback((handle, e) => {
@@ -2141,7 +2189,7 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
       newWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
       newHeight = Math.max(minHeight, Math.min(maxHeight, newHeight));
       
-      setChartDimensions({ width: newWidth, height: newHeight });
+      throttledSetDimensions({ width: newWidth, height: newHeight });
     };
     
     const handleMouseUp = (upEvent) => {
@@ -2170,7 +2218,7 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
     document.addEventListener('pointerup', handleMouseUp, true);
     document.addEventListener('mousemove', handleMouseMove, true);
     document.addEventListener('mouseup', handleMouseUp, true);
-  }, [chartDimensions, onResizeStart, onResizeEnd, id]);
+  }, [chartDimensions, onResizeStart, onResizeEnd, id, throttledSetDimensions]);
 
   // Prevent drag when resizing
   useEffect(() => {
@@ -2522,6 +2570,52 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
   // Calculate plot height (subtract header and padding from total height)
   const plotHeight = Math.max(chartDimensions.height - 80, 200);
   
+  // Memoize layout to prevent unnecessary Plotly rerenders
+  const memoizedLayout = useMemo(() => 
+    sanitizeLayout({
+      ...currentFigure.layout,
+      width: chartDimensions.width - 40, // Account for padding
+      height: plotHeight
+    }), 
+    [currentFigure.layout, chartDimensions.width, chartDimensions.height, plotHeight]
+  );
+  
+  // Memoize data with sampling to prevent re-processing on non-data changes
+  const memoizedData = useMemo(() => 
+    sampleData(currentFigure.data || [], 1000),
+    [currentFigure.data]
+  );
+  
+  // Determine if chart should use static rendering when not visible
+  const isChartVisible = useMemo(() => {
+    return selected || !document.hidden;
+  }, [selected]);
+  
+  // Memoize Plotly initialization callback
+  const handlePlotlyInit = useCallback((figure, graphDiv) => {
+    try {
+      if (graphDiv && graphDiv._hoverlayer) {
+        graphDiv._hoverlayer.style.pointerEvents = 'auto';
+      }
+      if (graphDiv && !graphDiv.layout) {
+        graphDiv.layout = sanitizeLayout(currentFigure.layout || {});
+      }
+    } catch (e) {
+      console.debug('Plotly init warning:', e);
+    }
+  }, [currentFigure.layout]);
+  
+  // Memoize Plotly update callback
+  const handlePlotlyUpdate = useCallback((figure, graphDiv) => {
+    try {
+      if (graphDiv && figure && figure.layout) {
+        graphDiv.layout = sanitizeLayout(figure.layout);
+      }
+    } catch (e) {
+      console.debug('Plotly update warning:', e);
+    }
+  }, []);
+  
   const canChangeAgg = Array.isArray(dimensions) && dimensions.length >= 1 && Array.isArray(measures) && measures.length >= 1 && (agg || 'sum') !== 'count' && !isFused;
   
   return (
@@ -2547,6 +2641,12 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
           onClick={handleSelect}
         >
           <div className="font-semibold">{title}</div>
+          {/* Show badge when data is sampled */}
+          {memoizedData && memoizedData[0]?._sampled && memoizedData[0]?._fullDataLength && (
+            <Badge variant="secondary" className="text-xs mt-1">
+              Showing {memoizedData[0].x.length} of {memoizedData[0]._fullDataLength} points
+            </Badge>
+          )}
         </div>
         
         {/* Chart Type Selector - show for charts with supported dimension/measure combinations */}
@@ -2688,48 +2788,27 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
         onClick={handleChartAreaClick}
       >
       {currentFigure && currentFigure.data && currentFigure.layout ? (
-        <div className="plotly-container" style={{ pointerEvents: 'auto' }}>
+        <div 
+          className="plotly-container" 
+          style={{ pointerEvents: 'auto', minHeight: `${plotHeight}px` }}
+          data-chart-id={id}
+        >
           <Plot 
-            key={`${id}-${chartType}-${chartDimensions.width}-${chartDimensions.height}`}
-            data={currentFigure.data || []} 
-            layout={sanitizeLayout({
-              ...currentFigure.layout,
-              width: chartDimensions.width - 40, // Account for padding
-              height: plotHeight
-            })} 
+            ref={plotlyDivRef}
+            key={`${id}-${chartType}`}
+            data={memoizedData} 
+            layout={memoizedLayout} 
             style={{ width: '100%', height: `${plotHeight}px` }} 
-            useResizeHandler={true}
+            useResizeHandler={false}
             onError={(err) => {
               console.warn('Plotly error:', err);
             }}
-            onInitialized={(figure, graphDiv) => {
-              // Minimal initialization with defensive checks
-              try {
-                if (graphDiv && graphDiv._hoverlayer) {
-                  graphDiv._hoverlayer.style.pointerEvents = 'auto';
-                }
-                // Ensure layout exists on graphDiv to prevent scroll handler errors
-                if (graphDiv && !graphDiv.layout) {
-                  graphDiv.layout = sanitizeLayout(currentFigure.layout || {});
-                }
-              } catch (e) {
-                console.debug('Plotly init warning:', e);
-              }
-            }}
-            onUpdate={(figure, graphDiv) => {
-              // Defensive update handling for chart type changes
-              try {
-                if (graphDiv && figure && figure.layout) {
-                  // Ensure layout is properly sanitized during updates
-                  graphDiv.layout = sanitizeLayout(figure.layout);
-                }
-              } catch (e) {
-                console.debug('Plotly update warning:', e);
-              }
-            }}
+            onInitialized={handlePlotlyInit}
+            onUpdate={handlePlotlyUpdate}
           config={{
             displayModeBar: selected, // Only show when chart is selected
             displaylogo: false,
+            staticPlot: !isChartVisible, // Static rendering when not visible
             modeBarButtons: [
               [
                 'zoomIn2d',
@@ -3136,7 +3215,33 @@ const ChartNode = function ChartNode({ data, id, selected, onSelect, apiKey, sel
       )}
     </div>
   );
-};
+}, (prevProps, nextProps) => {
+  // Custom comparison function for React.memo
+  // Return true if props are equal (skip re-render)
+  // Return false if props changed (re-render)
+  
+  // Always re-render if selected state changes
+  if (prevProps.selected !== nextProps.selected) return false;
+  
+  // Always re-render if data reference changes
+  if (prevProps.data !== nextProps.data) return false;
+  
+  // Always re-render if id changes
+  if (prevProps.id !== nextProps.id) return false;
+  
+  // Skip re-render if stable props haven't changed
+  if (prevProps.apiKey === nextProps.apiKey &&
+      prevProps.selectedModel === nextProps.selectedModel &&
+      prevProps.onSelect === nextProps.onSelect &&
+      prevProps.onAddToReport === nextProps.onAddToReport &&
+      prevProps.setReportPanelOpen === nextProps.setReportPanelOpen &&
+      prevProps.onResizeStart === nextProps.onResizeStart &&
+      prevProps.onResizeEnd === nextProps.onResizeEnd) {
+    return true; // Props are equal, skip re-render
+  }
+  
+  return false; // Props changed, re-render
+});
 
 /**
  * RichTextEditor Component
@@ -4382,43 +4487,11 @@ function ReactFlowWrapper() {
         return true;
       });
       
-      // Check for node deletions and clean up Plotly instances
+      // Check for node deletions - let React handle cleanup via component unmount
       const deletionChanges = changes.filter(change => change.type === 'remove');
       if (deletionChanges.length > 0) {
-        // Clean up Plotly instances for deleted nodes
-        setTimeout(() => {
-          try {
-            const plotlyDivs = document.querySelectorAll('.js-plotly-plot');
-            plotlyDivs.forEach(plotlyDiv => {
-              if (plotlyDiv) {
-                // Clean up all Plotly internal references
-                plotlyDiv._hoverlayer = null;
-                plotlyDiv._fullLayout = null;
-                plotlyDiv._fullData = null;
-                plotlyDiv._context = null;
-                plotlyDiv._rehover = null;
-                plotlyDiv._hoversubplot = null;
-                plotlyDiv._hoverdata = null;
-                plotlyDiv._hoverpoints = null;
-                
-                // Remove all event listeners
-                if (plotlyDiv.removeAllListeners) {
-                  plotlyDiv.removeAllListeners();
-                }
-                
-                // Clear any remaining references
-                if (plotlyDiv._maindrag) {
-                  plotlyDiv._maindrag = null;
-                }
-                if (plotlyDiv._mainhover) {
-                  plotlyDiv._mainhover = null;
-                }
-              }
-            });
-          } catch (error) {
-            console.warn('Plotly cleanup during deletion:', error);
-          }
-        }, 50);
+        // React will handle cleanup through ChartNode's useEffect cleanup
+        // No manual DOM manipulation needed - improves performance
       }
       
       setNodes((nds) => applyNodeChanges(filteredChanges, nds));
@@ -5064,8 +5137,10 @@ function ReactFlowWrapper() {
       const data = [{
         type: 'bar',
         name: m,
-        x: xValues,
-        y: xValues.map(v => (rows.find(r => r[xKey] === v)?.[m]) ?? 0)
+        x: xValues.map(v => truncateText(v)),
+        y: xValues.map(v => (rows.find(r => r[xKey] === v)?.[m]) ?? 0),
+        text: xValues.map(v => String(v)), // Full text for hover
+        hovertemplate: '%{text}<br>%{y}<extra></extra>'
       }];
       return createSafeFigure(data, {
           // Remove title to avoid duplication with ChartNode title
@@ -5099,15 +5174,20 @@ function ReactFlowWrapper() {
         if (!groups[g]) groups[g] = [];
         groups[g].push(r);
       });
-      const data = Object.entries(groups).map(([g, arr]) => ({
-        type: 'scatter', 
-        mode: 'lines+markers', 
-        name: g,
-        x: arr.map(a => a['DimensionValue']),
-        y: arr.map(a => a['Value']),
-        line: { width: 3 },
-        marker: { size: 8 }
-      }));
+      const data = Object.entries(groups).map(([g, arr]) => {
+        const xValues = arr.map(a => a['DimensionValue']);
+        return {
+          type: 'scatter', 
+          mode: 'lines+markers', 
+          name: g,
+          x: xValues.map(v => truncateText(v)),
+          y: arr.map(a => a['Value']),
+          text: xValues.map(v => String(v)), // Full text for hover
+          hovertemplate: '%{text}<br>%{y}<extra></extra>',
+          line: { width: 3 },
+          marker: { size: 8 }
+        };
+      });
       
       return createSafeFigure(data, { 
           // Remove title to avoid duplication with ChartNode title
@@ -7419,8 +7499,8 @@ function ReactFlowWrapper() {
             panOnScroll={true}
             panOnScrollMode="free"
             preventScrolling={false}
-            // Temporarily remove performance props that might cause Plotly instability
-            // onlyRenderVisibleElements={true}  // This might be causing mount/unmount issues
+            // Enable viewport culling for better performance with many charts
+            onlyRenderVisibleElements={true}
             defaultViewport={{ x: 0, y: 0, zoom: 1 }}
             maxZoom={3}
             minZoom={0.1}
