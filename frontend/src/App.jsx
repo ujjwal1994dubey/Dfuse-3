@@ -5,7 +5,7 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
 import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui';
-import { MousePointer2, MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, AlignStartVertical, MenuIcon, Upload, Calculator, ArrowRight, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen } from 'lucide-react';
+import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, AlignStartVertical, MenuIcon, Upload, Calculator, ArrowRight, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, CirclePlus } from 'lucide-react';
 import { marked } from 'marked';
 import './tiptap-styles.css';
 
@@ -93,6 +93,44 @@ function truncateText(text, maxLength = 20) {
   const textStr = String(text);
   if (textStr.length <= maxLength) return textStr;
   return textStr.substring(0, maxLength) + '...';
+}
+
+/**
+ * Data Type Mapping Utility
+ * Converts Python data types to human-readable labels for UI display
+ * @param {string} dtype - The Python data type string (e.g., 'int64', 'object')
+ * @returns {string} Human-readable data type label
+ */
+function getReadableDataType(dtype) {
+  const typeMap = {
+    // Text/String types
+    'object': 'dimension',
+    'string': 'text',
+    'category': 'category',
+    
+    // Integer types
+    'int64': 'integer',
+    'int32': 'integer',
+    'int': 'integer',
+    
+    // Float/Decimal types
+    'float64': 'decimal',
+    'float32': 'decimal',
+    'float': 'decimal',
+    
+    // Boolean
+    'bool': 'boolean',
+    
+    // Date/Time
+    'datetime64': 'date',
+    'timedelta': 'duration'
+  };
+  
+  // Check for datetime variants (e.g., datetime64[ns])
+  if (dtype.startsWith('datetime')) return 'date';
+  if (dtype.startsWith('timedelta')) return 'duration';
+  
+  return typeMap[dtype] || dtype;
 }
 
 /**
@@ -2924,7 +2962,8 @@ function DesignButton({
     primary: 'btn-primary',
     secondary: 'btn-secondary',
     ghost: 'btn-ghost',
-    icon: 'btn-icon'
+    icon: 'btn-icon',
+    accent: 'btn-accent'
   };
   
   const classes = [
@@ -3096,6 +3135,8 @@ function UnifiedSidebar({
   setVariablesPanelOpen,
   chartActionsPanelOpen,
   setChartActionsPanelOpen,
+  mergePanelOpen,
+  setMergePanelOpen,
   activeTool,
   onToolChange,
   // Action handlers
@@ -3114,53 +3155,67 @@ function UnifiedSidebar({
         if (!uploadPanelOpen) {
           setVariablesPanelOpen(false);
           setChartActionsPanelOpen(false);
+          setMergePanelOpen(false);
         }
       }, 
       active: uploadPanelOpen 
     },
     { 
       id: 'variables', 
-      icon: ChartColumn, 
+      icon: CirclePlus, 
       label: 'Variables', 
       onClick: () => {
         setVariablesPanelOpen(!variablesPanelOpen);
         if (!variablesPanelOpen) {
           setUploadPanelOpen(false);
           setChartActionsPanelOpen(false);
+          setMergePanelOpen(false);
         }
       }, 
       active: variablesPanelOpen 
     },
     { 
       id: 'chartActions', 
-      icon: Settings, 
+      icon: ChartColumn, 
       label: 'Chart Actions', 
       onClick: () => {
         setChartActionsPanelOpen(!chartActionsPanelOpen);
         if (!chartActionsPanelOpen) {
           setUploadPanelOpen(false);
           setVariablesPanelOpen(false);
+          setMergePanelOpen(false);
         }
       }, 
       active: chartActionsPanelOpen 
     },
+    { 
+      id: 'merge', 
+      icon: Merge, 
+      label: 'Merge Charts', 
+      onClick: () => {
+        // Always toggle the panel (no disabled state)
+        if (!mergePanelOpen) {
+          setMergePanelOpen(true);
+        } else {
+          setMergePanelOpen(false);
+        }
+        // Close other panels
+        setUploadPanelOpen(false);
+        setVariablesPanelOpen(false);
+        setChartActionsPanelOpen(false);
+      }, 
+      active: mergePanelOpen
+      // No disabled state - always accessible
+    },
   ];
   
   const toolButtons = [
-    { id: 'select', icon: MousePointer2, label: 'Select Tool' },
     { id: 'arrow', icon: ArrowRight, label: 'Arrow Tool' },
     { id: 'textbox', icon: Type, label: 'Text Tool' },
     { id: 'expression', icon: Calculator, label: 'Expression Tool' },
   ];
   
   const actionButtons = [
-    { 
-      id: 'merge', 
-      icon: Merge, 
-      label: 'Merge Charts', 
-      onClick: onMergeCharts, 
-      disabled: !canMerge
-    },
     { 
       id: 'arrange', 
       icon: AlignStartVertical, 
@@ -3190,6 +3245,7 @@ function UnifiedSidebar({
             key={btn.id}
             icon={btn.icon}
             active={btn.active}
+            disabled={btn.disabled}
             onClick={btn.onClick}
             label={btn.label}
             size="md"
@@ -3244,6 +3300,7 @@ function UnifiedSidebar({
             key={btn.id}
             icon={btn.icon}
             disabled={btn.disabled}
+            active={btn.active}
             onClick={btn.onClick}
             label={btn.label}
             badge={btn.badge}
@@ -3345,16 +3402,18 @@ function ChartActionsPanel({
   const [aiResult, setAiResult] = useState(null);
   const [showPythonCode, setShowPythonCode] = useState(false);
   
-  // Local state for checkboxes
-  const [showTableChecked, setShowTableChecked] = useState(false);
-  const [addToReportChecked, setAddToReportChecked] = useState(false);
+  // Local state for buttons
+  const [showTableClicked, setShowTableClicked] = useState(false);
+  const [addingToReport, setAddingToReport] = useState(false);
   
   // Update local state when selected chart changes
   useEffect(() => {
     if (selectedChart) {
-      // Reset AI results when chart changes
+      // Reset AI results and button states when chart changes
       setAiResult(null);
       setShowPythonCode(false);
+      setShowTableClicked(false);
+      setAddingToReport(false);
     }
   }, [selectedChart?.id]);
   
@@ -3422,7 +3481,7 @@ function ChartActionsPanel({
       onClose={onClose}
       size="md"
     >
-      <div className="p-6 space-y-6">
+      <div className="py-6 px-4 space-y-6">
         {/* Empty State */}
         {!selectedChart && (
           <div className="text-center py-12">
@@ -3518,41 +3577,47 @@ function ChartActionsPanel({
             
             {/* Chart Options Checkboxes */}
             <div className="space-y-3">
-              <label className="flex items-center justify-between cursor-pointer">
+              {/* Show Data Table Button */}
+              <div className="flex items-center justify-between">
                 <span className="text-sm" style={{ color: 'var(--color-text)' }}>
-                  Show Data Table
+                  Data Table
                 </span>
-                <input
-                  type="checkbox"
-                  checked={showTableChecked}
-                  onChange={(e) => {
-                    setShowTableChecked(e.target.checked);
+                <Button
+                  onClick={() => {
+                    setShowTableClicked(true);
                     onShowTable(selectedChart.id);
                   }}
-                  className="w-5 h-5 text-teal-500 rounded"
-                  style={{ accentColor: '#14b8a6' }}
-                />
-              </label>
+                  disabled={showTableClicked}
+                  variant="ghost"
+                  size="sm"
+                  className="text-sm"
+                >
+                  {showTableClicked ? 'Shown' : 'Show'}
+                </Button>
+              </div>
               
-              <label className="flex items-center justify-between cursor-pointer">
+              {/* Add To Report Button */}
+              <div className="flex items-center justify-between">
                 <span className="text-sm" style={{ color: 'var(--color-text)' }}>
-                  Add To Report
+                  Add Insights To Report
                 </span>
-                <input
-                  type="checkbox"
-                  checked={addToReportChecked}
-                  onChange={async (e) => {
-                    const isChecked = e.target.checked;
-                    setAddToReportChecked(isChecked);
+                <Button
+                  onClick={async () => {
+                    if (addingToReport) return;
+                    setAddingToReport(true);
                     
-                    if (isChecked) {
+                    try {
                       // Capture chart as image using canvas API
                       const chartNode = document.querySelector(`[data-id="${selectedChart.id}"]`);
                       const plotlyPlot = chartNode?.querySelector('.js-plotly-plot');
                       const svgElement = plotlyPlot?.querySelector('.main-svg');
                       
-                      if (svgElement) {
-                        try {
+                      if (!svgElement) {
+                        alert('Chart not found. Please try again.');
+                        setAddingToReport(false);
+                        return;
+                      }
+                      
                           // Get SVG dimensions
                           const bbox = svgElement.getBoundingClientRect();
                           const width = bbox.width || 800;
@@ -3571,6 +3636,7 @@ function ChartActionsPanel({
                           
                           const img = new Image();
                           img.onload = async () => {
+                        try {
                             ctx.fillStyle = 'white';
                             ctx.fillRect(0, 0, width, height);
                             ctx.drawImage(img, 0, 0, width, height);
@@ -3586,7 +3652,7 @@ function ChartActionsPanel({
                                 const currentModel = selectedModel || 'gemini-2.0-flash';
                                 
                                 // Call backend to generate report section (intelligently combines insights)
-                                // Pass AI explore results if available for comprehensive report content
+                              // Pass AI explore results if available for comprehensive report content
                                 const response = await fetch(`${API}/generate-report-section`, {
                                   method: 'POST',
                                   headers: { 'Content-Type': 'application/json' },
@@ -3594,7 +3660,7 @@ function ChartActionsPanel({
                                     chart_id: selectedChart.id,
                                     api_key: currentApiKey,
                                     model: currentModel,
-                                    ai_explore_result: aiResult?.answer || null // Pass AI query answer if exists
+                                  ai_explore_result: aiResult?.answer || null // Pass AI query answer if exists
                                   })
                                 });
                                 
@@ -3647,32 +3713,36 @@ function ChartActionsPanel({
                               });
                             }
                             
-                            // Reset checkbox after successful add
-                            setTimeout(() => setAddToReportChecked(false), 300);
+                          // Re-enable button after successful add
+                          setAddingToReport(false);
+                        } catch (error) {
+                          console.error('Failed to process chart image:', error);
+                          setAddingToReport(false);
+                          alert('Failed to add chart to report. Please try again.');
+                        }
                           };
                           
                           img.onerror = () => {
                             URL.revokeObjectURL(url);
-                            setAddToReportChecked(false);
+                        setAddingToReport(false);
                             alert('Failed to capture chart. Please try again.');
                           };
                           
                           img.src = url;
                         } catch (error) {
                           console.error('Failed to capture chart:', error);
-                          setAddToReportChecked(false);
+                      setAddingToReport(false);
                           alert('Failed to add chart to report. Please try again.');
-                        }
-                      } else {
-                        // Chart element not found
-                        setAddToReportChecked(false);
-                        alert('Chart not found. Please try again.');
-                      }
                     }
                   }}
-                  className="w-5 h-5 rounded"
-                />
-              </label>
+                  disabled={addingToReport}
+                  variant="ghost"
+                  size="sm"
+                  className="text-sm"
+                >
+                  {addingToReport ? 'Adding...' : 'Add'}
+                </Button>
+              </div>
             </div>
             
             {/* Divider */}
@@ -3701,36 +3771,39 @@ function ChartActionsPanel({
                       handleAIExplore();
                     }
                   }}
-                  placeholder="What is the profit margin for Laptop product?"
-                  className="w-full h-40 px-4 py-3 text-sm border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Ask AI to calculate new metric, filter data, or answer a question"
+                  className="h-40 px-4 py-3 text-sm border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
                   style={{
                     borderColor: 'var(--color-border)',
                     backgroundColor: 'var(--color-surface)',
-                    color: 'var(--color-text)'
+                    color: 'var(--color-text)',
+                    width: '286px'
                   }}
                   disabled={aiLoading}
                 />
               </div>
               
               <DesignButton
-                variant="primary"
+                variant="accent"
                 size="lg"
                 onClick={handleAIExplore}
                 disabled={!aiQuery.trim() || aiLoading}
-                className="w-full justify-center"
                 style={{
-                  backgroundColor: '#4ade80',
-                  color: 'white',
-                  border: 'none'
+                  width: '286px',
+                  height: '40px',
+                  padding: '0 16px'
                 }}
               >
                 {aiLoading ? (
                   <div className="flex items-center justify-center gap-2">
-                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                    <span>Processing...</span>
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-black"></div>
+                    <span style={{ fontSize: '14px' }}>Processing...</span>
                   </div>
                 ) : (
-                  'Use AI'
+                  <div className="flex items-center justify-center gap-2">
+                    <span style={{ fontSize: '14px' }}>Send Query</span>
+                    <ArrowRightToLine size={18} />
+                  </div>
                 )}
               </DesignButton>
               
@@ -4275,6 +4348,8 @@ function ReactFlowWrapper() {
   const [mergePanelOpen, setMergePanelOpen] = useState(false);
   const [mergeContextText, setMergeContextText] = useState('');
   const [pendingMergeCharts, setPendingMergeCharts] = useState(null);
+  const [mergeMetadata, setMergeMetadata] = useState(null);
+  const [mergeSuccess, setMergeSuccess] = useState(false);
   
   // Toolbar and tools state
   const [activeTool, setActiveTool] = useState('select');
@@ -4366,6 +4441,127 @@ function ReactFlowWrapper() {
     
     // Note: Multiple chart selections (2+) will trigger merge panel separately
   }, [nodes, selectedCharts]);
+
+  // Analyze merge scenario to determine which UI state to show
+  const analyzeMergeScenario = useCallback(() => {
+    const selectedCount = selectedCharts.length;
+    
+    // State 1: Not enough charts
+    if (selectedCount !== 2) {
+      return {
+        type: 'none',
+        selectedCount,
+        message: selectedCount === 0 
+          ? 'Please select 2 charts to merge'
+          : selectedCount === 1
+          ? 'Please select 1 more chart to merge'
+          : 'Please select exactly 2 charts to merge'
+      };
+    }
+
+    // Get chart data
+    const [c1, c2] = selectedCharts;
+    const node1 = nodes.find(n => n.id === c1);
+    const node2 = nodes.find(n => n.id === c2);
+    
+    if (!node1 || !node2) return { type: 'none', selectedCount };
+    
+    const data1 = node1.data;
+    const data2 = node2.data;
+    
+    // Get variables (excluding 'count')
+    const dims1 = (data1.dimensions || []).filter(d => d !== 'count');
+    const dims2 = (data2.dimensions || []).filter(d => d !== 'count');
+    const meas1 = data1.measures || [];
+    const meas2 = data2.measures || [];
+    
+    // Count variables per chart
+    const chart1VarCount = dims1.length + meas1.length;
+    const chart2VarCount = dims2.length + meas2.length;
+    
+    // Check for common variables
+    const commonDims = dims1.filter(d => dims2.includes(d));
+    const commonMeas = meas1.filter(m => meas2.includes(m));
+    const hasCommon = commonDims.length > 0 || commonMeas.length > 0;
+    
+    // All unique variables
+    const allDims = [...new Set([...dims1, ...dims2])];
+    const allMeas = [...new Set([...meas1, ...meas2])];
+    const totalVariables = allDims.length + allMeas.length;
+    
+    // Determine chart types
+    const chart1Is1D1M = dims1.length === 1 && meas1.length === 1;
+    const chart2Is1D1M = dims2.length === 1 && meas2.length === 1;
+    
+    // AI is ONLY needed when:
+    // - Both charts are exactly 1D+1M (2 variables each)
+    // - No common variables
+    // - Results in 4 total unique variables (AI must pick 3)
+    const needsAI = chart1Is1D1M && chart2Is1D1M && !hasCommon && totalVariables === 4;
+    
+    if (needsAI) {
+      // State 3: AI needed for merging
+      return {
+        type: 'ai-assist',
+        selectedCount: 2,
+        variables: {
+          dimensions: allDims,
+          measures: allMeas
+        },
+        totalVariables,
+        chart1: { 
+          dimensions: dims1, 
+          measures: meas1,
+          varCount: chart1VarCount,
+          type: chart1VarCount === 1 ? 'single-variable' : '1D+1M'
+        },
+        chart2: { 
+          dimensions: dims2, 
+          measures: meas2,
+          varCount: chart2VarCount,
+          type: chart2VarCount === 1 ? 'single-variable' : '1D+1M'
+        }
+      };
+    }
+    
+    // State 2: No AI required - deterministic merge
+    // This includes:
+    // - Charts with common variables
+    // - Single variable charts (histogram, simple bar chart)
+    // - Any other combination where merge logic is clear
+    return {
+      type: 'no-ai-required',
+      selectedCount: 2,
+      variables: {
+        dimensions: allDims,
+        measures: allMeas,
+        common: { dimensions: commonDims, measures: commonMeas }
+      },
+      totalVariables,
+      hasCommon,
+      chart1: { 
+        dimensions: dims1, 
+        measures: meas1,
+        varCount: chart1VarCount,
+        type: chart1VarCount === 1 ? 'single-variable' : (dims1.length > 0 && meas1.length > 0 ? 'multi-variable' : 'single-variable')
+      },
+      chart2: { 
+        dimensions: dims2, 
+        measures: meas2,
+        varCount: chart2VarCount,
+        type: chart2VarCount === 1 ? 'single-variable' : (dims2.length > 0 && meas2.length > 0 ? 'multi-variable' : 'single-variable')
+      }
+    };
+  }, [selectedCharts, nodes]);
+
+  // Update merge metadata whenever merge panel opens or selection changes
+  useEffect(() => {
+    if (mergePanelOpen) {
+      const metadata = analyzeMergeScenario();
+      setMergeMetadata(metadata);
+      setMergeSuccess(false); // Reset success state when selection changes
+    }
+  }, [mergePanelOpen, selectedCharts, analyzeMergeScenario]);
 
   // Handler for adding items to report (must be before nodeTypes)
   const handleAddReportItems = useCallback((newItems) => {
@@ -4713,58 +4909,8 @@ function ReactFlowWrapper() {
       return;
     }
     
-    const data1 = node1.data;
-    const data2 = node2.data;
-    
-    // Check if both are 1D+1M charts
-    const is1D1M = (dims, measures) => {
-      const dimCount = (dims || []).filter(d => d !== 'count').length;
-      const measCount = (measures || []).length;
-      return dimCount === 1 && measCount === 1;
-    };
-    
-    const chart1Is1D1M = is1D1M(data1.dimensions, data1.measures);
-    const chart2Is1D1M = is1D1M(data2.dimensions, data2.measures);
-    
-    // Check for common variables
-    const dims1 = new Set((data1.dimensions || []).filter(d => d !== 'count'));
-    const dims2 = new Set((data2.dimensions || []).filter(d => d !== 'count'));
-    const meas1 = new Set(data1.measures || []);
-    const meas2 = new Set(data2.measures || []);
-    
-    const hasCommonDim = [...dims1].some(d => dims2.has(d));
-    const hasCommonMeas = [...meas1].some(m => meas2.has(m));
-    const hasCommonVariable = hasCommonDim || hasCommonMeas;
-    
-    // Determine if AI-assisted merge is needed
-    const needsAIAssist = chart1Is1D1M && chart2Is1D1M && !hasCommonVariable;
-    
-    if (needsAIAssist) {
-      console.log('🤖 AI-assisted merge needed: two 1D+1M charts with no common variables');
-      
-      // Check if both charts have user_goal (AI-generated)
-      const userGoal1 = data1.user_goal || '';
-      const userGoal2 = data2.user_goal || '';
-      
-      if (userGoal1 || userGoal2) {
-        // Use stored user goals directly
-        const combinedGoal = [userGoal1, userGoal2].filter(Boolean).join(' and ');
-        console.log('✅ Using stored user goals:', combinedGoal);
-        await performAIAssistedMerge(c1, c2, combinedGoal);
-      } else {
-        // No stored goals - prompt user for context
-        console.log('⚠️ No stored user goals - requesting context from user');
-        setPendingMergeCharts({ c1, c2 });
-        setMergeContextText('');
-        // Close other panels and open merge panel
-        setUploadPanelOpen(false);
-        setVariablesPanelOpen(false);
-        setMergePanelOpen(true);
-      }
-      return;
-    }
-    
-    // Standard merge flow (has common variables or not 1D+1M)
+    // Standard merge flow - panel UI handles AI vs deterministic logic
+    // This function now only executes the actual merge API call
     try {
       const res = await fetch(`${API}/fuse`, { 
         method: 'POST', 
@@ -4831,6 +4977,9 @@ function ReactFlowWrapper() {
           markerEnd: { type: 'arrowclosed', color: '#94a3b8' }
         }
       ]));
+      
+      // Show success message instead of closing panel
+      setMergeSuccess(true);
       
       // Clear selections after successful merge
       setSelectedCharts([]);
@@ -5393,6 +5542,9 @@ function ReactFlowWrapper() {
           markerEnd: { type: 'arrowclosed', color: '#7c3aed' }
         }
       ]));
+      
+      // Show success message instead of closing panel
+      setMergeSuccess(true);
       
       // Clear selections
       setSelectedCharts([]);
@@ -7034,6 +7186,8 @@ function ReactFlowWrapper() {
         setVariablesPanelOpen={setVariablesPanelOpen}
         chartActionsPanelOpen={chartActionsPanelOpen}
         setChartActionsPanelOpen={setChartActionsPanelOpen}
+        mergePanelOpen={mergePanelOpen}
+        setMergePanelOpen={setMergePanelOpen}
         activeTool={activeTool}
         onToolChange={handleToolChange}
         onMergeCharts={mergeSelectedCharts}
@@ -7048,7 +7202,7 @@ function ReactFlowWrapper() {
           isOpen={uploadPanelOpen} 
           title="Upload Data"
           onClose={() => setUploadPanelOpen(false)}
-          size="lg"
+          size="md"
         >
           <div className="p-4">
             <div className="space-y-4">
@@ -7092,8 +7246,18 @@ function ReactFlowWrapper() {
               {/* Analysis Section */}
               {datasetId && (
                 <div className="border-t border-gray-200 pt-4">
-                  <div className="mb-3">
+                  <div className="mb-3 flex items-center justify-between">
                     <h3 className="font-medium text-gray-900">Dataset Analysis</h3>
+                    {datasetAnalysis && !editingMetadata && (
+                      <Button 
+                        size="sm" 
+                        variant="ghost" 
+                        onClick={startEditingMetadata}
+                        className="h-6 px-2 text-xs"
+                      >
+                        Edit
+                      </Button>
+                    )}
                   </div>
 
                   {/* Prominent Analysis CTA when no analysis exists */}
@@ -7146,19 +7310,8 @@ function ReactFlowWrapper() {
                     <div className="space-y-4">
                       {/* Dataset Summary */}
                       <div>
-                        <div className="flex items-center justify-between mb-2">
+                        <div className="mb-2">
                           <label className="text-sm font-medium text-gray-700">Dataset Summary</label>
-                          {!editingMetadata && (
-                            <Button 
-                              size="sm" 
-                              variant="outline" 
-                              onClick={startEditingMetadata}
-                              className="h-6 px-2 text-xs"
-                            >
-                              <Edit size={12} className="mr-1" />
-                              Edit
-                            </Button>
-                          )}
                         </div>
                         
                         {editingMetadata ? (
@@ -7166,7 +7319,7 @@ function ReactFlowWrapper() {
                             value={metadataDraft?.dataset_summary || ''}
                             onChange={(e) => updateMetadataDraft('dataset_summary', e.target.value)}
                             className="w-full p-2 text-sm border border-gray-300 rounded-md resize-none"
-                            rows={3}
+                            rows={5}
                             placeholder="Describe your dataset..."
                           />
                         ) : (
@@ -7181,24 +7334,26 @@ function ReactFlowWrapper() {
                         <label className="text-sm font-medium text-gray-700 block mb-2">
                           Column Descriptions ({datasetAnalysis.columns?.length || 0} columns)
                         </label>
-                        <div className="space-y-2 max-h-64 overflow-y-auto">
+                        <div className="space-y-2 max-h-96 overflow-y-auto">
                           {datasetAnalysis.columns?.map((column, index) => (
                             <div key={column.name} className="border border-gray-200 rounded-lg p-3 bg-white">
                               <div className="flex items-start justify-between mb-2">
                                 <div className="flex-1">
-                                  <div className="flex items-center gap-2 mb-1">
+                                  <div className="mb-2">
                                     <span className="font-medium text-sm">{column.name}</span>
+                                  </div>
+                                  <div className="flex items-center gap-2 flex-wrap mb-1">
                                     <Badge variant="outline" className="text-xs">
-                                      {column.dtype}
+                                      {getReadableDataType(column.dtype)}
+                                    </Badge>
+                                    <Badge variant="secondary" className="text-xs">
+                                      {column.unique_count} unique
                                     </Badge>
                                     {column.missing_pct > 0 && (
                                       <Badge variant="secondary" className="text-xs">
                                         {column.missing_pct}% missing
                                       </Badge>
                                     )}
-                                    <Badge variant="secondary" className="text-xs">
-                                      {column.unique_count} unique
-                                    </Badge>
                                   </div>
                                   
                                   {editingMetadata ? (
@@ -7244,16 +7399,6 @@ function ReactFlowWrapper() {
                           >
                             Cancel
                           </Button>
-                        </div>
-                      )}
-
-                      {/* Token Usage */}
-                      {datasetAnalysis.token_usage && datasetAnalysis.token_usage.totalTokens > 0 && (
-                        <div className="text-xs text-gray-500 pt-2 border-t border-gray-200">
-                          AI Analysis: {datasetAnalysis.token_usage.totalTokens} tokens used (added to Settings total)
-                          {datasetAnalysis.user_edited && (
-                            <span className="ml-2 text-green-600">✓ Saved</span>
-                          )}
                         </div>
                       )}
                     </div>
@@ -7302,23 +7447,30 @@ function ReactFlowWrapper() {
                 </div>
 
                 <div className="space-y-2">
-                  <Button 
-                    className="w-full gap-2 bg-gradient-to-r from-purple-600 to-blue-600 text-white hover:from-purple-700 hover:to-blue-700 active:from-purple-800 active:to-blue-800 disabled:bg-gray-300 disabled:text-gray-500" 
+<DesignButton 
+                    variant="accent"
+                    size="lg"
+                    className="w-full gap-2" 
                     onClick={suggestCharts}
                     disabled={!goalText.trim() || !datasetAnalysis || suggestionsLoading}
+                    style={{
+                      width: '286px',
+                      height: '40px',
+                      fontSize: '14px'
+                    }}
                   >
                     {suggestionsLoading ? (
-                      <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                        Analyzing...
-                      </>
+                      <div className="flex items-center justify-center gap-2">
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-black"></div>
+                        <span style={{ fontSize: '14px' }}>Analyzing...</span>
+                      </div>
                     ) : (
-                      <>
+                      <div className="flex items-center justify-center gap-2">
                         <Sparkles size={16} />
-                        Smart Visualise
-                      </>
+                        <span style={{ fontSize: '14px' }}>Smart Visualise</span>
+                      </div>
                     )}
-                  </Button>
+                  </DesignButton>
                   
                   {suggestionsError && (
                     <div className="text-xs text-red-600 bg-red-50 p-2 rounded">
@@ -7405,7 +7557,7 @@ function ReactFlowWrapper() {
         />
       )}
 
-      {/* AI-Assisted Merge Panel */}
+      {/* Unified Merge Panel with 3 States */}
       {mergePanelOpen && (
         <SlidingPanel
           isOpen={mergePanelOpen}
@@ -7414,19 +7566,157 @@ function ReactFlowWrapper() {
             setMergePanelOpen(false);
             setPendingMergeCharts(null);
             setMergeContextText('');
+            setMergeMetadata(null);
+            setMergeSuccess(false);
           }}
           size="md"
         >
           <div className="p-4">
             <div className="space-y-6">
-              {/* Info Section */}
-              <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
-                <div className="flex items-start gap-3">
-                  <Sparkles className="text-purple-600 mt-1" size={20} />
-                  <p className="text-sm text-purple-900">
-                    These charts have no common variables. Please describe what insight you're trying to gain, 
-                    and AI will select the best 3 variables from the 4 available to create a meaningful visualization.
-                  </p>
+              
+              {/* STATE 1: Not Enough Charts Selected */}
+              {mergeMetadata?.type === 'none' && (
+                <div className="space-y-4">
+                  {/* Chart Selection Indicator */}
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-gray-700">Charts Selected</span>
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-semibold ${
+                          mergeMetadata.selectedCount === 0 ? 'bg-gray-200 text-gray-600' :
+                          mergeMetadata.selectedCount === 1 ? 'bg-blue-100 text-blue-700' :
+                          'bg-teal-100 text-teal-700'
+                        }`}>
+                          {mergeMetadata.selectedCount}
+                        </span>
+                        <span className="text-sm text-gray-600">out of 2</span>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-gray-50 rounded-lg p-4">
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">Steps to Merge</h4>
+                    <ol className="text-sm text-gray-600 space-y-1 list-decimal list-inside">
+                      <li>Select the charts</li>
+                      <li>Read the properties of upcoming merged chart, or Give additional context to AI</li>
+                      <li>Click on the Merge button</li>
+                    </ol>
+                  </div>
+                </div>
+              )}
+
+              {/* STATE 2: No AI Required - Deterministic Merge */}
+              {mergeMetadata?.type === 'no-ai-required' && (
+                <div className="space-y-4">
+                  {/* Chart Selection Indicator */}
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-gray-700">Charts Selected</span>
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-semibold bg-teal-100 text-teal-700">
+                          2
+                        </span>
+                        <span className="text-sm text-gray-600">out of 2</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Merge Preview */}
+                  <div className="bg-white border border-gray-200 rounded-lg p-4">
+                    <h4 className="text-sm font-semibold text-gray-700 mb-3">
+                      Merged chart will have {mergeMetadata.totalVariables} variable{mergeMetadata.totalVariables !== 1 ? 's' : ''}:
+                    </h4>
+                    
+                    {mergeMetadata.variables.dimensions.length > 0 && (
+                      <div className="mb-3">
+                        <p className="text-xs font-medium text-gray-500 uppercase mb-1">Dimensions</p>
+                        <div className="flex flex-wrap gap-2">
+                          {mergeMetadata.variables.dimensions.map(dim => (
+                            <span 
+                              key={dim}
+                              className={`px-2 py-1 text-xs rounded ${
+                                mergeMetadata.variables.common?.dimensions.includes(dim)
+                                  ? 'bg-green-100 text-green-800 font-medium'
+                                  : 'bg-blue-100 text-blue-800'
+                              }`}
+                            >
+                              {dim} {mergeMetadata.variables.common?.dimensions.includes(dim) && '(common)'}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {mergeMetadata.variables.measures.length > 0 && (
+                      <div>
+                        <p className="text-xs font-medium text-gray-500 uppercase mb-1">Measures</p>
+                        <div className="flex flex-wrap gap-2">
+                          {mergeMetadata.variables.measures.map(meas => (
+                            <span 
+                              key={meas}
+                              className={`px-2 py-1 text-xs rounded ${
+                                mergeMetadata.variables.common?.measures.includes(meas)
+                                  ? 'bg-green-100 text-green-800 font-medium'
+                                  : 'bg-orange-100 text-orange-800'
+                              }`}
+                            >
+                              {meas} {mergeMetadata.variables.common?.measures.includes(meas) && '(common)'}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Action Button */}
+                  <Button
+                    onClick={async () => {
+                      await mergeSelectedCharts();
+                      // Don't close panel - mergeSuccess state will show success UI
+                    }}
+                    className="w-full bg-blue-600 text-white hover:bg-blue-700"
+                  >
+                    Merge
+                  </Button>
+                </div>
+              )}
+
+              {/* STATE 3: AI Needed for Merging */}
+              {mergeMetadata?.type === 'ai-assist' && (
+                <div className="space-y-4">
+                  {/* Chart Selection Indicator */}
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-gray-700">Charts Selected</span>
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-semibold bg-teal-100 text-teal-700">
+                          2
+                        </span>
+                        <span className="text-sm text-gray-600">out of 2</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Available Variables Info */}
+                  <div className="bg-gray-50 rounded-lg p-3">
+                    <h4 className="text-xs font-semibold text-gray-600 uppercase mb-2">Available Variables</h4>
+                    <div className="space-y-2 text-sm">
+                      {mergeMetadata.variables.dimensions.length > 0 && (
+                        <div>
+                          <span className="text-gray-600">Dimensions: </span>
+                          <span className="text-gray-800 font-medium">
+                            {mergeMetadata.variables.dimensions.join(', ')}
+                          </span>
+                        </div>
+                      )}
+                      {mergeMetadata.variables.measures.length > 0 && (
+                        <div>
+                          <span className="text-gray-600">Measures: </span>
+                          <span className="text-gray-800 font-medium">
+                            {mergeMetadata.variables.measures.join(', ')}
+                          </span>
+                        </div>
+                      )}
                 </div>
               </div>
 
@@ -7436,47 +7726,87 @@ function ReactFlowWrapper() {
                   What are you trying to analyze?
                 </label>
                 <textarea
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
-                  rows={6}
+                      className="w-full min-h-[80px] p-3 text-sm border border-gray-300 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   value={mergeContextText}
                   onChange={(e) => setMergeContextText(e.target.value)}
-                  placeholder="e.g., I want to understand the relationship between sales and customer segments..."
-                />
-                <p className="text-xs text-gray-500 mt-2">
-                  Provide context about your analysis goal to help AI select the most relevant variables.
+                      placeholder="Provide context about your analysis goal to help AI select the most relevant variables. e.g., I want to understand the relationship between sales and customer segments..."
+                    />
+                  </div>
+
+                  {/* API Key Warning */}
+                  {!apiKey && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                      <p className="text-xs text-amber-800">
+                        ⚠️ Please configure your API key in Settings to use AI-assisted merge.
                 </p>
               </div>
+                  )}
 
-              {/* Action Buttons */}
-              <div className="flex gap-2 pt-2">
-                <Button
-                  onClick={() => {
-                    setMergePanelOpen(false);
+                  {/* Action Button */}
+                  <DesignButton
+                    variant="accent"
+                    size="lg"
+                    className="w-full gap-2"
+                    onClick={async () => {
+                      if (!mergeContextText.trim()) {
+                        alert('Please provide context about what you want to analyze');
+                        return;
+                      }
+                      
+                      const [c1, c2] = selectedCharts;
+                      await performAIAssistedMerge(c1, c2, mergeContextText);
+                      
+                      // Don't close panel - mergeSuccess state will show success UI
                     setPendingMergeCharts(null);
                     setMergeContextText('');
                   }}
-                  className="flex-1 bg-gray-200 text-gray-700 hover:bg-gray-300"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  onClick={handleMergeContextSubmit}
                   disabled={!mergeContextText.trim() || !apiKey}
-                  className="flex-1 bg-purple-600 text-white hover:bg-purple-700 disabled:bg-gray-300 disabled:text-gray-500 flex items-center justify-center gap-2"
                 >
                   <Sparkles size={16} />
                   {apiKey ? 'Merge with AI' : 'Configure API Key First'}
-                </Button>
+                  </DesignButton>
               </div>
+              )}
 
-              {/* API Key Warning */}
-              {!apiKey && (
-                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-                  <p className="text-xs text-amber-800">
-                    ⚠️ Please configure your API key in Settings to use AI-assisted merge.
-                  </p>
+              {/* STATE 4: Success - Charts Merged */}
+              {mergeSuccess && (
+                <div className="space-y-4">
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="text-emerald-600 mt-1 text-2xl">🎉</div>
+                      <div>
+                        <h3 className="font-medium text-emerald-900 mb-1">Charts Merged Successfully!</h3>
+                        <p className="text-sm text-emerald-800">
+                          Your merged chart has been created and added to the canvas.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-50 rounded-lg p-4">
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">What's next?</h4>
+                    <ul className="text-sm text-gray-600 space-y-1 list-disc list-inside">
+                      <li>The new merged chart is connected to its parent charts</li>
+                      <li>You can interact with it like any other chart</li>
+                      <li>Select 2 more charts to create another merge</li>
+                    </ul>
+                  </div>
+
+                  <div className="flex gap-2 pt-2">
+                    <Button
+                      onClick={() => {
+                        setMergePanelOpen(false);
+                        setMergeMetadata(null);
+                        setMergeSuccess(false);
+                      }}
+                      className="flex-1 bg-emerald-600 text-white hover:bg-emerald-700"
+                    >
+                      Close
+                    </Button>
+                  </div>
                 </div>
               )}
+
             </div>
           </div>
         </SlidingPanel>

@@ -239,6 +239,29 @@
     color: var(--color-text);
   }
   
+  /* Accent Button - Bright green action button */
+  .btn-accent {
+    background-color: #1FFFA2;
+    color: black;
+    border: none;
+    font-size: 14px;
+  }
+  
+  .btn-accent:hover:not(:disabled) {
+    background-color: #1AE08E;
+  }
+  
+  .btn-accent:active:not(:disabled) {
+    background-color: #16C77D;
+  }
+  
+  .btn-accent:disabled {
+    background-color: #E5E7EB;
+    color: #9CA3AF;
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+  
   /* Icon Button */
   .btn-icon {
     width: var(--size-button);
