@@ -215,6 +215,7 @@ const CHART_TYPES = {
           x: xValues.map(v => truncateText(v)),
           y: data.map(r => r[yKey] || 0),
           text: xValues.map(v => String(v)), // Full text for hover
+          textposition: 'none', // Don't show text on bars, only in hover
           hovertemplate: '%{text}<br>%{y}<extra></extra>',
           marker: { color: DEFAULT_COLORS.categorical[0] }
         }],
@@ -336,6 +337,7 @@ const CHART_TYPES = {
           x: xValues.map(v => truncateText(v)), // Truncate x-axis labels
           y: xValues.map(v => (data.find(r => r[xKey] === v)?.[measure]) ?? 0),
           text: xValues.map(v => String(v)), // Full text for hover
+          textposition: 'none', // Don't show text on bars, only in hover
           hovertemplate: '%{text}<br>%{y}<extra></extra>',
           marker: { color: DEFAULT_COLORS.comparative[i % DEFAULT_COLORS.comparative.length] }
         })),
@@ -486,6 +488,7 @@ const CHART_TYPES = {
         x: uniqueCategories.map(cat => truncateText(cat)), // Truncate x-axis labels
         y: uniqueCategories.map(cat => groups[product]?.[cat] || 0),
         text: uniqueCategories.map(cat => String(cat)), // Full text for hover
+        textposition: 'none', // Don't show text on bars, only in hover
         hovertemplate: '%{text}<br>%{y}<extra></extra>',
         marker: { color: ['#3182ce', '#38a169', '#d69e2e', '#e53e3e', '#805ad5', '#dd6b20', '#38b2ac', '#ed64a6'][i % 8] }
       }));
@@ -1985,15 +1988,9 @@ function ChartTypeSelector({ dimensions = [], measures = [], currentType, onType
  * @param {Function} updateTokenUsage - Updates token usage metrics
  * @param {Function} onAddToReport - Callback to add chart to report document
  */
-const ChartNode = React.memo(function ChartNode({ data, id, selected, onSelect, apiKey, selectedModel, setShowSettings, updateTokenUsage, onAddToReport, setReportPanelOpen, onResizeStart, onResizeEnd }) {
-  const { title, figure, isFused, strategy, stats, agg, dimensions = [], measures = [], onAggChange, onShowTable, table = [] } = data;
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [statsVisible, setStatsVisible] = useState(false);
-  const [aiExploreOpen, setAiExploreOpen] = useState(false);
-  const [aiQuery, setAiQuery] = useState('');
+const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, selectedModel, setShowSettings, updateTokenUsage, onAddToReport, setReportPanelOpen, onResizeStart, onResizeEnd }) {
+  const { title, figure, isFused, strategy, stats, agg, dimensions = [], measures = [], onAggChange, onShowTable, table = [], chartType: externalChartType } = data;
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiResult, setAiResult] = useState(null);
-  const [showTableView, setShowTableView] = useState(false);
   const [insightSticky, setInsightSticky] = useState(null);
   
   // Auto-display preloaded insights for AI-generated charts
@@ -2039,16 +2036,25 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, onSelect, 
   );
   
   // Use ref to prevent state reset during React Flow re-renders
-  const aiExploreRef = useRef(false);
   const plotlyRef = useRef(null);
   const chartContainerRef = useRef(null);
   const plotlyDivRef = useRef(null);
   
   // Chart type switching state
   const defaultChartType = getDefaultChartType(dimensions.length, measures.length);
-  const [chartType, setChartType] = useState(defaultChartType.id);
+  const [chartType, setChartType] = useState(externalChartType || defaultChartType.id);
   const [currentFigure, setCurrentFigure] = useState(figure);
-  const [hasUserChangedType, setHasUserChangedType] = useState(false);
+  // Only mark as user-changed if there's an explicit external chart type
+  const [hasUserChangedType, setHasUserChangedType] = useState(!!externalChartType);
+  
+  // Sync chart type when changed externally (from Chart Actions panel)
+  useEffect(() => {
+    if (externalChartType && externalChartType !== chartType) {
+      console.log(`Chart ${id}: Syncing external chart type change to ${externalChartType}`);
+      setChartType(externalChartType);
+      setHasUserChangedType(true);
+    }
+  }, [externalChartType, chartType, id]);
   
   // Sync currentFigure with figure prop changes, but preserve user's chart type choice
   useEffect(() => {
@@ -2080,13 +2086,6 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, onSelect, 
       }
     }
   }, [figure, chartType, hasUserChangedType, table, dimensions, measures, strategy]);
-
-  // Restore AI explore state if it gets reset by React Flow
-  useEffect(() => {
-    if (aiExploreRef.current && !aiExploreOpen) {
-      setAiExploreOpen(true);
-    }
-  }, [aiExploreOpen]);
 
   // Consolidated cleanup effect - single cleanup on unmount for performance
   useEffect(() => {
@@ -2239,33 +2238,8 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, onSelect, 
     };
   }, [isResizing]);
   
-  const handleSelect = (e) => {
-    e.stopPropagation();
-    onSelect(id);
-  };
-
-  // Handle selection only for specific areas (not buttons or plot area)
-  const handleChartAreaClick = (e) => {
-    // Only select if clicking directly on empty container areas
-    // NOT on plot area (users need that for data interaction)
-    const target = e.target;
-    const currentTarget = e.currentTarget;
-    
-    // Check what was clicked
-    const isPlotElement = target.closest('.js-plotly-plot') || 
-                         target.closest('.main-svg') || 
-                         target.closest('.plotly') ||
-                         target.closest('svg');
-    const isButton = target.closest('button') || target.closest('[role="button"]') || target.closest('[data-radix-collection-item]');
-    const isDropdown = target.closest('[role="menu"]') || target.closest('[role="menuitem"]') || target.closest('[data-radix-popper-content-wrapper]');
-    const isInteractiveElement = target.closest('input') || target.closest('select') || target.closest('textarea');
-    
-    // Only allow selection if clicking directly on the empty container
-    // NOT on plot elements, buttons, dropdowns, or other interactive elements
-    if (target === currentTarget && !isButton && !isDropdown && !isPlotElement && !isInteractiveElement) {
-      handleSelect(e);
-    }
-  };
+  // Chart selection is now handled by the checkbox in the header
+  // No need for click-based selection handlers
   
   // Handle chart type changes
   const handleChartTypeChange = useCallback((newChartType) => {
@@ -2319,69 +2293,6 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, onSelect, 
     }
   }, [table, dimensions, measures, strategy]);
   
-  const handleAIExplore = async () => {
-    if (!aiQuery.trim() || aiLoading) return;
-    
-    // Check if API key is configured
-    const currentApiKey = apiKey || localStorage.getItem('gemini_api_key');
-    const currentModel = selectedModel || localStorage.getItem('gemini_model') || 'gemini-2.0-flash';
-    
-    if (!currentApiKey.trim()) {
-      setAiResult({
-        success: false,
-        answer: '⚠️ Please configure your Gemini API key in Settings first.'
-      });
-      setShowSettings(true);
-      return;
-    }
-    
-    setAiLoading(true);
-    setShowTableView(false);  // Reset to text view for new queries
-    try {
-      const response = await fetch(`${API}/ai-explore`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chart_id: id,
-          user_query: aiQuery.trim(),
-          api_key: currentApiKey,
-          model: currentModel
-        })
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText);
-      }
-      
-      const result = await response.json();
-      
-      // Track token usage
-      if (result.token_usage) {
-        updateTokenUsage(result.token_usage);
-      }
-      
-      // AI analysis completed with generated Python code
-      
-      // Store AI result for display
-      setAiResult(result);
-      
-      // Keep the query visible and don't close the section for easier follow-up questions
-      // setAiQuery('');
-      // setAiExploreOpen(false);
-      setMenuOpen(false);
-      
-    } catch (error) {
-      console.error('AI exploration failed:', error);
-      setAiResult({
-        success: false,
-        answer: `AI exploration failed: ${error.message}. ${error.message.includes('401') || error.message.includes('403') ? 'Please check your API key in Settings.' : ''}`
-      });
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
   const handleGenerateInsights = async () => {
     if (aiLoading) return;
     
@@ -2435,133 +2346,6 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, onSelect, 
     } catch (error) {
       console.error('Generate insights failed:', error);
       alert(`Failed to generate insights: ${error.message}. ${error.message.includes('401') || error.message.includes('403') ? 'Please check your API key in Settings.' : ''}`);
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
-  const handleAddToReport = async () => {
-    if (!apiKey || !apiKey.trim()) {
-      alert('⚠️ Please configure your Gemini API key in Settings first.');
-      setShowSettings(true);
-      return;
-    }
-    
-    setMenuOpen(false);
-    setAiLoading(true);
-    
-    try {
-      // Step 1: Capture chart as image using Plotly's toImage which includes all elements
-      const chartElement = document.querySelector(`[data-id="${id}"] .js-plotly-plot`);
-      if (!chartElement) {
-        throw new Error('Chart not found');
-      }
-      
-      // Try to use Plotly.toImage (includes all chart elements) with fallback to canvas method
-      let chartImage;
-      const Plotly = window.Plotly;
-      
-      if (Plotly && Plotly.toImage) {
-        // Preferred method: Use Plotly.toImage to capture complete chart with title, axes, and legend
-        try {
-          chartImage = await Plotly.toImage(chartElement, {
-            format: 'png',
-            width: chartDimensions.width || 800,
-            height: chartDimensions.height || 500,
-            scale: 2 // Higher resolution for better quality in reports
-          });
-        } catch (error) {
-          console.warn('Plotly.toImage failed, falling back to canvas method:', error);
-          chartImage = null;
-        }
-      }
-      
-      // Fallback: Canvas-based capture if Plotly.toImage is not available or fails
-      if (!chartImage) {
-        const svgElement = chartElement.querySelector('.main-svg');
-        if (!svgElement) {
-          throw new Error('Chart SVG not found');
-        }
-        
-        const bbox = svgElement.getBoundingClientRect();
-        const width = bbox.width || 800;
-        const height = bbox.height || 500;
-        
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        
-        const svgData = new XMLSerializer().serializeToString(svgElement);
-        const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-        const url = URL.createObjectURL(svgBlob);
-        
-        chartImage = await new Promise((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => {
-            ctx.fillStyle = 'white';
-            ctx.fillRect(0, 0, width, height);
-            ctx.drawImage(img, 0, 0, width, height);
-            URL.revokeObjectURL(url);
-            resolve(canvas.toDataURL('image/png'));
-          };
-          img.onerror = () => {
-            URL.revokeObjectURL(url);
-            reject(new Error('Failed to load chart image'));
-          };
-          img.src = url;
-        });
-      }
-      
-      // Step 2: Call backend to generate report section
-      const response = await fetch(`${API}/generate-report-section`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chart_id: id,
-          api_key: apiKey,
-          model: selectedModel,
-          ai_explore_result: aiResult?.answer || null
-        })
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText);
-      }
-      
-      const result = await response.json();
-      
-      // Step 3: Update token usage
-      if (result.token_usage) {
-        updateTokenUsage(result.token_usage);
-      }
-      
-      // Step 4: Add to report - Create image and text items
-      const imageItem = {
-        id: `image-${Date.now()}`,
-        type: 'image',
-        imageUrl: chartImage
-      };
-      
-      const textItem = {
-        id: `text-${Date.now()}`,
-        type: 'text',
-        content: result.report_section
-      };
-      
-      // Call parent handler with both items
-      if (onAddToReport) {
-        onAddToReport([imageItem, textItem]);
-      }
-      
-      // Auto-open report panel
-      setReportPanelOpen(true);
-      
-    } catch (error) {
-      console.error('Add to report failed:', error);
-      // Show error in console, no alert needed as report panel will open
-      console.error(`Failed to add to report: ${error.message}`);
     } finally {
       setAiLoading(false);
     }
@@ -2634,12 +2418,9 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, onSelect, 
       data-nopan={isResizing ? 'true' : undefined}
       draggable={false}
     >
-      {/* Clean Header with Title and Menu */}
-      <div className="flex items-center justify-between mb-2">
-        <div 
-          className="flex-1 cursor-pointer" 
-          onClick={handleSelect}
-        >
+      {/* Clean Header with Title, Selection Checkbox, and Insights Button */}
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <div className="flex-1">
           <div className="font-semibold">{title}</div>
           {/* Show badge when data is sampled */}
           {memoizedData && memoizedData[0]?._sampled && memoizedData[0]?._fullDataLength && (
@@ -2649,143 +2430,49 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, onSelect, 
           )}
         </div>
         
-        {/* Chart Type Selector - show for charts with supported dimension/measure combinations */}
-        {(() => {
-          // Normalize dimensions and measures for chart type selection
-          // Remove 'count' from dimensions but treat 'count' measure as valid for single-var charts
-          const normalizedDimensions = dimensions?.filter(d => d !== 'count') || [];
-          const normalizedMeasures = measures || [];
-          
-          const dims = normalizedDimensions.length;
-          // For single variable charts with 'count' measure, treat as 1 measure for chart type purposes
-          const meas = normalizedMeasures.length;
-          
-          const supportedTypes = getSupportedChartTypes(dims, meas);
-          
-          // Show selector if multiple chart types are supported
-          // Now we support 3-variable charts too!
-          const showSelector = supportedTypes.length > 1;
-          
-          return showSelector ? (
-            <ChartTypeSelector
-              dimensions={normalizedDimensions}
-              measures={normalizedMeasures}
-              currentType={chartType}
-              onTypeChange={handleChartTypeChange}
-            />
-          ) : null;
-        })()}
+        {/* Selection Checkbox */}
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => {
+            e.stopPropagation();
+            // Toggle selection via onChartClick
+            data.onChartClick?.(id);
+          }}
+          onClick={(e) => e.stopPropagation()}
+          className="w-5 h-5 cursor-pointer accent-blue-500 rounded border-2 border-gray-300 hover:border-blue-400 transition-colors"
+          title="Select chart"
+          style={{ zIndex: 1000, position: 'relative' }}
+        />
         
-        <div className="flex items-center space-x-2" style={{ zIndex: 1000, position: 'relative' }}>
-          {/* AI Explore Button */}
-          <Button
-            onClick={(e) => {
-              e.stopPropagation();
-              const newState = !aiExploreOpen;
-              setAiExploreOpen(newState);
-              aiExploreRef.current = newState;
-            }}
-            variant={aiExploreOpen ? "default" : "ghost"}
-            size="icon"
-            title={aiExploreOpen ? "Close AI Explorer" : "Explore with AI"}
-            className={`transition-all duration-200 ${aiExploreOpen ? "bg-blue-600 text-white hover:bg-blue-700 shadow-sm" : "text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
-            style={{ zIndex: 1000, position: 'relative' }}
-          >
+        {/* AI Insights Button */}
+        <Button
+          onClick={(e) => {
+            e.stopPropagation();
+            handleGenerateInsights();
+          }}
+          variant="ghost"
+          size="icon"
+          disabled={aiLoading || insightSticky !== null}
+          title={insightSticky !== null ? "Insights already shown" : "Generate chart insights"}
+          className={`transition-all duration-200 ${
+            insightSticky !== null 
+              ? "text-gray-400 cursor-not-allowed opacity-50" 
+              : "text-gray-600 hover:bg-gray-100 hover:text-blue-600"
+          }`}
+          style={{ zIndex: 1000, position: 'relative' }}
+        >
+          {aiLoading ? (
+            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600"></div>
+          ) : (
             <Sparkles size={16} />
-          </Button>
-          
-          {/* Chart Options Menu */}
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 h-10 w-10 text-gray-600 hover:bg-gray-100 hover:text-gray-800"
-              onClick={(e) => {
-                e.stopPropagation();
-                setMenuOpen(!menuOpen);
-              }}
-              style={{ zIndex: 1000, position: 'relative' }}
-            >
-              <Menu size={16} />
-            </DropdownMenuTrigger>
-            
-            <DropdownMenuContent 
-              isOpen={menuOpen} 
-              onClose={() => setMenuOpen(false)}
-            >
-              <DropdownMenuLabel>Chart Options</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              
-              {/* Show Table Option */}
-              <DropdownMenuItem
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onShowTable?.(id);
-                  setMenuOpen(false);
-                }}
-              >
-                <Table size={14} className="mr-2" />
-                Data Table
-              </DropdownMenuItem>
-              
-              {/* Toggle Stats Option */}
-              {stats && (
-                <DropdownMenuItem
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setStatsVisible(!statsVisible);
-                    setMenuOpen(false);
-                  }}
-                >
-                  <BarChart size={14} className="mr-2" />
-                  {statsVisible ? 'Hide' : 'Show'} Statistics
-                </DropdownMenuItem>
-              )}
-              
-              {/* Add to Report Option */}
-              <DropdownMenuItem
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleAddToReport();
-                  setMenuOpen(false);
-                }}
-              >
-                <File size={14} className="mr-2" />
-                Add to Report
-              </DropdownMenuItem>
-              
-              {/* Aggregation Options */}
-              {canChangeAgg && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel>Aggregation</DropdownMenuLabel>
-                  {['sum', 'avg', 'min', 'max'].map(aggType => (
-                    <DropdownMenuItem
-                      key={aggType}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onAggChange?.(id, aggType);
-                        setMenuOpen(false);
-                      }}
-                    >
-                      <div className="flex items-center justify-between w-full">
-                        <span className="capitalize">{aggType === 'avg' ? 'Average' : aggType}</span>
-                        {(agg || 'sum') === aggType && (
-                          <span className="text-blue-600">✓</span>
-                        )}
-                      </div>
-                    </DropdownMenuItem>
-                  ))}
-                </>
-              )}
-              
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+          )}
+        </Button>
       </div>
       
       {/* Chart Plot - Now with more space! */}
       <div 
         className="chart-plot-container"
-        onClick={handleChartAreaClick}
       >
       {currentFigure && currentFigure.data && currentFigure.layout ? (
         <div 
@@ -2806,45 +2493,13 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, onSelect, 
             onInitialized={handlePlotlyInit}
             onUpdate={handlePlotlyUpdate}
           config={{
-            displayModeBar: selected, // Only show when chart is selected
+            displayModeBar: false, // Hide Plotly modebar - actions moved to Chart Actions panel
             displaylogo: false,
             staticPlot: !isChartVisible, // Static rendering when not visible
-            modeBarButtons: [
-              [
-                'zoomIn2d',
-                'zoomOut2d',
-                'resetScale2d',
-                'lasso2d',
-                'select2d',
-                'autoScale2d',
-                'toImage'
-              ]
-            ],
-            modeBarButtonsToRemove: [
-              'zoom2d',
-              'pan2d',
-              'toggleSpikelines',
-              'sendDataToCloud',
-              'editInChartStudio'
-            ],
-            // Position modebar outside chart area
-            modeBarButtonsToAdd: [],
-            toImageButtonOptions: {
-              format: 'png',
-              filename: title?.replace(/[^a-z0-9]/gi, '_') || 'chart',
-              height: 500,
-              width: 700,
-              scale: 1
-            },
-            // Add these to prevent hover layer issues
-            staticPlot: false,
             responsive: true,
             doubleClick: 'reset+autosize',
             showTips: true,
-            showLink: false,
-            linkText: '',
-            sendData: false,
-            showSources: false
+            showLink: false
           }}
         />
         </div>
@@ -2852,198 +2507,6 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, onSelect, 
         <div className="text-sm text-gray-500">Loading chart...</div>
       )}
       </div>
-
-      {/* Collapsible Stats - only show when toggled */}
-      {stats && statsVisible && (
-        <div className="mt-2 grid grid-cols-4 gap-2 text-xs text-gray-700">
-          <div className="bg-gray-50 rounded-md p-2">
-            <div className="font-semibold">Sum</div>
-            <div className="tabular-nums">{Number(stats.sum).toLocaleString()}</div>
-          </div>
-          <div className="bg-gray-50 rounded-md p-2">
-            <div className="font-semibold">Avg</div>
-            <div className="tabular-nums">{Number(stats.avg).toLocaleString()}</div>
-          </div>
-          <div className="bg-gray-50 rounded-md p-2">
-            <div className="font-semibold">Max</div>
-            <div className="tabular-nums">{Number(stats.max).toLocaleString()}</div>
-          </div>
-          <div className="bg-gray-50 rounded-md p-2">
-            <div className="font-semibold">Min</div>
-            <div className="tabular-nums">{Number(stats.min).toLocaleString()}</div>
-          </div>
-        </div>
-      )}
-
-      {/* AI Explore Input Box */}
-      {aiExploreOpen && (
-        <div className="mt-3 border-t border-gray-200 pt-3">
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
-                Explore with AI
-              </div>
-              <Button
-                onClick={handleGenerateInsights}
-                disabled={aiLoading || insightSticky !== null}
-                variant="ghost"
-                size="sm"
-                className={`px-2 py-1 h-auto transition-all duration-200 ${
-                  insightSticky !== null 
-                    ? "text-gray-400 cursor-not-allowed opacity-50" 
-                    : "text-blue-600 hover:text-blue-700 hover:bg-blue-50"
-                }`}
-                title={insightSticky !== null ? "Insights already shown" : "Generate automatic insights for this chart"}
-              >
-                <Sparkles className="w-4 h-4 mr-1" />
-                Insights
-              </Button>
-            </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={aiQuery}
-                onChange={(e) => setAiQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleAIExplore();
-                  }
-                }}
-                placeholder="Use AI to filter data, aggregate data, calculate new columns etc"
-                className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                disabled={aiLoading}
-              />
-              <Button
-                onClick={handleAIExplore}
-                disabled={!aiQuery.trim() || aiLoading}
-                size="sm"
-                className="px-3"
-              >
-                {aiLoading ? (
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                ) : (
-                  <Send size={14} />
-                )}
-              </Button>
-            </div>
-            
-            {/* AI Result Display */}
-            {aiResult && (
-              <div className={`p-3 rounded-md text-sm ${
-                aiResult.success 
-                  ? 'bg-teal-50 border border-teal-200 text-teal-800' 
-                  : 'bg-red-50 border border-red-200 text-red-800'
-              }`}>
-                <div className="flex items-start gap-2">
-                  {aiResult.success ? (
-                    <Sparkles className="w-4 h-4 text-teal-600 flex-shrink-0 mt-0.5" />
-                  ) : (
-                    <div className="w-4 h-4 rounded-full bg-red-600 flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
-                    </div>
-                  )}
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between mb-1">
-                      {/* Remove AI Analysis header for success, keep Error header */}
-                      {!aiResult.success && (
-                        <div className="font-medium">Error:</div>
-                      )}
-                      {/* Toggle Button - only show if we have table data */}
-                      {aiResult.success && aiResult.has_table && (
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => setShowTableView(false)}
-                            className={`px-2 py-1 text-xs rounded transition-colors ${
-                              !showTableView 
-                                ? 'bg-teal-600 text-white' 
-                                : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-                            }`}
-                          >
-                            Text
-                          </button>
-                          <button
-                            onClick={() => setShowTableView(true)}
-                            className={`px-2 py-1 text-xs rounded transition-colors ${
-                              showTableView 
-                                ? 'bg-teal-600 text-white' 
-                                : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-                            }`}
-                          >
-                            Table
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    {/* Content Display - Text or Table View - Scrollable Container */}
-                    <div className="max-h-96 overflow-y-auto">
-                      {showTableView && aiResult.tabular_data && aiResult.tabular_data.length > 0 ? (
-                      /* Table View */
-                      <div className="space-y-3">
-                        {aiResult.tabular_data.map((tableData, idx) => (
-                          <DataTable key={idx} data={tableData} />
-                        ))}
-                        {/* Show summary text below tables */}
-                        <div className="text-xs text-gray-600 mt-2">
-                          {aiResult.answer.split('--- AI Analysis Details ---')[0].trim()}
-                        </div>
-                      </div>
-                    ) : (
-                      /* Text View */
-                      <div className="whitespace-pre-wrap leading-relaxed space-y-2">
-                        <div className="text-sm">
-                          {aiResult.answer.split('--- AI Analysis Details ---')[0].trim()}
-                        </div>
-                        
-                        {/* AI Analysis Details - show code_steps if available */}
-                        {(aiResult.code_steps && aiResult.code_steps.length > 0) && (
-                          <details className="mt-3">
-                            <summary className="cursor-pointer text-xs font-medium text-teal-600 hover:text-teal-800 flex items-center gap-1">
-                              <span>View Python Code</span>
-                            </summary>
-                            <div className="mt-2 p-3 bg-gray-900 rounded text-xs space-y-3">
-                              {aiResult.code_steps.map((code, idx) => (
-                                <div key={idx}>
-                                  {aiResult.code_steps.length > 1 && (
-                                    <div className="text-gray-400 mb-1">Step {idx + 1}:</div>
-                                  )}
-                                  <pre className="text-green-400 font-mono text-xs whitespace-pre-wrap overflow-x-auto">
-                                    <code>{code}</code>
-                                  </pre>
-                                </div>
-                              ))}
-                              <div className="text-gray-400 text-xs mt-2 pt-2 border-t border-gray-700">
-                                💡 This code shows how the analysis was performed using your actual dataset
-                              </div>
-                            </div>
-                          </details>
-                        )}
-                        
-                        {/* Fallback for legacy analysis details format */}
-                        {aiResult.answer.includes('--- AI Analysis Details ---') && !(aiResult.code_steps && aiResult.code_steps.length > 0) && (
-                          <details className="mt-3">
-                            <summary className="cursor-pointer text-xs font-medium text-gray-600 hover:text-gray-800 flex items-center gap-1">
-                              <span>🔍 Show Analysis Details</span>
-                              <span className="text-xs">(reasoning & code)</span>
-                            </summary>
-                            <div className="mt-2 p-3 bg-gray-50 rounded text-xs space-y-2">
-                              <div className="whitespace-pre-wrap font-mono text-gray-700">
-                                {aiResult.answer.split('--- AI Analysis Details ---')[1]}
-                              </div>
-                            </div>
-                          </details>
-                        )}
-                      </div>
-                    )}
-                    </div>
-                    {/* Removed dataset info display */}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
       
       {/* Resize Handles - Only show when chart is selected */}
       {selected && (
@@ -3631,6 +3094,8 @@ function UnifiedSidebar({
   setUploadPanelOpen,
   variablesPanelOpen,
   setVariablesPanelOpen,
+  chartActionsPanelOpen,
+  setChartActionsPanelOpen,
   activeTool,
   onToolChange,
   // Action handlers
@@ -3646,7 +3111,10 @@ function UnifiedSidebar({
       label: 'Upload Data', 
       onClick: () => {
         setUploadPanelOpen(!uploadPanelOpen);
-        if (!uploadPanelOpen) setVariablesPanelOpen(false);
+        if (!uploadPanelOpen) {
+          setVariablesPanelOpen(false);
+          setChartActionsPanelOpen(false);
+        }
       }, 
       active: uploadPanelOpen 
     },
@@ -3656,9 +3124,25 @@ function UnifiedSidebar({
       label: 'Variables', 
       onClick: () => {
         setVariablesPanelOpen(!variablesPanelOpen);
-        if (!variablesPanelOpen) setUploadPanelOpen(false);
+        if (!variablesPanelOpen) {
+          setUploadPanelOpen(false);
+          setChartActionsPanelOpen(false);
+        }
       }, 
       active: variablesPanelOpen 
+    },
+    { 
+      id: 'chartActions', 
+      icon: Settings, 
+      label: 'Chart Actions', 
+      onClick: () => {
+        setChartActionsPanelOpen(!chartActionsPanelOpen);
+        if (!chartActionsPanelOpen) {
+          setUploadPanelOpen(false);
+          setVariablesPanelOpen(false);
+        }
+      }, 
+      active: chartActionsPanelOpen 
     },
   ];
   
@@ -3822,6 +3306,484 @@ function SlidingPanel({ isOpen, title, children, onClose, size = 'md' }) {
         </>
       )}
     </Panel>
+  );
+}
+
+/**
+ * ChartActionsPanel Component
+ * Side panel for managing chart-specific actions and AI exploration
+ * Consolidates chart type selection, aggregation, data table toggle, report addition, and AI queries
+ * 
+ * @param {boolean} isOpen - Whether panel is currently visible
+ * @param {Object} selectedChart - Currently selected chart node
+ * @param {Function} onClose - Callback when panel is closed
+ * @param {string} apiKey - Gemini API key
+ * @param {string} selectedModel - Selected AI model
+ * @param {Function} setShowSettings - Function to open settings panel
+ * @param {Function} updateTokenUsage - Function to track token usage
+ * @param {Function} onChartTypeChange - Callback to change chart type
+ * @param {Function} onAggChange - Callback to change aggregation
+ * @param {Function} onShowTable - Callback to show data table
+ * @param {Function} onAddToReport - Callback to add chart to report
+ */
+function ChartActionsPanel({ 
+  isOpen,
+  selectedChart, 
+  onClose,
+  apiKey,
+  selectedModel,
+  setShowSettings,
+  updateTokenUsage,
+  onChartTypeChange,
+  onAggChange,
+  onShowTable,
+  onAddToReport
+}) {
+  // AI state
+  const [aiQuery, setAiQuery] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResult, setAiResult] = useState(null);
+  const [showPythonCode, setShowPythonCode] = useState(false);
+  
+  // Local state for checkboxes
+  const [showTableChecked, setShowTableChecked] = useState(false);
+  const [addToReportChecked, setAddToReportChecked] = useState(false);
+  
+  // Update local state when selected chart changes
+  useEffect(() => {
+    if (selectedChart) {
+      // Reset AI results when chart changes
+      setAiResult(null);
+      setShowPythonCode(false);
+    }
+  }, [selectedChart?.id]);
+  
+  const handleAIExplore = async () => {
+    if (!aiQuery.trim() || aiLoading || !selectedChart) return;
+    
+    if (!apiKey?.trim()) {
+      setAiResult({
+        success: false,
+        answer: '⚠️ Please configure your Gemini API key in Settings first.'
+      });
+      setShowSettings(true);
+      return;
+    }
+    
+    setAiLoading(true);
+    setShowPythonCode(false);
+    
+    try {
+      const response = await fetch(`${API}/ai-explore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chart_id: selectedChart.id,
+          user_query: aiQuery.trim(),
+          api_key: apiKey,
+          model: selectedModel
+        })
+      });
+      
+      if (!response.ok) throw new Error(await response.text());
+      
+      const result = await response.json();
+      
+      if (result.token_usage) {
+        updateTokenUsage(result.token_usage);
+      }
+      
+      setAiResult(result);
+    } catch (error) {
+      console.error('AI exploration failed:', error);
+      setAiResult({
+        success: false,
+        answer: `AI exploration failed: ${error.message}`
+      });
+    } finally {
+      setAiLoading(false);
+    }
+  };
+  
+  // Get chart type info
+  const dims = selectedChart?.data?.dimensions?.filter(d => d !== 'count').length || 0;
+  const meas = selectedChart?.data?.measures?.length || 0;
+  const supportedTypes = selectedChart ? getSupportedChartTypes(dims, meas) : [];
+  const currentType = selectedChart?.data?.chartType || 'bar';
+  const currentAgg = selectedChart?.data?.agg || 'sum';
+  
+  // Determine if aggregation can be changed
+  const canChangeAgg = selectedChart && meas > 0 && dims > 0;
+  
+  return (
+    <SlidingPanel 
+      isOpen={isOpen} 
+      title="Chart Actions"
+      onClose={onClose}
+      size="md"
+    >
+      <div className="p-6 space-y-6">
+        {/* Empty State */}
+        {!selectedChart && (
+          <div className="text-center py-12">
+            <ChartColumn size={48} className="mx-auto mb-4 opacity-30" style={{ color: 'var(--color-text-muted)' }} />
+            <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
+              Select a chart to access actions
+            </p>
+          </div>
+        )}
+        
+        {/* Chart Actions - Only show when chart is selected */}
+        {selectedChart && (
+          <>
+            {/* Chart Type Section */}
+            <div>
+              <label 
+                className="block text-sm font-medium mb-3"
+                style={{ color: 'var(--color-text)' }}
+              >
+                Change Chart Type
+              </label>
+              <div className="grid grid-cols-4 gap-2">
+                {supportedTypes.map(type => {
+                  const IconComponent = type.icon;
+                  const isActive = currentType === type.id;
+                  
+                  return (
+                    <button
+                      key={type.id}
+                      onClick={() => onChartTypeChange(selectedChart.id, type.id)}
+                      className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
+                        isActive 
+                          ? 'border-blue-500 bg-blue-50' 
+                          : 'border-gray-300 bg-white hover:border-gray-400'
+                      }`}
+                      title={type.label}
+                    >
+                      <IconComponent size={20} className={isActive ? 'text-blue-600' : 'text-gray-600'} />
+                      <span className={`text-xs mt-1 ${isActive ? 'text-blue-600 font-medium' : 'text-gray-600'}`}>
+                        {type.label.replace(' Chart', '').replace(' Plot', '')}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            
+            {/* Aggregation Section */}
+            {canChangeAgg && (
+              <div>
+                <label 
+                  className="block text-sm font-medium mb-3"
+                  style={{ color: 'var(--color-text)' }}
+                >
+                  Change Data Aggregation
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    { value: 'sum', label: 'Sum' },
+                    { value: 'avg', label: 'Average' },
+                    { value: 'min', label: 'Minimum' },
+                    { value: 'max', label: 'Maximum' }
+                  ].map(agg => (
+                    <label
+                      key={agg.value}
+                      className="flex items-center gap-2 cursor-pointer"
+                    >
+                      <input
+                        type="radio"
+                        name="aggregation"
+                        value={agg.value}
+                        checked={currentAgg === agg.value}
+                        onChange={(e) => onAggChange(selectedChart.id, e.target.value)}
+                        className="w-4 h-4 text-blue-600"
+                      />
+                      <span className="text-sm" style={{ color: 'var(--color-text)' }}>
+                        {agg.label}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {/* Divider */}
+            <div 
+              className="my-4"
+              style={{
+                height: '1px',
+                backgroundColor: 'var(--color-border)'
+              }}
+            />
+            
+            {/* Chart Options Checkboxes */}
+            <div className="space-y-3">
+              <label className="flex items-center justify-between cursor-pointer">
+                <span className="text-sm" style={{ color: 'var(--color-text)' }}>
+                  Show Data Table
+                </span>
+                <input
+                  type="checkbox"
+                  checked={showTableChecked}
+                  onChange={(e) => {
+                    setShowTableChecked(e.target.checked);
+                    onShowTable(selectedChart.id);
+                  }}
+                  className="w-5 h-5 text-teal-500 rounded"
+                  style={{ accentColor: '#14b8a6' }}
+                />
+              </label>
+              
+              <label className="flex items-center justify-between cursor-pointer">
+                <span className="text-sm" style={{ color: 'var(--color-text)' }}>
+                  Add To Report
+                </span>
+                <input
+                  type="checkbox"
+                  checked={addToReportChecked}
+                  onChange={async (e) => {
+                    const isChecked = e.target.checked;
+                    setAddToReportChecked(isChecked);
+                    
+                    if (isChecked) {
+                      // Capture chart as image using canvas API
+                      const chartNode = document.querySelector(`[data-id="${selectedChart.id}"]`);
+                      const plotlyPlot = chartNode?.querySelector('.js-plotly-plot');
+                      const svgElement = plotlyPlot?.querySelector('.main-svg');
+                      
+                      if (svgElement) {
+                        try {
+                          // Get SVG dimensions
+                          const bbox = svgElement.getBoundingClientRect();
+                          const width = bbox.width || 800;
+                          const height = bbox.height || 600;
+                          
+                          // Create canvas
+                          const canvas = document.createElement('canvas');
+                          canvas.width = width;
+                          canvas.height = height;
+                          const ctx = canvas.getContext('2d');
+                          
+                          // Convert SVG to image
+                          const svgData = new XMLSerializer().serializeToString(svgElement);
+                          const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+                          const url = URL.createObjectURL(svgBlob);
+                          
+                          const img = new Image();
+                          img.onload = async () => {
+                            ctx.fillStyle = 'white';
+                            ctx.fillRect(0, 0, width, height);
+                            ctx.drawImage(img, 0, 0, width, height);
+                            URL.revokeObjectURL(url);
+                            
+                            // Convert canvas to data URL
+                            const imageData = canvas.toDataURL('image/png');
+                            
+                            // Fetch and add report section if API key is configured
+                            if (apiKey?.trim()) {
+                              try {
+                                const currentApiKey = apiKey;
+                                const currentModel = selectedModel || 'gemini-2.0-flash';
+                                
+                                // Call backend to generate report section (intelligently combines insights)
+                                // Pass AI explore results if available for comprehensive report content
+                                const response = await fetch(`${API}/generate-report-section`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    chart_id: selectedChart.id,
+                                    api_key: currentApiKey,
+                                    model: currentModel,
+                                    ai_explore_result: aiResult?.answer || null // Pass AI query answer if exists
+                                  })
+                                });
+                                
+                                if (response.ok) {
+                                  const result = await response.json();
+                                  
+                                  // Track token usage
+                                  if (result.token_usage) {
+                                    updateTokenUsage(result.token_usage);
+                                  }
+                                  
+                                  // Create image and text items
+                                  const imageItem = {
+                                    id: `image-${selectedChart.id}-${Date.now()}`,
+                                    type: 'image',
+                                    imageUrl: imageData
+                                  };
+                                  
+                                  const textItem = {
+                                    id: `text-${selectedChart.id}-${Date.now()}`,
+                                    type: 'text',
+                                    content: result.report_section || ''
+                                  };
+                                  
+                                  // Add both items to report
+                                  onAddToReport([imageItem, textItem]);
+                                } else {
+                                  // If report section generation fails, just add the image
+                                  onAddToReport({
+                                    id: `chart-${selectedChart.id}-${Date.now()}`,
+                                    type: 'image',
+                                    imageUrl: imageData
+                                  });
+                                }
+                              } catch (error) {
+                                console.error('Failed to fetch report section:', error);
+                                // Fallback: just add chart image if report section generation fails
+                                onAddToReport({
+                                  id: `chart-${selectedChart.id}-${Date.now()}`,
+                                  type: 'image',
+                                  imageUrl: imageData
+                                });
+                              }
+                            } else {
+                              // No API key - just add chart image
+                              onAddToReport({
+                                id: `chart-${selectedChart.id}-${Date.now()}`,
+                                type: 'image',
+                                imageUrl: imageData
+                              });
+                            }
+                            
+                            // Reset checkbox after successful add
+                            setTimeout(() => setAddToReportChecked(false), 300);
+                          };
+                          
+                          img.onerror = () => {
+                            URL.revokeObjectURL(url);
+                            setAddToReportChecked(false);
+                            alert('Failed to capture chart. Please try again.');
+                          };
+                          
+                          img.src = url;
+                        } catch (error) {
+                          console.error('Failed to capture chart:', error);
+                          setAddToReportChecked(false);
+                          alert('Failed to add chart to report. Please try again.');
+                        }
+                      } else {
+                        // Chart element not found
+                        setAddToReportChecked(false);
+                        alert('Chart not found. Please try again.');
+                      }
+                    }
+                  }}
+                  className="w-5 h-5 rounded"
+                />
+              </label>
+            </div>
+            
+            {/* Divider */}
+            <div 
+              className="my-4"
+              style={{
+                height: '1px',
+                backgroundColor: 'var(--color-border)'
+              }}
+            />
+            
+            {/* AI Query Section */}
+            <div className="space-y-4">
+              <div>
+                <label 
+                  className="block text-sm font-medium mb-3"
+                  style={{ color: 'var(--color-text)' }}
+                >
+                  Ask AI Query
+                </label>
+                <textarea
+                  value={aiQuery}
+                  onChange={(e) => setAiQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                      handleAIExplore();
+                    }
+                  }}
+                  placeholder="What is the profit margin for Laptop product?"
+                  className="w-full h-40 px-4 py-3 text-sm border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  style={{
+                    borderColor: 'var(--color-border)',
+                    backgroundColor: 'var(--color-surface)',
+                    color: 'var(--color-text)'
+                  }}
+                  disabled={aiLoading}
+                />
+              </div>
+              
+              <DesignButton
+                variant="primary"
+                size="lg"
+                onClick={handleAIExplore}
+                disabled={!aiQuery.trim() || aiLoading}
+                className="w-full justify-center"
+                style={{
+                  backgroundColor: '#4ade80',
+                  color: 'white',
+                  border: 'none'
+                }}
+              >
+                {aiLoading ? (
+                  <div className="flex items-center justify-center gap-2">
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                    <span>Processing...</span>
+                  </div>
+                ) : (
+                  'Use AI'
+                )}
+              </DesignButton>
+              
+              {/* Results */}
+              {aiResult && (
+                <div className="space-y-3">
+                  <h3 className="text-sm font-medium" style={{ color: 'var(--color-text)' }}>
+                    Results
+                  </h3>
+                  
+                  <div 
+                    className={`p-4 rounded-lg text-sm ${
+                      aiResult.success 
+                        ? 'bg-teal-50 border border-teal-200' 
+                        : 'bg-red-50 border border-red-200'
+                    }`}
+                  >
+                    <p style={{ color: aiResult.success ? '#0f766e' : '#991b1b', whiteSpace: 'pre-wrap' }}>
+                      {aiResult.answer}
+                    </p>
+                    
+                    {aiResult.success && aiResult.python_code && (
+                      <button
+                        onClick={() => setShowPythonCode(!showPythonCode)}
+                        className="mt-3 text-xs font-medium underline"
+                        style={{ color: '#0f766e' }}
+                      >
+                        {showPythonCode ? 'Hide' : 'View'} Python Code
+                      </button>
+                    )}
+                  </div>
+                  
+                  {/* Python Code Block */}
+                  {aiResult.success && showPythonCode && aiResult.python_code && (
+                    <div 
+                      className="p-4 rounded-lg font-mono text-xs overflow-x-auto"
+                      style={{
+                        backgroundColor: '#1e293b',
+                        color: '#e2e8f0'
+                      }}
+                    >
+                      <pre className="whitespace-pre-wrap" style={{ margin: 0 }}>
+                        {aiResult.python_code}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </SlidingPanel>
   );
 }
 
@@ -4330,6 +4292,8 @@ function ReactFlowWrapper() {
   // Sidebar panel states
   const [uploadPanelOpen, setUploadPanelOpen] = useState(false);
   const [variablesPanelOpen, setVariablesPanelOpen] = useState(false);
+  const [chartActionsPanelOpen, setChartActionsPanelOpen] = useState(false);
+  const [selectedChartForActions, setSelectedChartForActions] = useState(null);
   
   // Report state
   const [reportPanelOpen, setReportPanelOpen] = useState(false);
@@ -4381,6 +4345,28 @@ function ReactFlowWrapper() {
     // Remove cache clearing to avoid potential interference with active charts
   }, []);
 
+  // Sync selected chart with Chart Actions Panel (for single selection only)
+  useEffect(() => {
+    // Get all chart nodes that match the selected IDs in selectedCharts
+    const selectedChartNodes = nodes.filter(node => 
+      node.type === 'chart' && selectedCharts.includes(node.id)
+    );
+    
+    // Track selected charts count
+    const selectedCount = selectedChartNodes.length;
+    
+    // Only set selectedChartForActions when exactly 1 chart is selected
+    if (selectedCount === 1) {
+      setSelectedChartForActions(selectedChartNodes[0]);
+    } else {
+      // Clear selection when 0 charts or more than 1 chart is selected
+      // This ensures the "Select a chart to access actions" message appears
+      setSelectedChartForActions(null);
+    }
+    
+    // Note: Multiple chart selections (2+) will trigger merge panel separately
+  }, [nodes, selectedCharts]);
+
   // Handler for adding items to report (must be before nodeTypes)
   const handleAddReportItems = useCallback((newItems) => {
     // newItems can be an array of items (image + text) or a single item
@@ -4417,7 +4403,6 @@ function ReactFlowWrapper() {
         key={props.id}
         {...props} 
         selected={props.data.selected}
-        onSelect={props.data.onSelect}
         apiKey={apiKey}
         selectedModel={selectedModel}
         setShowSettings={setShowSettings}
@@ -4640,7 +4625,10 @@ function ReactFlowWrapper() {
         return [...prev, chartId];
       }
     });
-  }, []);
+    
+    // Note: Chart Actions panel opening is handled by useEffect that syncs selected charts
+    // This ensures panel opens automatically when charts are selected, including for merge
+  }, [nodes]);
 
   const handleShowTable = useCallback(async (chartId) => {
     try {
@@ -4805,7 +4793,7 @@ function ReactFlowWrapper() {
         type: 'chart', 
         position, 
         draggable: true,
-        selectable: true,
+        selectable: false, // Disable React Flow selection - use checkbox instead
         data: { 
           title: fused.title, 
           figure,
@@ -4953,24 +4941,48 @@ function ReactFlowWrapper() {
     });
   }, [datasetId]);
 
+  // Update chart type on an existing chart node
+  const updateChartType = useCallback((nodeId, newChartType) => {
+    setNodes(currentNodes => {
+      return currentNodes.map(node => {
+        if (node.id === nodeId && node.type === 'chart') {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              chartType: newChartType
+            }
+          };
+        }
+        return node;
+      });
+    });
+  }, []);
+
   // Update nodes with current selection status - OPTIMIZED VERSION
   // Only update nodes that actually changed selection state to prevent unnecessary re-renders
   const nodesWithSelection = useMemo(() => {
     return nodes.map(node => {
       const isSelected = selectedCharts.includes(node.id);
-      // Only create new object if selection state actually changed
-      if (node.data.selected === isSelected) {
+      // Add onChartClick handler for chart nodes
+      const needsUpdate = node.data.selected !== isSelected || 
+                         (node.type === 'chart' && !node.data.onChartClick);
+      
+      // Only create new object if selection state changed or handler is missing
+      if (!needsUpdate) {
         return node; // Return same reference to prevent re-render
       }
+      
       return {
         ...node,
         data: {
           ...node.data,
           selected: isSelected,
+          ...(node.type === 'chart' && { onChartClick: handleChartSelect })
         }
       };
     });
-  }, [nodes, selectedCharts]);
+  }, [nodes, selectedCharts, handleChartSelect]);
 
   function figureFromPayload(payload, chartType = null) {
     // Temporarily disable caching to avoid potential Plotly conflicts
@@ -5343,12 +5355,11 @@ function ReactFlowWrapper() {
         type: 'chart',
         position,
         draggable: true,
-        selectable: true,
+        selectable: false, // Disable React Flow selection - use checkbox instead
         data: {
           title: chart.title,
           figure,
           selected: false,
-          onSelect: handleChartSelect,
           onShowTable: handleShowTable,
           onAggChange: updateChartAgg,
           onAIExplore: handleAIExplore,
@@ -5395,7 +5406,7 @@ function ReactFlowWrapper() {
       console.error('AI-assisted merge failed:', error);
       alert('AI-assisted merge failed: ' + error.message);
     }
-  }, [nodes, apiKey, selectedModel, updateTokenUsage, getViewportCenter, handleChartSelect, handleShowTable, updateChartAgg, handleAIExplore, setNodes, setEdges, setSelectedCharts]);
+  }, [nodes, apiKey, selectedModel, updateTokenUsage, getViewportCenter, handleShowTable, updateChartAgg, handleAIExplore, setNodes, setEdges, setSelectedCharts]);
 
   // Handle merge context submission
   const handleMergeContextSubmit = useCallback(async () => {
@@ -5739,7 +5750,7 @@ function ReactFlowWrapper() {
           type: 'chart', 
           position, 
           draggable: true,
-          selectable: true,
+          selectable: false, // Disable React Flow selection - use checkbox instead
           data: { 
             title: chart.title, 
             figure,
@@ -5814,7 +5825,7 @@ function ReactFlowWrapper() {
           type: 'chart', 
           position, 
           draggable: true,
-          selectable: true,
+          selectable: false, // Disable React Flow selection - use checkbox instead
           data: { 
             title: title || `Histogram: ${measure}`, 
             figure, 
@@ -5900,7 +5911,7 @@ function ReactFlowWrapper() {
           type: 'chart', 
           position, 
           draggable: true,
-          selectable: true,
+          selectable: false, // Disable React Flow selection - use checkbox instead
           data: { 
             title: title || `Counts of ${dimension}`, 
             figure, 
@@ -6022,7 +6033,7 @@ function ReactFlowWrapper() {
           type: 'chart', 
           position: getViewportCenter(), 
           draggable: true,
-          selectable: true,
+          selectable: false, // Disable React Flow selection - use checkbox instead
           data: { 
             title: chart.title, 
             figure,
@@ -6089,7 +6100,7 @@ function ReactFlowWrapper() {
           type: 'chart', 
           position: getViewportCenter(), 
           draggable: true,
-          selectable: true,
+          selectable: false, // Disable React Flow selection - use checkbox instead
           data: { 
             title: `Histogram: ${selectedMeasure}`, 
             figure, 
@@ -6162,7 +6173,7 @@ function ReactFlowWrapper() {
           type: 'chart', 
           position: getViewportCenter(), 
           draggable: true,
-          selectable: true,
+          selectable: false, // Disable React Flow selection - use checkbox instead
           data: { 
             title: `Bar: ${selectedDimension} vs Count`, 
             figure, 
@@ -7021,6 +7032,8 @@ function ReactFlowWrapper() {
         setUploadPanelOpen={setUploadPanelOpen}
         variablesPanelOpen={variablesPanelOpen}
         setVariablesPanelOpen={setVariablesPanelOpen}
+        chartActionsPanelOpen={chartActionsPanelOpen}
+        setChartActionsPanelOpen={setChartActionsPanelOpen}
         activeTool={activeTool}
         onToolChange={handleToolChange}
         onMergeCharts={mergeSelectedCharts}
@@ -7374,6 +7387,23 @@ function ReactFlowWrapper() {
           </div>
         </SlidingPanel>
       )}
+      
+      {/* Chart Actions Panel */}
+      {chartActionsPanelOpen && (
+        <ChartActionsPanel
+          isOpen={chartActionsPanelOpen}
+          selectedChart={selectedChartForActions}
+          onClose={() => setChartActionsPanelOpen(false)}
+          apiKey={apiKey}
+          selectedModel={selectedModel}
+          setShowSettings={setShowSettings}
+          updateTokenUsage={updateTokenUsage}
+          onChartTypeChange={updateChartType}
+          onAggChange={updateChartAgg}
+          onShowTable={handleShowTable}
+          onAddToReport={handleAddReportItems}
+        />
+      )}
 
       {/* AI-Assisted Merge Panel */}
       {mergePanelOpen && (
@@ -7471,7 +7501,15 @@ function ReactFlowWrapper() {
             onEdgesDelete={onEdgesDelete}
             onPaneClick={onPaneClick}
             onNodeClick={(event, node) => {
-              // Prevent React Flow from handling node clicks when clicking on interactive elements
+              // Disable React Flow's built-in node selection for chart nodes
+              // Selection is now handled exclusively through checkboxes
+              if (node.type === 'chart') {
+                event.stopPropagation();
+                return;
+              }
+              
+              // For other node types (textbox, expression, etc.), allow normal interaction
+              // but prevent clicks on interactive elements
               const target = event.target;
               const isInteractiveElement = target.closest('button') || 
                                          target.closest('[role="button"]') || 
@@ -7484,13 +7522,9 @@ function ReactFlowWrapper() {
                                          target.closest('[data-radix-collection-item]');
               
               if (isInteractiveElement) {
-                // Don't let React Flow handle this click
                 event.stopPropagation();
                 return;
               }
-              
-              // Only handle clicks on the node background
-              console.log('Node background clicked:', node.id);
             }}
             fitView
             style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
