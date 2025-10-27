@@ -5,7 +5,7 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
 import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui';
-import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, AlignStartVertical, MenuIcon, Upload, Calculator, ArrowRight, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, CirclePlus } from 'lucide-react';
+import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, AlignStartVertical, MenuIcon, Upload, Calculator, ArrowRight, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, CirclePlus, StickyNote } from 'lucide-react';
 import { marked } from 'marked';
 import './tiptap-styles.css';
 
@@ -507,27 +507,27 @@ const CHART_TYPES = {
       // Simple row-based data handling only
       const groups = {};
       data.forEach(row => {
-        const category = row[dim1];    // First dimension (e.g., Category)
-        const product = row[dim2];     // Second dimension (e.g., Product)
+        const dim1Value = row[dim1];    // First dimension value
+        const dim2Value = row[dim2];    // Second dimension value
         const value = row[measure] || 0; // Measure value
         
-        if (category && product) { // Ensure valid values
-          if (!groups[product]) groups[product] = {};
-          groups[product][category] = value;
+        if (dim1Value && dim2Value) { // Ensure valid values
+          if (!groups[dim2Value]) groups[dim2Value] = {};
+          groups[dim2Value][dim1Value] = value;
         }
       });
       
-      const uniqueProducts = [...new Set(data.map(r => r[dim2]))];
-      const uniqueCategories = [...new Set(data.map(r => r[dim1]))];
+      const uniqueDim2Values = [...new Set(data.map(r => r[dim2]))];
+      const uniqueDim1Values = [...new Set(data.map(r => r[dim1]))];
       
-      const chartData = uniqueProducts.map((product, i) => ({
+      const chartData = uniqueDim2Values.map((dim2Value, i) => ({
         type: 'bar',
-        name: truncateText(product), // Truncate long legend labels
-        x: uniqueCategories.map(cat => truncateText(cat)), // Truncate x-axis labels
-        y: uniqueCategories.map(cat => groups[product]?.[cat] || 0),
-        text: uniqueCategories.map(cat => String(cat)), // Full text for hover
+        name: truncateText(dim2Value), // Truncate long legend labels
+        x: uniqueDim1Values.map(dim1Val => truncateText(dim1Val)), // Truncate x-axis labels
+        y: uniqueDim1Values.map(dim1Val => groups[dim2Value]?.[dim1Val] || 0),
+        customdata: uniqueDim1Values.map(dim1Val => [String(dim1Val), String(dim2Value)]), // Store both dimension values
         textposition: 'none', // Don't show text on bars, only in hover
-        hovertemplate: '%{text}<br>%{y}<extra></extra>',
+        hovertemplate: `<b>${dim1}: %{customdata[0]}</b><br>${dim2}: %{customdata[1]}<br>${measure}: %{y}<extra></extra>`,
         marker: { color: ['#3182ce', '#38a169', '#d69e2e', '#e53e3e', '#805ad5', '#dd6b20', '#38b2ac', '#ed64a6'][i % 8] }
       }));
       
@@ -2468,21 +2468,6 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
           )}
         </div>
         
-        {/* Selection Checkbox */}
-        <input
-          type="checkbox"
-          checked={selected}
-          onChange={(e) => {
-            e.stopPropagation();
-            // Toggle selection via onChartClick
-            data.onChartClick?.(id);
-          }}
-          onClick={(e) => e.stopPropagation()}
-          className="w-5 h-5 cursor-pointer accent-blue-500 rounded border-2 border-gray-300 hover:border-blue-400 transition-colors"
-          title="Select chart"
-          style={{ zIndex: 1000, position: 'relative' }}
-        />
-        
         {/* AI Insights Button */}
         <Button
           onClick={(e) => {
@@ -2506,6 +2491,21 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
             <Sparkles size={16} />
           )}
         </Button>
+        
+        {/* Selection Checkbox */}
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => {
+            e.stopPropagation();
+            // Toggle selection via onChartClick
+            data.onChartClick?.(id);
+          }}
+          onClick={(e) => e.stopPropagation()}
+          className="w-5 h-5 cursor-pointer accent-blue-500 rounded border-2 border-gray-300 hover:border-blue-400 transition-colors"
+          title="Select chart"
+          style={{ zIndex: 1000, position: 'relative' }}
+        />
       </div>
       
       {/* Chart Plot - Now with more space! */}
@@ -2549,71 +2549,9 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
       {/* Resize Handles - Only show when chart is selected */}
       {selected && (
         <>
-          {/* Rendering resize handles for selected chart */}
-          {/* Corner Handles */}
+          {/* Bottom-right (SE) Corner Handle only */}
           <div
-            className="absolute w-6 h-6 bg-blue-500 border-2 border-white rounded-full cursor-nw-resize hover:bg-blue-600 transition-colors resize-handle"
-            onPointerDown={(e) => {
-              // NW resize handle onPointerDown
-              e.preventDefault();
-              e.stopPropagation();
-              // Safe stopImmediatePropagation - check if method exists
-              if (e.stopImmediatePropagation) {
-                e.stopImmediatePropagation();
-              } else if (e.nativeEvent && e.nativeEvent.stopImmediatePropagation) {
-                e.nativeEvent.stopImmediatePropagation();
-              }
-              handleResizeStart('nw', e);
-            }}
-            onMouseDown={(e) => {
-              // NW resize handle onMouseDown
-              e.preventDefault();
-              e.stopPropagation();
-              // Safe stopImmediatePropagation - check if method exists
-              if (e.stopImmediatePropagation) {
-                e.stopImmediatePropagation();
-              } else if (e.nativeEvent && e.nativeEvent.stopImmediatePropagation) {
-                e.nativeEvent.stopImmediatePropagation();
-              }
-              handleResizeStart('nw', e);
-            }}
-            onClick={(e) => { 
-              // NW resize handle onClick
-              e.preventDefault(); 
-              e.stopPropagation(); 
-            }}
-            data-nopan="true"
-            data-noselect="true"
-            data-nodrag="true"
-            draggable="false"
-            style={{ 
-              zIndex: 99999, 
-              pointerEvents: 'all',
-              top: '-12px',
-              left: '-12px',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-              position: 'absolute',
-              touchAction: 'none'
-            }}
-          />
-          <div
-            className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 border border-white rounded-full cursor-ne-resize hover:bg-blue-600 transition-colors resize-handle"
-            onMouseDown={(e) => handleResizeStart('ne', e)}
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-            data-nopan="true"
-            data-noselect="true"
-            style={{ zIndex: 1001, pointerEvents: 'all' }}
-          />
-          <div
-            className="absolute -bottom-1 -left-1 w-3 h-3 bg-blue-500 border border-white rounded-full cursor-sw-resize hover:bg-blue-600 transition-colors resize-handle"
-            onMouseDown={(e) => handleResizeStart('sw', e)}
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-            data-nopan="true"
-            data-noselect="true"
-            style={{ zIndex: 1001, pointerEvents: 'all' }}
-          />
-          <div
-            className="absolute w-6 h-6 bg-blue-500 border-2 border-white rounded-full cursor-se-resize hover:bg-blue-600 transition-colors resize-handle"
+            className="absolute w-4 h-4 bg-blue-500 border-2 border-white rounded-full cursor-se-resize hover:bg-blue-600 transition-colors resize-handle"
             onPointerDown={(e) => {
               // SE resize handle onPointerDown
               e.preventDefault();
@@ -2650,46 +2588,12 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
             style={{ 
               zIndex: 99999, 
               pointerEvents: 'all',
-              bottom: '-12px',
-              right: '-12px',
+              bottom: '-8px',
+              right: '-8px',
               boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
               position: 'absolute',
               touchAction: 'none'
             }}
-          />
-
-          {/* Edge Handles */}
-          <div
-            className="absolute -top-1 left-1/2 transform -translate-x-1/2 w-3 h-3 bg-blue-500 border border-white rounded-full cursor-n-resize hover:bg-blue-600 transition-colors resize-handle"
-            onMouseDown={(e) => handleResizeStart('n', e)}
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-            data-nopan="true"
-            data-noselect="true"
-            style={{ zIndex: 1001, pointerEvents: 'all' }}
-          />
-          <div
-            className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-3 h-3 bg-blue-500 border border-white rounded-full cursor-s-resize hover:bg-blue-600 transition-colors resize-handle"
-            onMouseDown={(e) => handleResizeStart('s', e)}
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-            data-nopan="true"
-            data-noselect="true"
-            style={{ zIndex: 1001, pointerEvents: 'all' }}
-          />
-          <div
-            className="absolute -left-1 top-1/2 transform -translate-y-1/2 w-3 h-3 bg-blue-500 border border-white rounded-full cursor-w-resize hover:bg-blue-600 transition-colors resize-handle"
-            onMouseDown={(e) => handleResizeStart('w', e)}
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-            data-nopan="true"
-            data-noselect="true"
-            style={{ zIndex: 1001, pointerEvents: 'all' }}
-          />
-          <div
-            className="absolute -right-1 top-1/2 transform -translate-y-1/2 w-3 h-3 bg-blue-500 border border-white rounded-full cursor-e-resize hover:bg-blue-600 transition-colors resize-handle"
-            onMouseDown={(e) => handleResizeStart('e', e)}
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-            data-nopan="true"
-            data-noselect="true"
-            style={{ zIndex: 1001, pointerEvents: 'all' }}
           />
 
           {/* Resize Status Display */}
@@ -3211,7 +3115,7 @@ function UnifiedSidebar({
   
   const toolButtons = [
     { id: 'arrow', icon: ArrowRight, label: 'Arrow Tool' },
-    { id: 'textbox', icon: Type, label: 'Text Tool' },
+    { id: 'textbox', icon: StickyNote, label: 'Text Tool' },
     { id: 'expression', icon: Calculator, label: 'Expression Tool' },
   ];
   
@@ -3400,7 +3304,6 @@ function ChartActionsPanel({
   const [aiQuery, setAiQuery] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResult, setAiResult] = useState(null);
-  const [showPythonCode, setShowPythonCode] = useState(false);
   
   // Local state for buttons
   const [showTableClicked, setShowTableClicked] = useState(false);
@@ -3411,7 +3314,6 @@ function ChartActionsPanel({
     if (selectedChart) {
       // Reset AI results and button states when chart changes
       setAiResult(null);
-      setShowPythonCode(false);
       setShowTableClicked(false);
       setAddingToReport(false);
     }
@@ -3430,7 +3332,6 @@ function ChartActionsPanel({
     }
     
     setAiLoading(true);
-    setShowPythonCode(false);
     
     try {
       const response = await fetch(`${API}/ai-explore`, {
@@ -3824,31 +3725,53 @@ function ChartActionsPanel({
                     <p style={{ color: aiResult.success ? '#0f766e' : '#991b1b', whiteSpace: 'pre-wrap' }}>
                       {aiResult.answer}
                     </p>
-                    
-                    {aiResult.success && aiResult.python_code && (
-                      <button
-                        onClick={() => setShowPythonCode(!showPythonCode)}
-                        className="mt-3 text-xs font-medium underline"
-                        style={{ color: '#0f766e' }}
-                      >
-                        {showPythonCode ? 'Hide' : 'View'} Python Code
-                      </button>
-                    )}
                   </div>
                   
-                  {/* Python Code Block */}
-                  {aiResult.success && showPythonCode && aiResult.python_code && (
-                    <div 
-                      className="p-4 rounded-lg font-mono text-xs overflow-x-auto"
-                      style={{
-                        backgroundColor: '#1e293b',
-                        color: '#e2e8f0'
-                      }}
-                    >
-                      <pre className="whitespace-pre-wrap" style={{ margin: 0 }}>
-                        {aiResult.python_code}
-                      </pre>
-                    </div>
+                  {/* View Python Code Toggle Button */}
+                  {aiResult.success && aiResult.code_steps && aiResult.code_steps.length > 0 && (
+                    <details className="mt-3">
+                      <summary 
+                        className="cursor-pointer text-xs font-medium text-teal-700 hover:text-teal-800 flex items-center gap-2 list-none"
+                        style={{ listStyle: 'none' }}
+                      >
+                        <span className="select-none">▶</span>
+                        <span>View Python Code</span>
+                      </summary>
+                      <div className="mt-2 p-3 bg-gray-900 rounded text-xs space-y-3">
+                        {aiResult.code_steps.map((code, idx) => (
+                          <div key={idx}>
+                            {aiResult.code_steps.length > 1 && (
+                              <div className="text-gray-400 mb-1">Step {idx + 1}:</div>
+                            )}
+                            <pre className="text-green-400 font-mono text-xs whitespace-pre-wrap overflow-x-auto">
+                              <code>{code}</code>
+                            </pre>
+                          </div>
+                        ))}
+                        <div className="text-gray-400 text-xs mt-2 pt-2 border-t border-gray-700">
+                          💡 This code shows how the analysis was performed using your actual dataset
+                        </div>
+                      </div>
+                    </details>
+                  )}
+                  
+                  {/* Fallback for legacy analysis details format */}
+                  {aiResult.success && aiResult.answer?.includes('--- AI Analysis Details ---') && !(aiResult.code_steps && aiResult.code_steps.length > 0) && (
+                    <details className="mt-3">
+                      <summary 
+                        className="cursor-pointer text-xs font-medium text-gray-600 hover:text-gray-800 flex items-center gap-2 list-none"
+                        style={{ listStyle: 'none' }}
+                      >
+                        <span className="select-none">▶</span>
+                        <span>🔍 Show Analysis Details</span>
+                        <span className="text-xs">(reasoning & code)</span>
+                      </summary>
+                      <div className="mt-2 p-3 bg-gray-50 rounded text-xs space-y-2">
+                        <div className="whitespace-pre-wrap font-mono text-gray-700">
+                          {aiResult.answer.split('--- AI Analysis Details ---')[1]}
+                        </div>
+                      </div>
+                    </details>
                   )}
                 </div>
               )}

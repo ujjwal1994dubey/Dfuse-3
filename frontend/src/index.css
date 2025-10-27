@@ -1048,3 +1048,21 @@ div[data-title*="plot"] {
   fill: #2563eb !important;
   color: #2563eb !important;
 }
+
+/* Details/Summary Toggle Arrow Animation */
+details summary {
+  list-style: none;
+}
+
+details summary::-webkit-details-marker {
+  display: none;
+}
+
+details summary span:first-child {
+  transition: transform 0.2s ease-in-out;
+  display: inline-block;
+}
+
+details[open] summary span:first-child {
+  transform: rotate(90deg);
+}
