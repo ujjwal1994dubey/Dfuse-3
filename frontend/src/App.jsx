@@ -10,6 +10,7 @@ import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, D
 import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, AlignStartVertical, MenuIcon, Upload, Calculator, ArrowRight, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, CirclePlus, StickyNote } from 'lucide-react';
 import { marked } from 'marked';
 import './tiptap-styles.css';
+import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
 
 // Backend API endpoint URL
 //const API = 'http://localhost:8000';
@@ -2504,21 +2505,6 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
             <Sparkles size={16} />
           )}
         </Button>
-        
-        {/* Selection Checkbox */}
-        <input
-          type="checkbox"
-          checked={selected}
-          onChange={(e) => {
-            e.stopPropagation();
-            // Toggle selection via onChartClick
-            data.onChartClick?.(id);
-          }}
-          onClick={(e) => e.stopPropagation()}
-          className="w-5 h-5 cursor-pointer accent-blue-500 rounded border-2 border-gray-300 hover:border-blue-400 transition-colors"
-          title="Select chart"
-          style={{ zIndex: 1000, position: 'relative' }}
-        />
       </div>
       
       {/* Chart Plot - Now with more space! */}
@@ -3051,7 +3037,7 @@ function Modal({ isOpen = false, onClose, children, size = 'md' }) {
  * UnifiedSidebar Component
  * Left-side vertical toolbar that provides access to all main tools and actions.
  * Includes panel toggles (upload, variables), tool selectors (select, arrow, text, expression),
- * and action buttons (merge, arrange).
+ * and action buttons (merge, arrange), plus app controls at bottom (settings, instructions, report).
  * 
  * @param {boolean} uploadPanelOpen - Whether upload panel is currently open
  * @param {Function} setUploadPanelOpen - Toggle upload panel visibility
@@ -3063,6 +3049,13 @@ function Modal({ isOpen = false, onClose, children, size = 'md' }) {
  * @param {Function} onAutoLayout - Callback to auto-arrange nodes
  * @param {number} selectedChartsCount - Number of currently selected charts
  * @param {boolean} canMerge - Whether merge action is enabled (requires exactly 2 charts)
+ * @param {Object} selectedChartForActions - Currently selected chart object for actions (or null)
+ * @param {boolean} showLearningModal - Whether learning modal is open
+ * @param {Function} setShowLearningModal - Toggle learning modal
+ * @param {boolean} showSettings - Whether settings panel is open
+ * @param {Function} setShowSettings - Toggle settings panel
+ * @param {boolean} reportPanelOpen - Whether report panel is open
+ * @param {Function} setReportPanelOpen - Toggle report panel
  */
 function UnifiedSidebar({
   // Toggle states
@@ -3080,7 +3073,15 @@ function UnifiedSidebar({
   onMergeCharts,
   onAutoLayout,
   selectedChartsCount,
-  canMerge
+  canMerge,
+  selectedChartForActions,
+  // App control states
+  showLearningModal,
+  setShowLearningModal,
+  showSettings,
+  setShowSettings,
+  reportPanelOpen,
+  setReportPanelOpen
 }) {
   const toggleButtons = [
     { 
@@ -3123,7 +3124,10 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
         }
       }, 
-      active: chartActionsPanelOpen 
+      // Only show as active when panel is actually open
+      active: chartActionsPanelOpen,
+      // Add a subtle badge to indicate a chart is selected and ready
+      badge: selectedChartForActions && !chartActionsPanelOpen ? '1' : null
     },
     { 
       id: 'merge', 
@@ -3161,13 +3165,46 @@ function UnifiedSidebar({
     },
   ];
   
+  // App control buttons at bottom
+  const appControlButtons = [
+    {
+      id: 'instructions',
+      icon: BookOpen,
+      label: 'User Instructions',
+      active: showLearningModal,
+      onClick: () => {
+        if (showLearningModal) {
+          localStorage.setItem('dfuse_instructions_seen', 'true');
+          setShowLearningModal(false);
+        } else {
+          setShowLearningModal(true);
+        }
+      }
+    },
+    {
+      id: 'settings',
+      icon: Settings,
+      label: 'AI Settings',
+      active: showSettings,
+      onClick: () => setShowSettings(!showSettings)
+    },
+    {
+      id: 'report',
+      icon: File,
+      label: reportPanelOpen ? 'Hide Report' : 'Show Report',
+      active: reportPanelOpen,
+      onClick: () => setReportPanelOpen(!reportPanelOpen)
+    }
+  ];
+  
   return (
     <div 
       className="flex flex-col items-center py-6 gap-3"
       style={{ 
         width: 'var(--size-sidebar)', 
         backgroundColor: 'var(--color-surface-elevated)',
-        borderRight: '1px solid var(--color-border)'
+        borderRight: '1px solid var(--color-border)',
+        height: '100vh'
       }}
     >
       {/* Logo */}
@@ -3241,6 +3278,33 @@ function UnifiedSidebar({
             onClick={btn.onClick}
             label={btn.label}
             badge={btn.badge}
+            size="md"
+          />
+        ))}
+      </div>
+      
+      {/* Spacer to push bottom buttons down */}
+      <div style={{ flexGrow: 1 }} />
+      
+      {/* Separator */}
+      <div 
+        className="my-2"
+        style={{
+          width: '32px',
+          height: '1px',
+          backgroundColor: 'var(--color-border)'
+        }}
+      />
+      
+      {/* App Control Buttons at Bottom */}
+      <div className="flex flex-col gap-2">
+        {appControlButtons.map(btn => (
+          <IconButton
+            key={btn.id}
+            icon={btn.icon}
+            active={btn.active}
+            onClick={btn.onClick}
+            label={btn.label}
             size="md"
           />
         ))}
@@ -3401,7 +3465,11 @@ function ChartActionsPanel({
   // Get chart type info
   const dims = selectedChart?.data?.dimensions?.filter(d => d !== 'count').length || 0;
   const meas = selectedChart?.data?.measures?.length || 0;
-  const supportedTypes = selectedChart ? getSupportedChartTypes(dims, meas) : [];
+  // When using TLDraw, we must use ECharts registry because charts render with EChartsWrapper
+  const shouldUseECharts = USE_ECHARTS || USE_TLDRAW;
+  const supportedTypes = selectedChart 
+    ? (shouldUseECharts ? getEChartsSupportedTypes(dims, meas) : getSupportedChartTypes(dims, meas))
+    : [];
   const currentType = selectedChart?.data?.chartType || 'bar';
   const currentAgg = selectedChart?.data?.agg || 'sum';
   
@@ -3445,7 +3513,15 @@ function ChartActionsPanel({
                   return (
                     <button
                       key={type.id}
-                      onClick={() => onChartTypeChange(selectedChart.id, type.id)}
+                      onClick={() => {
+                        console.log('🖱️ Chart type button clicked:', { 
+                          chartId: selectedChart.id, 
+                          newType: type.id,
+                          currentType: selectedChart?.data?.chartType,
+                          hasCallback: !!onChartTypeChange
+                        });
+                        onChartTypeChange(selectedChart.id, type.id);
+                      }}
                       className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
                         isActive 
                           ? 'border-blue-500 bg-blue-50' 
@@ -4299,6 +4375,8 @@ function ReactFlowWrapper() {
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
   const [selectedCharts, setSelectedCharts] = useState([]);
+  const tldrawEditorRef = useRef(null); // Reference to TLDraw editor for programmatic control
+  const isProgrammaticDeselect = useRef(false); // Flag to prevent listener from re-selecting during programmatic clear
   
   // AI-assisted merge state
   const [mergePanelOpen, setMergePanelOpen] = useState(false);
@@ -4379,16 +4457,34 @@ function ReactFlowWrapper() {
   // Sync selected chart with Chart Actions Panel (for single selection only)
   useEffect(() => {
     // Get all chart nodes that match the selected IDs in selectedCharts
-    const selectedChartNodes = nodes.filter(node => 
-      node.type === 'chart' && selectedCharts.includes(node.id)
-    );
+    // Handle both regular node IDs and TLDraw shape IDs (format: "shape:nodeId")
+    const selectedChartNodes = nodes.filter(node => {
+      if (node.type !== 'chart') return false;
+      
+      // Check if any selected ID matches this node
+      return selectedCharts.some(selectedId => {
+        // Direct match
+        if (selectedId === node.id) return true;
+        // TLDraw format: "shape:nodeId" - extract the nodeId part
+        if (selectedId.startsWith('shape:') && selectedId === `shape:${node.id}`) return true;
+        return false;
+      });
+    });
     
     // Track selected charts count
     const selectedCount = selectedChartNodes.length;
     
+    console.log('🔍 Chart selection sync:', {
+      selectedCharts,
+      matchedNodes: selectedChartNodes.map(n => n.id),
+      selectedCount
+    });
+    
     // Only set selectedChartForActions when exactly 1 chart is selected
     if (selectedCount === 1) {
       setSelectedChartForActions(selectedChartNodes[0]);
+      // Don't auto-open panel - let user control it via sidebar toggle
+      // The Chart Actions button will be available/enabled when a chart is selected
     } else {
       // Clear selection when 0 charts or more than 1 chart is selected
       // This ensures the "Select a chart to access actions" message appears
@@ -4417,8 +4513,20 @@ function ReactFlowWrapper() {
 
     // Get chart data
     const [c1, c2] = selectedCharts;
-    const node1 = nodes.find(n => n.id === c1);
-    const node2 = nodes.find(n => n.id === c2);
+    
+    // Helper function to find node by ID (handles both regular IDs and TLDraw shape IDs)
+    const findNodeById = (searchId) => {
+      return nodes.find(n => {
+        // Direct match
+        if (n.id === searchId) return true;
+        // TLDraw format: "shape:nodeId"
+        if (searchId.startsWith('shape:') && searchId === `shape:${n.id}`) return true;
+        return false;
+      });
+    };
+    
+    const node1 = findNodeById(c1);
+    const node2 = findNodeById(c2);
     
     if (!node1 || !node2) return { type: 'none', selectedCount };
     
@@ -4764,6 +4872,11 @@ function ReactFlowWrapper() {
   }, []);
 
   const handleChartSelect = useCallback((chartId) => {
+    // Ignore selection changes during programmatic deselection
+    if (isProgrammaticDeselect.current) {
+      return;
+    }
+    
     setSelectedCharts(prev => {
       if (prev.includes(chartId)) {
         // Deselect if already selected
@@ -4781,6 +4894,29 @@ function ReactFlowWrapper() {
     // Note: Chart Actions panel opening is handled by useEffect that syncs selected charts
     // This ensures panel opens automatically when charts are selected, including for merge
   }, [nodes]);
+
+  // Deselect all charts (clears both React state and TLDraw editor selection)
+  const deselectAllCharts = useCallback(() => {
+    // Set flag to prevent listener from re-selecting during programmatic clear
+    isProgrammaticDeselect.current = true;
+    
+    // Clear React state first
+    setSelectedCharts([]);
+    
+    // Clear TLDraw editor selection if available
+    if (tldrawEditorRef.current) {
+      try {
+        tldrawEditorRef.current.setSelectedShapes([]);
+      } catch (error) {
+        console.warn('Could not deselect TLDraw shapes:', error);
+      }
+    }
+    
+    // Reset flag after a short delay to allow listener to process
+    setTimeout(() => {
+      isProgrammaticDeselect.current = false;
+    }, 100);
+  }, []);
 
   const handleShowTable = useCallback(async (chartId) => {
     try {
@@ -4854,7 +4990,11 @@ function ReactFlowWrapper() {
       return;
     }
 
-    const [c1, c2] = selectedCharts;
+    const [c1Raw, c2Raw] = selectedCharts;
+    
+    // Normalize IDs by removing "shape:" prefix if present
+    const c1 = c1Raw.startsWith('shape:') ? c1Raw.replace('shape:', '') : c1Raw;
+    const c2 = c2Raw.startsWith('shape:') ? c2Raw.replace('shape:', '') : c2Raw;
     
     // Get node data for both charts
     const node1 = nodes.find(n => n.id === c1);
@@ -4914,44 +5054,28 @@ function ReactFlowWrapper() {
         } 
       }));
       
-      // Create edges connecting parent charts to fused result
-      setEdges(currentEdges => currentEdges.concat([
-        {
-          id: `${c1}-${newId}`,
-          source: c1,
-          target: newId,
-          type: 'default',
-          style: { stroke: '#94a3b8', strokeWidth: 2 },
-          markerEnd: { type: 'arrowclosed', color: '#94a3b8' }
-        },
-        {
-          id: `${c2}-${newId}`,
-          source: c2,
-          target: newId,
-          type: 'default', 
-          style: { stroke: '#94a3b8', strokeWidth: 2 },
-          markerEnd: { type: 'arrowclosed', color: '#94a3b8' }
-        }
-      ]));
+      // Note: Arrow creation removed to avoid TLDraw validation issues
+      // The merged chart appears without visual connectors to parent charts
       
       // Show success message instead of closing panel
       setMergeSuccess(true);
       
-      // Clear selections after successful merge
-      setSelectedCharts([]);
+      // Clear selections after successful merge (both React state and TLDraw editor)
+      deselectAllCharts();
       
     } catch (e) {
       alert('Merge failed: ' + e.message);
     }
-  }, [selectedCharts, nodes, handleChartSelect, getViewportCenter]);
+  }, [selectedCharts, nodes, handleChartSelect, getViewportCenter, deselectAllCharts]);
 
   // Update aggregation on an existing chart node
   const updateChartAgg = useCallback(async (nodeId, newAgg) => {
+    console.log('🔄 Aggregation change requested:', { nodeId, newAgg });
     
     setNodes(currentNodes => {
       const node = currentNodes.find(n => n.id === nodeId);
       if (!node) {
-        console.log('Node not found in current nodes:', nodeId);
+        console.log('❌ Node not found in current nodes:', nodeId);
         return currentNodes;
       }
       
@@ -4961,31 +5085,31 @@ function ReactFlowWrapper() {
       // Use the global datasetId as primary source, but for fused charts we need to ensure we have it
       const currentDatasetId = datasetId || node.data.datasetId;
       
-      console.log('Aggregation update debug:', { 
+      console.log('📋 Aggregation update context:', { 
         nodeId, 
+        currentAgg: node.data.agg,
         newAgg, 
         dims, 
         meas, 
-        datasetId, 
-        nodeDatasetId: node.data.datasetId,
         currentDatasetId,
         isFused: node.data.isFused,
-        strategy: node.data.strategy,
-        nodeData: node.data
+        chartType: node.data.chartType
       });
       
       // Special handling for fused charts
       if (node.data.isFused) {
-        console.warn('Aggregation changes not supported for fused charts yet');
+        console.warn('⚠️ Aggregation changes not supported for fused charts yet');
         alert('Aggregation changes are not yet supported for fused charts. This feature is coming soon!');
         return currentNodes;
       }
       
       if (!currentDatasetId || dims.length === 0 || meas.length === 0) {
-        console.warn('Missing required data for aggregation update:', { nodeId, dims, meas, currentDatasetId });
+        console.warn('❌ Missing required data for aggregation update:', { nodeId, dims, meas, currentDatasetId });
         alert(`Cannot update aggregation: Missing required data. Dataset: ${currentDatasetId ? 'OK' : 'MISSING'}, Dimensions: ${dims.length}, Measures: ${meas.length}`);
         return currentNodes;
       }
+
+      console.log('✅ Validation passed, proceeding with aggregation update');
 
       // Optimistically update UI so the dropdown reflects immediately
       const updatedNodes = currentNodes.map(n => 
@@ -5002,7 +5126,10 @@ function ReactFlowWrapper() {
             agg: newAgg 
           };
           
-          console.log('Making aggregation API call:', { url: `${API}/charts`, body });
+          console.log('📡 Making aggregation API call:', { 
+            endpoint: `${API}/charts`, 
+            body 
+          });
           
           const res = await fetch(`${API}/charts`, { 
             method: 'POST', 
@@ -5012,30 +5139,114 @@ function ReactFlowWrapper() {
           
           if (!res.ok) {
             const errorText = await res.text();
-            console.error('API call failed:', res.status, errorText);
+            console.error('❌ API call failed:', res.status, errorText);
             throw new Error(`HTTP ${res.status}: ${errorText}`);
           }
           
           const chart = await res.json();
-          const figure = figureFromPayload(chart);
+          
+          console.log('📥 Aggregation API response:', {
+            hasTable: !!chart.table,
+            tableLength: chart.table?.length,
+            tableSample: chart.table?.slice(0, 2),
+            newAgg: chart.agg,
+            title: chart.title,
+            dimensions: chart.dimensions,
+            measures: chart.measures
+          });
+          
           const title = chart.title || `${(newAgg || 'sum').toUpperCase()} ${meas.join(', ')} by ${dims.join(', ')}`;
           
-          console.log('Aggregation API call successful, updating node:', nodeId);
+          // When using TLDraw, we MUST use ECharts because ChartShape renders with EChartsWrapper
+          const shouldUseECharts = USE_ECHARTS || USE_TLDRAW;
+          
+          console.log('🔧 Regenerating chart with new aggregation:', {
+            chartType: node.data.chartType,
+            shouldUseECharts,
+            USE_ECHARTS,
+            USE_TLDRAW
+          });
+          
+          let updatedData;
+          
+          if (shouldUseECharts) {
+            console.log('✅ Using ECharts registry for aggregation update');
+            // Use ECharts registry to regenerate chart
+            const chartType = node.data.chartType || 'bar';
+            const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
+            
+            if (chartConfig && chartConfig.isSupported(dims.length, meas.length)) {
+              console.log('📊 Chart config found and supported:', chartType.toUpperCase());
+              try {
+                const option = chartConfig.createOption(chart.table, {
+                  dimensions: chart.dimensions,
+                  measures: chart.measures
+                });
+                
+                console.log('✨ Generated ECharts option for aggregation:', {
+                  hasSeries: !!option.series,
+                  seriesLength: option.series?.length,
+                  seriesType: option.series?.[0]?.type,
+                  firstSeriesData: option.series?.[0]?.data?.slice(0, 3)
+                });
+                
+                updatedData = {
+                  chartData: option.series,
+                  chartLayout: option,
+                  agg: newAgg || 'sum',
+                  table: chart.table || [],
+                  title: title,
+                  dimensions: chart.dimensions,
+                  measures: chart.measures
+                };
+              } catch (error) {
+                console.error('❌ Error generating ECharts option:', error);
+                throw error;
+              }
+            } else {
+              console.warn('⚠️ Chart config not found or not supported, falling back');
+              // Fallback to Plotly
+              const figure = figureFromPayload(chart);
+              updatedData = {
+                figure,
+                agg: newAgg || 'sum',
+                table: chart.table || [],
+                title: title,
+                dimensions: chart.dimensions,
+                measures: chart.measures
+              };
+            }
+          } else {
+            console.log('📊 Using Plotly for aggregation update');
+            // Use Plotly (existing logic)
+            const figure = figureFromPayload(chart);
+            updatedData = {
+              figure,
+              agg: newAgg || 'sum',
+              table: chart.table || [],
+              title: title,
+              dimensions: chart.dimensions,
+              measures: chart.measures
+            };
+          }
+          
+          console.log('✅ Aggregation update successful, applying to node:', {
+            nodeId,
+            newAgg,
+            hasChartData: !!updatedData.chartData,
+            hasChartLayout: !!updatedData.chartLayout,
+            hasFigure: !!updatedData.figure
+          });
           
           setNodes(nds => nds.map(n => n.id === nodeId ? ({
             ...n,
             data: { 
               ...n.data, 
-              title, 
-              figure, 
-              agg: (newAgg || 'sum'), 
-              dimensions: chart.dimensions, 
-              measures: chart.measures,
-              table: chart.table || [] // Update table data for chart type switching
+              ...updatedData
             }
           }) : n));
         } catch (e) {
-          console.error('Aggregation update failed:', e);
+          console.error('❌ Aggregation update failed:', e);
           // Revert optimistic change on error
           setNodes(nds => nds.map(n => n.id === nodeId ? ({ ...n, data: { ...n.data, agg: (node.data.agg || 'sum') } }) : n));
           alert('Aggregation update failed: ' + e.message);
@@ -5048,16 +5259,118 @@ function ReactFlowWrapper() {
 
   // Update chart type on an existing chart node
   const updateChartType = useCallback((nodeId, newChartType) => {
+    console.log('🔄 updateChartType called:', { nodeId, newChartType, USE_ECHARTS, USE_TLDRAW });
+    
     setNodes(currentNodes => {
+      console.log('📊 Current nodes:', currentNodes.length);
+      const targetNode = currentNodes.find(n => n.id === nodeId && n.type === 'chart');
+      console.log('🎯 Target node found:', targetNode ? 'YES' : 'NO', targetNode?.id);
+      
+      if (targetNode) {
+        console.log('📦 Node data:', {
+          hasDimensions: !!targetNode.data?.dimensions,
+          hasMeasures: !!targetNode.data?.measures,
+          hasTable: !!targetNode.data?.table,
+          dimensions: targetNode.data?.dimensions,
+          measures: targetNode.data?.measures,
+          tableLength: targetNode.data?.table?.length
+        });
+      }
+      
       return currentNodes.map(node => {
         if (node.id === nodeId && node.type === 'chart') {
-          return {
-            ...node,
-            data: {
-              ...node.data,
-              chartType: newChartType
-            }
+          // Extract data needed for regeneration
+          const { dimensions, measures, table } = node.data;
+          
+          // Regenerate chart with new type based on which chart library is active
+          let updatedData = {
+            ...node.data,
+            chartType: newChartType
           };
+          
+          // When using TLDraw, we MUST use ECharts because ChartShape renders with EChartsWrapper
+          const shouldUseECharts = USE_ECHARTS || USE_TLDRAW;
+          console.log('🔍 Checking chart library:', { USE_ECHARTS, USE_TLDRAW, shouldUseECharts, hasTable: !!table, hasDimensions: !!dimensions, hasMeasures: !!measures });
+          
+          if (shouldUseECharts && table && dimensions && measures) {
+            console.log('✅ Using ECharts registry');
+            // Use ECharts registry to regenerate chart
+            const chartConfig = ECHARTS_TYPES[newChartType.toUpperCase()];
+            console.log('📋 Chart config found:', !!chartConfig, 'for type:', newChartType.toUpperCase());
+            
+            if (chartConfig && chartConfig.isSupported(dimensions.length, measures.length)) {
+              console.log('✅ Chart type is supported. Dims:', dimensions.length, 'Measures:', measures.length);
+              try {
+                console.log('🔍 Input data for chart generation:', {
+                  tableLength: table.length,
+                  tableSample: table.slice(0, 2),
+                  dimensions,
+                  measures
+                });
+                
+                const option = chartConfig.createOption(table, { dimensions, measures });
+                console.log('📊 Generated ECharts option:', {
+                  hasSeries: !!option.series,
+                  seriesLength: option.series?.length,
+                  seriesType: option.series?.[0]?.type,
+                  seriesData: option.series?.[0]?.data,
+                  fullOption: option
+                });
+                
+                // For ECharts, store the full option as chartLayout
+                // The series data can be extracted from the option if needed
+                updatedData = {
+                  ...updatedData,
+                  chartData: option.series, // Series data for compatibility
+                  chartLayout: option // Full ECharts option
+                };
+                console.log('✅ Chart type changed to', newChartType, 'using ECharts', {
+                  updatedChartData: updatedData.chartData,
+                  updatedChartLayout: updatedData.chartLayout
+                });
+              } catch (error) {
+                console.error('❌ Error regenerating chart with ECharts:', error);
+                // Keep existing data on error
+              }
+            } else {
+              console.warn('⚠️ Chart config not found or not supported');
+            }
+          } else if (!shouldUseECharts && table && dimensions && measures) {
+            // Use Plotly CHART_TYPES registry (existing logic)
+            const chartTypeConfig = CHART_TYPES[newChartType.toUpperCase()];
+            
+            if (chartTypeConfig && chartTypeConfig.isSupported(dimensions.length, measures.length)) {
+              try {
+                const payload = {
+                  table: table,
+                  dimensions: dimensions,
+                  measures: measures
+                };
+                const newFigure = chartTypeConfig.createFigure(table, payload);
+                updatedData = {
+                  ...updatedData,
+                  figure: newFigure
+                };
+                console.log('✅ Chart type changed to', newChartType, 'using Plotly');
+              } catch (error) {
+                console.error('Error regenerating chart with Plotly:', error);
+                // Keep existing data on error
+              }
+            }
+          }
+          
+          const updatedNode = {
+            ...node,
+            data: updatedData
+          };
+          console.log('📤 Returning updated node:', {
+            nodeId: updatedNode.id,
+            chartType: updatedNode.data.chartType,
+            hasChartData: !!updatedNode.data.chartData,
+            hasChartLayout: !!updatedNode.data.chartLayout,
+            chartDataLength: updatedNode.data.chartData?.length
+          });
+          return updatedNode;
         }
         return node;
       });
@@ -5083,7 +5396,9 @@ function ReactFlowWrapper() {
         data: {
           ...node.data,
           selected: isSelected,
-          ...(node.type === 'chart' && { onChartClick: handleChartSelect })
+          ...(node.type === 'chart' && { 
+            onChartClick: handleChartSelect  // Keep for React Flow compatibility
+          })
         }
       };
     });
@@ -5395,9 +5710,13 @@ function ReactFlowWrapper() {
   }, []);
 
   // AI-assisted merge function (defined after all dependencies to avoid initialization errors)
-  const performAIAssistedMerge = useCallback(async (c1, c2, userGoal) => {
+  const performAIAssistedMerge = useCallback(async (c1Raw, c2Raw, userGoal) => {
     try {
       console.log('🤖 Calling AI to select best 3 variables...');
+      
+      // Normalize IDs by removing "shape:" prefix if present
+      const c1 = c1Raw.startsWith('shape:') ? c1Raw.replace('shape:', '') : c1Raw;
+      const c2 = c2Raw.startsWith('shape:') ? c2Raw.replace('shape:', '') : c2Raw;
       
       // Get node data for dataset ID
       const node1 = nodes.find(n => n.id === c1);
@@ -5479,31 +5798,14 @@ function ReactFlowWrapper() {
         }
       }));
       
-      // Create edges from parent charts
-      setEdges(currentEdges => currentEdges.concat([
-        {
-          id: `${c1}-${newId}`,
-          source: c1,
-          target: newId,
-          type: 'default',
-          style: { stroke: '#7c3aed', strokeWidth: 2 },
-          markerEnd: { type: 'arrowclosed', color: '#7c3aed' }
-        },
-        {
-          id: `${c2}-${newId}`,
-          source: c2,
-          target: newId,
-          type: 'default',
-          style: { stroke: '#7c3aed', strokeWidth: 2 },
-          markerEnd: { type: 'arrowclosed', color: '#7c3aed' }
-        }
-      ]));
+      // Note: Arrow creation removed to avoid TLDraw validation issues
+      // The AI-merged chart appears without visual connectors to parent charts
       
       // Show success message instead of closing panel
       setMergeSuccess(true);
       
-      // Clear selections
-      setSelectedCharts([]);
+      // Clear selections (both React state and TLDraw editor)
+      deselectAllCharts();
       
       // Show success message with AI reasoning
       if (aiResult.reasoning) {
@@ -5514,7 +5816,7 @@ function ReactFlowWrapper() {
       console.error('AI-assisted merge failed:', error);
       alert('AI-assisted merge failed: ' + error.message);
     }
-  }, [nodes, apiKey, selectedModel, updateTokenUsage, getViewportCenter, handleShowTable, updateChartAgg, handleAIExplore, setNodes, setEdges, setSelectedCharts]);
+  }, [nodes, apiKey, selectedModel, updateTokenUsage, getViewportCenter, handleShowTable, updateChartAgg, handleAIExplore, setNodes, setEdges, deselectAllCharts]);
 
   // Handle merge context submission
   const handleMergeContextSubmit = useCallback(async () => {
@@ -7176,6 +7478,13 @@ function ReactFlowWrapper() {
         onAutoLayout={applyHierarchicalLayout}
         selectedChartsCount={selectedCharts.length}
         canMerge={selectedCharts.length === 2}
+        selectedChartForActions={selectedChartForActions}
+        showLearningModal={showLearningModal}
+        setShowLearningModal={setShowLearningModal}
+        showSettings={showSettings}
+        setShowSettings={setShowSettings}
+        reportPanelOpen={reportPanelOpen}
+        setReportPanelOpen={setReportPanelOpen}
       />
       
       {/* Single Panel Container - Only one panel can be open at a time */}
@@ -7807,18 +8116,15 @@ function ReactFlowWrapper() {
             /* TLDraw Canvas Implementation */
             <CanvasAdapter
               useTLDraw={true}
+              editorRef={tldrawEditorRef}
               nodes={nodesWithSelection}
               edges={edges}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
+              onChartSelect={handleChartSelect}
               onNodeClick={(event) => {
                 // TLDraw passes { node } object
                 const node = event.node || event;
-                
-                // Disable selection for chart nodes (checkbox handles it)
-                if (node?.type === 'chart') {
-                  return;
-                }
                 
                 // For other node types, prevent clicks on interactive elements
                 if (event.target) {
@@ -7839,6 +8145,7 @@ function ReactFlowWrapper() {
                 }
               }}
               onPaneClick={onPaneClick}
+              reportPanelOpen={reportPanelOpen}
               fitView
               style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
             />
@@ -7928,62 +8235,19 @@ function ReactFlowWrapper() {
             </div>
           )}
           
-          {/* Settings Button and Panel - Responsive Position */}
-          <div 
-            className="absolute flex gap-2 transition-all duration-300"
-            style={{
-              top: 'var(--space-4)',
-              right: reportPanelOpen ? 'var(--space-4)' : 'var(--space-4)',
-              zIndex: 'var(--z-fixed)'
-            }}
-          >
-            <IconButton
-              icon={BookOpen}
-              onClick={() => {
-                if (showLearningModal) {
-                  // If modal is open, close it and mark as seen
-                  localStorage.setItem('dfuse_instructions_seen', 'true');
-                  setShowLearningModal(false);
-                } else {
-                  // If modal is closed, open it
-                  setShowLearningModal(true);
-                }
-              }}
-              active={showLearningModal}
-              label="User Instructions"
-              size="sm"
-              className="shadow-sm"
+          {/* Settings Panel - Positioned near sidebar when open */}
+          {showSettings && (
+            <div 
+              className="absolute transition-all duration-300"
               style={{
-                backgroundColor: 'var(--color-surface-elevated)',
-                border: '1px solid var(--color-border)'
+                top: 'var(--space-4)',
+                left: 'calc(var(--size-sidebar) + var(--space-4))',
+                zIndex: 'var(--z-fixed)'
               }}
-            />
-            <IconButton
-              icon={Settings}
-              onClick={() => setShowSettings(!showSettings)}
-              active={showSettings}
-              label="AI Settings"
-              size="sm"
-              className="shadow-sm"
-              style={{
-                backgroundColor: 'var(--color-surface-elevated)',
-                border: '1px solid var(--color-border)'
-              }}
-            />
-            <IconButton
-              icon={File}
-              onClick={() => setReportPanelOpen(!reportPanelOpen)}
-              active={reportPanelOpen}
-              label={reportPanelOpen ? 'Hide Report' : 'Show Report'}
-              size="sm"
-              className="shadow-sm"
-              style={{
-                backgroundColor: 'var(--color-surface-elevated)',
-                border: '1px solid var(--color-border)'
-              }}
-            />
-            {showSettings && renderSettingsPanel()}
-          </div>
+            >
+              {renderSettingsPanel()}
+            </div>
+          )}
         </div>
         
         {/* Report Panel - Fixed Position */}

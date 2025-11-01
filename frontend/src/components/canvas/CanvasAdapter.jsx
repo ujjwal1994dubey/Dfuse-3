@@ -21,9 +21,11 @@ import TLDrawCanvas from './TLDrawCanvas';
  * @param {Object} style - Canvas style
  * @param {boolean} fitView - Whether to fit view on mount
  * @param {Object} fitViewOptions - Options for fit view
+ * @param {boolean} reportPanelOpen - Whether report panel is open (for responsive positioning)
  */
 const CanvasAdapter = ({
   useTLDraw = false,
+  editorRef,
   nodes = [],
   edges = [],
   nodeTypes,
@@ -33,9 +35,11 @@ const CanvasAdapter = ({
   onPaneClick,
   onSelectionChange,
   onConnect,
+  onChartSelect,
   style = {},
   fitView = false,
   fitViewOptions = {},
+  reportPanelOpen = false,
   children,
   ...otherProps
 }) => {
@@ -92,6 +96,7 @@ const CanvasAdapter = ({
     return (
       <div style={{ width: '100%', height: '100%', ...style }}>
         <TLDrawCanvas
+          editorRef={editorRef}
           nodes={syncedNodes}
           edges={syncedEdges}
           onNodesChange={handleNodesChange}
@@ -99,6 +104,8 @@ const CanvasAdapter = ({
           onNodeClick={onNodeClick}
           onPaneClick={onPaneClick}
           onSelectionChange={onSelectionChange}
+          onChartSelect={onChartSelect}
+          reportPanelOpen={reportPanelOpen}
           {...otherProps}
         />
       </div>

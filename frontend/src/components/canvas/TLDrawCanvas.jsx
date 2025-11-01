@@ -13,6 +13,7 @@ import './tldraw-custom.css';
  * Infinite canvas with custom shapes for data visualization
  */
 const TLDrawCanvas = ({
+  editorRef: externalEditorRef,
   nodes = [],
   edges = [],
   onNodesChange,
@@ -20,25 +21,93 @@ const TLDrawCanvas = ({
   onNodeClick,
   onPaneClick,
   onSelectionChange,
-  initialViewport
+  onChartSelect,
+  initialViewport,
+  reportPanelOpen = false
 }) => {
   const editorRef = useRef(null);
   const initialImportDone = useRef(false);
+  const previousNodeIdsRef = useRef(new Set());
+  const previousNodesDataRef = useRef(new Map()); // Track node data to detect changes
 
   // Custom shape utilities
   const shapeUtils = [ChartShape, TextBoxShape, TableShape, ExpressionShape];
 
+  // Watch for new nodes being added AND existing nodes being updated
+  useEffect(() => {
+    if (!editorRef.current) return;
+
+    const currentNodeIds = new Set(nodes.map(n => n.id));
+    const previousNodeIds = previousNodeIdsRef.current;
+
+    // Find new nodes
+    const newNodes = nodes.filter(node => !previousNodeIds.has(node.id));
+    
+    if (newNodes.length > 0) {
+      console.log('🆕 Adding new nodes to TLDraw:', newNodes.length);
+      importNodesToTLDraw(editorRef.current, newNodes);
+    }
+
+    // Find updated nodes (nodes whose data has changed)
+    const updatedNodes = nodes.filter(node => {
+      const previousData = previousNodesDataRef.current.get(node.id);
+      if (!previousData) return false; // Skip new nodes (already handled above)
+      
+      // Deep comparison of node data
+      const currentDataStr = JSON.stringify(node.data);
+      const previousDataStr = JSON.stringify(previousData);
+      return currentDataStr !== previousDataStr;
+    });
+
+    if (updatedNodes.length > 0) {
+      console.log('🔄 Updating existing nodes in TLDraw:', updatedNodes.length, updatedNodes.map(n => n.id));
+      updateNodesInTLDraw(editorRef.current, updatedNodes);
+    }
+
+    // Update tracked IDs and data
+    previousNodeIdsRef.current = currentNodeIds;
+    const newDataMap = new Map();
+    nodes.forEach(node => {
+      newDataMap.set(node.id, node.data);
+    });
+    previousNodesDataRef.current = newDataMap;
+  }, [nodes]);
+
+  // Watch for new edges being added
+  useEffect(() => {
+    if (!editorRef.current || edges.length === 0) return;
+    
+    // For simplicity, we'll reimport all edges when they change
+    // This could be optimized to only add new ones
+    const existingArrows = editorRef.current.getCurrentPageShapes().filter(s => s.type === 'arrow');
+    if (existingArrows.length !== edges.length) {
+      importEdgesToTLDraw(editorRef.current, edges);
+    }
+  }, [edges]);
+
   const handleMount = (editor) => {
     editorRef.current = editor;
+    
+    // Expose editor to parent component via ref if provided
+    if (externalEditorRef) {
+      externalEditorRef.current = editor;
+    }
 
-    // Import existing nodes and edges as TLDraw shapes (only once)
+    // Import existing nodes and edges as TLDraw shapes (only once on mount)
     if (!initialImportDone.current && (nodes.length > 0 || edges.length > 0)) {
+      console.log('📥 Initial import of nodes:', nodes.length);
       importNodesToTLDraw(editor, nodes);
       importEdgesToTLDraw(editor, edges);
       initialImportDone.current = true;
+      
+      // Track initial node IDs
+      previousNodeIdsRef.current = new Set(nodes.map(n => n.id));
     }
 
-    // Listen to shape changes
+    // Track previous selection for detecting changes
+    let previouslySelectedCharts = new Set();
+
+    // Listen to shape changes AND selection changes via store
     const unsubscribe = editor.store.listen((entry) => {
       if (entry.source === 'user') {
         // Get all shapes and separate by type
@@ -58,30 +127,66 @@ const TLDrawCanvas = ({
           onEdgesChange(convertedEdges);
         }
       }
-    });
-
-    // Listen to selection changes
-    editor.on('select', (info) => {
-      if (info.shapes.length > 0) {
-        const shape = info.shapes[0];
-        if (onNodeClick) {
-          onNodeClick({ node: convertShapeToNode(shape) });
-        }
-        if (onSelectionChange) {
-          const selectedNodes = convertShapesToNodes(info.shapes.filter(s => 
-            ['chart', 'textbox', 'table', 'expression'].includes(s.type)
-          ));
+      
+      // ALWAYS check for selection changes (even if source is not 'user')
+      // This handles both user clicks and programmatic selection changes
+      const currentSelection = editor.getSelectedShapes();
+      const currentlySelectedCharts = new Set(
+        currentSelection
+          .filter(s => s.type === 'chart')
+          .map(s => s.id)
+      );
+      
+      // Check if chart selection changed
+      const selectionChanged = 
+        currentlySelectedCharts.size !== previouslySelectedCharts.size ||
+        ![...currentlySelectedCharts].every(id => previouslySelectedCharts.has(id));
+      
+      if (selectionChanged && onChartSelect) {
+        console.log('📊 Chart selection changed:', {
+          previous: Array.from(previouslySelectedCharts),
+          current: Array.from(currentlySelectedCharts)
+        });
+        
+        // Call handleChartSelect for each newly selected or deselected chart
+        const added = [...currentlySelectedCharts].filter(id => !previouslySelectedCharts.has(id));
+        const removed = [...previouslySelectedCharts].filter(id => !currentlySelectedCharts.has(id));
+        
+        // Handle newly selected charts
+        // IMPORTANT: shape.id in TLDraw format, pass as-is (useEffect will handle lookup)
+        added.forEach(chartId => {
+          console.log('✅ Selecting chart:', chartId);
+          onChartSelect(chartId);
+        });
+        
+        // Handle deselected charts (toggle them off)
+        removed.forEach(chartId => {
+          console.log('❌ Deselecting chart:', chartId);
+          onChartSelect(chartId);
+        });
+        
+        previouslySelectedCharts = currentlySelectedCharts;
+      }
+      
+      // Handle onSelectionChange callback
+      if (onSelectionChange) {
+        const selectedNodes = convertShapesToNodes(currentSelection.filter(s => 
+          ['chart', 'textbox', 'table', 'expression'].includes(s.type)
+        ));
+        if (selectedNodes.length > 0) {
           onSelectionChange({ nodes: selectedNodes });
         }
       }
     });
 
-    // Listen to canvas click
-    editor.on('click-canvas', () => {
+    // Listen to canvas click for pane click callback
+    const handleCanvasClick = () => {
       if (onPaneClick) {
         onPaneClick();
       }
-    });
+    };
+    
+    editor.on('click-canvas', handleCanvasClick);
 
     return () => {
       unsubscribe();
@@ -89,12 +194,15 @@ const TLDrawCanvas = ({
   };
 
   return (
-    <div style={{ 
-      width: '100%', 
-      height: '100%', 
-      position: 'relative',
-      backgroundColor: '#fafafa'
-    }}>
+    <div 
+      className={reportPanelOpen ? 'tldraw-report-open' : ''}
+      style={{ 
+        width: '100%', 
+        height: '100%', 
+        position: 'relative',
+        backgroundColor: '#fafafa'
+      }}
+    >
       <Tldraw
         shapeUtils={shapeUtils}
         onMount={handleMount}
@@ -275,6 +383,105 @@ function importEdgesToTLDraw(editor, edges) {
   if (arrows.length > 0) {
     editor.createShapes(arrows);
   }
+}
+
+/**
+ * Update existing TLDraw shapes with new node data
+ * This is called when node data changes (e.g., chart type change)
+ */
+function updateNodesInTLDraw(editor, nodes) {
+  if (!nodes || nodes.length === 0) return;
+  
+  console.log('🔧 updateNodesInTLDraw: Updating shapes for', nodes.length, 'nodes');
+  
+  nodes.forEach(node => {
+    // Construct the TLDraw shape ID from the node ID
+    const shapeId = `shape:${node.id}`;
+    
+    // Get the existing shape
+    const existingShape = editor.getShape(shapeId);
+    
+    if (!existingShape) {
+      console.warn(`⚠️ Shape not found for node ${node.id}`);
+      return;
+    }
+    
+    console.log('📝 Updating shape:', shapeId, 'Type:', node.type, 'ChartType:', node.data?.chartType);
+    
+    // Prepare updated props based on node type
+    let updatedProps = {};
+    
+    if (node.type === 'chart') {
+      // Handle both Plotly (figure) and ECharts (chartData/chartLayout) formats
+      let chartData = null;
+      let chartLayout = null;
+      
+      if (node.data?.chartData && node.data?.chartLayout) {
+        // ECharts format
+        chartData = node.data.chartData;
+        chartLayout = node.data.chartLayout;
+      } else if (node.data?.figure) {
+        // Plotly format
+        chartData = node.data.figure.data;
+        chartLayout = node.data.figure.layout;
+      }
+      
+      updatedProps = {
+        w: node.data.width || existingShape.props.w,
+        h: node.data.height || existingShape.props.h,
+        chartData: chartData,
+        chartLayout: chartLayout,
+        chartType: node.data.chartType || existingShape.props.chartType,
+        title: node.data.title || existingShape.props.title,
+        dimensions: node.data.dimensions || existingShape.props.dimensions || [],
+        measures: node.data.measures || existingShape.props.measures || [],
+        table: node.data.table || existingShape.props.table || [],
+        agg: node.data.agg || existingShape.props.agg,
+        datasetId: node.data.datasetId || existingShape.props.datasetId,
+        selected: node.data.selected || existingShape.props.selected,
+        aiInsights: node.data.aiInsights || existingShape.props.aiInsights,
+        aiQuery: node.data.aiQuery || existingShape.props.aiQuery
+      };
+      
+      console.log('✨ Updated chart props:', {
+        chartType: updatedProps.chartType,
+        hasChartData: !!updatedProps.chartData,
+        hasChartLayout: !!updatedProps.chartLayout
+      });
+    } else if (node.type === 'textbox') {
+      updatedProps = {
+        w: node.data.width || existingShape.props.w,
+        h: node.data.height || existingShape.props.h,
+        text: node.data.text || existingShape.props.text,
+        fontSize: node.data.fontSize || existingShape.props.fontSize
+      };
+    } else if (node.type === 'table') {
+      updatedProps = {
+        w: node.data.width || existingShape.props.w,
+        h: node.data.height || existingShape.props.h,
+        title: node.data.title || existingShape.props.title,
+        headers: node.data.headers || existingShape.props.headers,
+        rows: node.data.rows || existingShape.props.rows,
+        totalRows: node.data.totalRows || existingShape.props.totalRows
+      };
+    } else if (node.type === 'expression') {
+      updatedProps = {
+        w: node.data.width || existingShape.props.w,
+        h: node.data.height || existingShape.props.h,
+        expression: node.data.expression || existingShape.props.expression,
+        result: node.data.result || existingShape.props.result
+      };
+    }
+    
+    // Update the shape with new props
+    editor.updateShape({
+      id: shapeId,
+      type: existingShape.type,
+      props: updatedProps
+    });
+    
+    console.log('✅ Shape updated successfully:', shapeId);
+  });
 }
 
 export default TLDrawCanvas;

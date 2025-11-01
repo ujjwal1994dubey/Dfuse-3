@@ -1,5 +1,5 @@
 import React from 'react';
-import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d } from '@tldraw/tldraw';
+import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, T } from '@tldraw/tldraw';
 import EChartsWrapper from '../../../charts/EChartsWrapper';
 
 /**
@@ -10,24 +10,24 @@ export class ChartShape extends BaseBoxShapeUtil {
   static type = 'chart';
   
   static props = {
-    w: { type: 'number', default: 800 },
-    h: { type: 'number', default: 400 },
-    // Chart data (ECharts format)
-    chartData: { type: 'json', default: null },
-    chartLayout: { type: 'json', default: null },
-    chartType: { type: 'string', default: 'bar' },
-    title: { type: 'string', default: '' },
+    w: T.number,
+    h: T.number,
+    // Chart data (ECharts format) - using T.any for complex objects
+    chartData: T.any,
+    chartLayout: T.any,
+    chartType: T.string,
+    title: T.string,
     // Original data for actions
-    dimensions: { type: 'json', default: [] },
-    measures: { type: 'json', default: [] },
-    table: { type: 'json', default: [] },
-    agg: { type: 'string', default: 'sum' },
-    datasetId: { type: 'string', default: '' },
+    dimensions: T.any,
+    measures: T.any,
+    table: T.any,
+    agg: T.string,
+    datasetId: T.string,
     // UI state
-    selected: { type: 'boolean', default: false },
+    selected: T.boolean,
     // AI-related
-    aiInsights: { type: 'json', default: null },
-    aiQuery: { type: 'string', default: '' }
+    aiInsights: T.any,
+    aiQuery: T.string
   };
 
   getDefaultProps() {
@@ -111,30 +111,6 @@ export class ChartShape extends BaseBoxShapeUtil {
             }}>
               {title || 'Untitled Chart'}
             </h3>
-            
-            {/* Selection checkbox */}
-            <input
-              type="checkbox"
-              checked={selected}
-              onChange={(e) => {
-                e.stopPropagation();
-                this.editor.updateShape({
-                  ...shape,
-                  props: {
-                    ...shape.props,
-                    selected: e.target.checked
-                  }
-                });
-              }}
-              style={{
-                width: '18px',
-                height: '18px',
-                cursor: 'pointer',
-                marginLeft: '12px',
-                accentColor: '#3b82f6'
-              }}
-              onClick={(e) => e.stopPropagation()}
-            />
           </div>
 
           {/* Chart Content */}

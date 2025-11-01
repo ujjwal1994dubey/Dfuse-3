@@ -1,5 +1,5 @@
 import React from 'react';
-import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d } from '@tldraw/tldraw';
+import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, T } from '@tldraw/tldraw';
 
 /**
  * Custom TLDraw Shape for Mathematical Expressions
@@ -9,11 +9,11 @@ export class ExpressionShape extends BaseBoxShapeUtil {
   static type = 'expression';
   
   static props = {
-    w: { type: 'number', default: 400 },
-    h: { type: 'number', default: 200 },
-    expression: { type: 'string', default: '' },
-    result: { type: 'string', default: '' },
-    error: { type: 'string', default: '' }
+    w: T.number,
+    h: T.number,
+    expression: T.string,
+    result: T.string,
+    error: T.string
   };
 
   getDefaultProps() {

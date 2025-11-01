@@ -15,9 +15,9 @@ export function convertNodesToShapes(nodes) {
     return [];
   }
 
-  return nodes.map((node, index) => {
+  return nodes.map((node) => {
     try {
-      return convertSingleNodeToShape(node, index);
+      return convertSingleNodeToShape(node);
     } catch (error) {
       console.error('Error converting node to shape:', node.id, error);
       return null;
@@ -28,14 +28,14 @@ export function convertNodesToShapes(nodes) {
 /**
  * Convert single React Flow node to TLDraw shape
  */
-function convertSingleNodeToShape(node, index) {
+function convertSingleNodeToShape(node) {
   const baseShape = {
     id: node.id,
     type: node.type || 'chart',
     x: node.position?.x || 0,
     y: node.position?.y || 0,
     rotation: 0,
-    index: `a${index}`, // TLDraw requires index for z-ordering
+    // Don't specify index - let TLDraw assign it automatically via editor.createShapes()
     parentId: undefined,
     isLocked: false
   };
@@ -60,13 +60,27 @@ function convertSingleNodeToShape(node, index) {
  * Convert chart node to shape
  */
 function convertChartNodeToShape(node, baseShape) {
+  // Handle both Plotly (figure) and ECharts (chartData/chartLayout) data structures
+  let chartData = null;
+  let chartLayout = null;
+  
+  if (node.data?.chartData && node.data?.chartLayout) {
+    // ECharts structure (already separated)
+    chartData = node.data.chartData;
+    chartLayout = node.data.chartLayout;
+  } else if (node.data?.figure) {
+    // Plotly structure (needs extraction)
+    chartData = node.data.figure.data;
+    chartLayout = node.data.figure.layout;
+  }
+  
   return {
     ...baseShape,
     props: {
       w: node.data?.width || 800,
       h: node.data?.height || 400,
-      chartData: node.data?.figure?.data || null,
-      chartLayout: node.data?.figure?.layout || null,
+      chartData: chartData,
+      chartLayout: chartLayout,
       chartType: node.data?.chartType || 'bar',
       title: node.data?.title || '',
       dimensions: node.data?.dimensions || [],
@@ -281,24 +295,33 @@ export function convertEdgesToArrows(edges) {
     return [];
   }
 
-  return edges.map((edge, index) => {
+  return edges.map((edge) => {
+    // Helper function to ensure ID has "shape:" prefix for TLDraw
+    const ensureShapePrefix = (id) => {
+      if (!id) return id;
+      return id.startsWith('shape:') ? id : `shape:${id}`;
+    };
+    
     return {
-      id: edge.id,
+      id: ensureShapePrefix(edge.id),
       type: 'arrow',
       x: 0,
       y: 0,
-      rotation: 0,
-      index: `b${index}`,
+      // Don't specify index - let TLDraw assign it automatically via editor.createShapes()
       props: {
         start: {
+          x: 0,
+          y: 0,
           type: 'binding',
-          boundShapeId: edge.source,
+          boundShapeId: ensureShapePrefix(edge.source),
           normalizedAnchor: { x: 0.5, y: 0.5 },
           isExact: false
         },
         end: {
+          x: 0,
+          y: 0,
           type: 'binding',
-          boundShapeId: edge.target,
+          boundShapeId: ensureShapePrefix(edge.target),
           normalizedAnchor: { x: 0.5, y: 0.5 },
           isExact: false
         },

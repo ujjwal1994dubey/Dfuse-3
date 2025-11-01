@@ -28,8 +28,20 @@ const EChartsWrapper = React.memo(({
   const chartRef = useRef(null);
   const initCallbackFired = useRef(false);
   
-  // Convert Plotly figure to ECharts option
+  // Convert Plotly figure to ECharts option OR use native ECharts option
   const echartsOption = useMemo(() => {
+    // Check if layout is already a complete ECharts option (has series)
+    if (layout && typeof layout === 'object' && layout.series) {
+      console.log('📊 EChartsWrapper: Using native ECharts option directly', {
+        hasSeries: !!layout.series,
+        seriesLength: layout.series?.length,
+        seriesType: layout.series?.[0]?.type
+      });
+      // Apply data sampling for performance (only if many data points)
+      return sampleEChartsData(layout, 1000);
+    }
+    
+    // Otherwise, assume Plotly format and convert
     if (!data || data.length === 0) {
       console.warn('EChartsWrapper: No data provided');
       return null;
@@ -38,6 +50,7 @@ const EChartsWrapper = React.memo(({
     const plotlyFigure = { data, layout: layout || {} };
     
     try {
+      console.log('🔄 EChartsWrapper: Converting Plotly to ECharts');
       let option = convertPlotlyToECharts(plotlyFigure);
       
       if (!option) {

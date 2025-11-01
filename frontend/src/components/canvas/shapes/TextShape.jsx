@@ -1,5 +1,5 @@
 import React from 'react';
-import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d } from '@tldraw/tldraw';
+import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, T } from '@tldraw/tldraw';
 
 /**
  * Custom TLDraw Shape for Text Boxes
@@ -9,10 +9,10 @@ export class TextBoxShape extends BaseBoxShapeUtil {
   static type = 'textbox';
   
   static props = {
-    w: { type: 'number', default: 200 },
-    h: { type: 'number', default: 100 },
-    text: { type: 'string', default: '' },
-    fontSize: { type: 'number', default: 14 }
+    w: T.number,
+    h: T.number,
+    text: T.string,
+    fontSize: T.number
   };
 
   getDefaultProps() {

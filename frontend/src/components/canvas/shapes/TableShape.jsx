@@ -1,5 +1,5 @@
 import React from 'react';
-import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d } from '@tldraw/tldraw';
+import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, T } from '@tldraw/tldraw';
 
 /**
  * Custom TLDraw Shape for Data Tables
@@ -9,12 +9,12 @@ export class TableShape extends BaseBoxShapeUtil {
   static type = 'table';
   
   static props = {
-    w: { type: 'number', default: 600 },
-    h: { type: 'number', default: 400 },
-    title: { type: 'string', default: '' },
-    headers: { type: 'json', default: [] },
-    rows: { type: 'json', default: [] },
-    totalRows: { type: 'number', default: 0 }
+    w: T.number,
+    h: T.number,
+    title: T.string,
+    headers: T.any,
+    rows: T.any,
+    totalRows: T.number
   };
 
   getDefaultProps() {
