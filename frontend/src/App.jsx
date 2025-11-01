@@ -2,6 +2,7 @@ import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react'
 import ReactFlow, { Background, Controls, MiniMap, applyNodeChanges, applyEdgeChanges, ReactFlowProvider, useStore, useReactFlow } from 'react-flow-renderer';
 import Plot from 'react-plotly.js';
 import EChartsWrapper from './charts/EChartsWrapper';
+import CanvasAdapter from './components/canvas/CanvasAdapter';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
@@ -15,8 +16,15 @@ import './tiptap-styles.css';
 // Replace line 13 with:
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
-// MIGRATION: Feature flag to test ECharts vs Plotly
+// MIGRATION: Feature flags for testing ECharts vs Plotly and TLDraw vs React Flow
 const USE_ECHARTS = process.env.REACT_APP_USE_ECHARTS === 'true';
+const USE_TLDRAW = process.env.REACT_APP_USE_TLDRAW === 'true';
+
+// Log configuration on app start
+console.log('🎨 Canvas Configuration:', {
+  chartLibrary: USE_ECHARTS ? 'ECharts' : 'Plotly',
+  canvasLibrary: USE_TLDRAW ? 'TLDraw' : 'React Flow'
+});
 
 /**
  * Chart Figure Cache - Performance Optimization
@@ -7124,6 +7132,32 @@ function ReactFlowWrapper() {
     );
   });
 
+  // Development debugging helpers
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development') {
+      window.debugCanvas = {
+        getNodes: () => nodes,
+        getEdges: () => edges,
+        getSelectedCharts: () => nodes.filter(n => n.data?.selected),
+        getConfig: () => ({
+          useTLDraw: USE_TLDRAW,
+          useECharts: USE_ECHARTS,
+          nodeCount: nodes.length,
+          edgeCount: edges.length
+        }),
+        logState: () => {
+          console.group('🐛 Canvas Debug State');
+          console.log('Nodes:', nodes.length);
+          console.log('Edges:', edges.length);
+          console.log('Selected:', nodes.filter(n => n.data?.selected).length);
+          console.log('Config:', { USE_TLDRAW, USE_ECHARTS });
+          console.groupEnd();
+        }
+      };
+      console.log('🐛 Debug helpers available: window.debugCanvas.logState()');
+    }
+  }, [nodes, edges]);
+
   return (
     <div className="w-screen h-screen flex">
       {/* Unified Sidebar */}
@@ -7769,81 +7803,123 @@ function ReactFlowWrapper() {
             marginRight: reportPanelOpen ? 'var(--size-panel-lg)' : '0'
           }}
         >
-          <CustomReactFlow
-            nodes={nodesWithSelection}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onNodesDelete={onNodesDelete}
-            onEdgesDelete={onEdgesDelete}
-            onPaneClick={onPaneClick}
-            onNodeClick={(event, node) => {
-              // Disable React Flow's built-in node selection for chart nodes
-              // Selection is now handled exclusively through checkboxes
-              if (node.type === 'chart') {
-                event.stopPropagation();
-                return;
-              }
-              
-              // For other node types (textbox, expression, etc.), allow normal interaction
-              // but prevent clicks on interactive elements
-              const target = event.target;
-              const isInteractiveElement = target.closest('button') || 
-                                         target.closest('[role="button"]') || 
-                                         target.closest('[role="menu"]') || 
-                                         target.closest('[role="menuitem"]') ||
-                                         target.closest('input') ||
-                                         target.closest('select') ||
-                                         target.closest('textarea') ||
-                                         target.closest('.tiptap') ||
-                                         target.closest('[data-radix-collection-item]');
-              
-              if (isInteractiveElement) {
-                event.stopPropagation();
-                return;
-              }
-            }}
-            fitView
-            style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
-            zoomOnScroll={false}
-            zoomOnPinch={true}
-            panOnScroll={true}
-            panOnScrollMode="free"
-            preventScrolling={false}
-            // Enable viewport culling for better performance with many charts
-            onlyRenderVisibleElements={true}
-            defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-            maxZoom={3}
-            minZoom={0.1}
-            snapToGrid={false}
-            // snapGrid={[16, 16]}  // Disable snapping for now
-            deleteKeyCode="Delete"
-            multiSelectionKeyCode="Meta"
-            selectionKeyCode="Shift"
-          >
-            <MiniMap 
-              nodeColor={getMinimapNodeColor}
-              nodeStrokeWidth={3}
-              style={{
-                backgroundColor: '#f8fafc',
-                width: 200,
-                height: 150,
+          {USE_TLDRAW ? (
+            /* TLDraw Canvas Implementation */
+            <CanvasAdapter
+              useTLDraw={true}
+              nodes={nodesWithSelection}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodeClick={(event) => {
+                // TLDraw passes { node } object
+                const node = event.node || event;
+                
+                // Disable selection for chart nodes (checkbox handles it)
+                if (node?.type === 'chart') {
+                  return;
+                }
+                
+                // For other node types, prevent clicks on interactive elements
+                if (event.target) {
+                  const target = event.target;
+                  const isInteractiveElement = target.closest('button') || 
+                                             target.closest('[role="button"]') || 
+                                             target.closest('[role="menu"]') || 
+                                             target.closest('[role="menuitem"]') ||
+                                             target.closest('input') ||
+                                             target.closest('select') ||
+                                             target.closest('textarea') ||
+                                             target.closest('.tiptap') ||
+                                             target.closest('[data-radix-collection-item]');
+                  
+                  if (isInteractiveElement) {
+                    return;
+                  }
+                }
               }}
-              position="bottom-right"
+              onPaneClick={onPaneClick}
+              fitView
+              style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
             />
-            <Controls 
-              style={{ 
-                position: 'absolute', 
-                bottom: '10px', 
-                right: '230px',
-                left: 'auto',
-                transition: 'right 300ms ease'
-              }} 
-              className="modern-controls"
-            />
-            <Background gap={16} />
-          </CustomReactFlow>
+          ) : (
+            /* React Flow Canvas Implementation (Original) */
+            <CustomReactFlow
+              nodes={nodesWithSelection}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodesDelete={onNodesDelete}
+              onEdgesDelete={onEdgesDelete}
+              onPaneClick={onPaneClick}
+              onNodeClick={(event, node) => {
+                // Disable React Flow's built-in node selection for chart nodes
+                // Selection is now handled exclusively through checkboxes
+                if (node.type === 'chart') {
+                  event.stopPropagation();
+                  return;
+                }
+                
+                // For other node types (textbox, expression, etc.), allow normal interaction
+                // but prevent clicks on interactive elements
+                const target = event.target;
+                const isInteractiveElement = target.closest('button') || 
+                                           target.closest('[role="button"]') || 
+                                           target.closest('[role="menu"]') || 
+                                           target.closest('[role="menuitem"]') ||
+                                           target.closest('input') ||
+                                           target.closest('select') ||
+                                           target.closest('textarea') ||
+                                           target.closest('.tiptap') ||
+                                           target.closest('[data-radix-collection-item]');
+                
+                if (isInteractiveElement) {
+                  event.stopPropagation();
+                  return;
+                }
+              }}
+              fitView
+              style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
+              zoomOnScroll={false}
+              zoomOnPinch={true}
+              panOnScroll={true}
+              panOnScrollMode="free"
+              preventScrolling={false}
+              // Enable viewport culling for better performance with many charts
+              onlyRenderVisibleElements={true}
+              defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+              maxZoom={3}
+              minZoom={0.1}
+              snapToGrid={false}
+              // snapGrid={[16, 16]}  // Disable snapping for now
+              deleteKeyCode="Delete"
+              multiSelectionKeyCode="Meta"
+              selectionKeyCode="Shift"
+            >
+              <MiniMap 
+                nodeColor={getMinimapNodeColor}
+                nodeStrokeWidth={3}
+                style={{
+                  backgroundColor: '#f8fafc',
+                  width: 200,
+                  height: 150,
+                }}
+                position="bottom-right"
+              />
+              <Controls 
+                style={{ 
+                  position: 'absolute', 
+                  bottom: '10px', 
+                  right: '230px',
+                  left: 'auto',
+                  transition: 'right 300ms ease'
+                }} 
+                className="modern-controls"
+              />
+              <Background gap={16} />
+            </CustomReactFlow>
+          )}
           
           {/* Arrow preview line when creating arrow */}
           {activeTool === 'arrow' && arrowStart && (
