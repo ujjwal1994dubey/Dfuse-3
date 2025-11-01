@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import ReactFlow, { Background, Controls, MiniMap, applyNodeChanges, applyEdgeChanges, ReactFlowProvider, useStore, useReactFlow } from 'react-flow-renderer';
 import Plot from 'react-plotly.js';
+import EChartsWrapper from './charts/EChartsWrapper';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
@@ -13,6 +14,10 @@ import './tiptap-styles.css';
 //const API = 'http://localhost:8000';
 // Replace line 13 with:
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
+// MIGRATION: Feature flag to test ECharts vs Plotly
+const USE_ECHARTS = process.env.REACT_APP_USE_ECHARTS === 'true';
+
 /**
  * Chart Figure Cache - Performance Optimization
  * Cache computed Plotly figures to prevent unnecessary re-computation
@@ -2518,28 +2523,48 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
           style={{ pointerEvents: 'auto', minHeight: `${plotHeight}px` }}
           data-chart-id={id}
         >
-          <Plot 
-            ref={plotlyDivRef}
-            key={`${id}-${chartType}`}
-            data={memoizedData} 
-            layout={memoizedLayout} 
-            style={{ width: '100%', height: `${plotHeight}px` }} 
-            useResizeHandler={false}
-            onError={(err) => {
-              console.warn('Plotly error:', err);
-            }}
-            onInitialized={handlePlotlyInit}
-            onUpdate={handlePlotlyUpdate}
-          config={{
-            displayModeBar: false, // Hide Plotly modebar - actions moved to Chart Actions panel
-            displaylogo: false,
-            staticPlot: !isChartVisible, // Static rendering when not visible
-            responsive: true,
-            doubleClick: 'reset+autosize',
-            showTips: true,
-            showLink: false
-          }}
-        />
+          {USE_ECHARTS ? (
+            <EChartsWrapper
+              data={memoizedData} 
+              layout={memoizedLayout} 
+              style={{ width: '100%', height: `${plotHeight}px` }}
+              onInitialized={handlePlotlyInit}
+              onUpdate={handlePlotlyUpdate}
+              config={{
+                displayModeBar: false,
+                displaylogo: false,
+                staticPlot: !isChartVisible,
+                responsive: true,
+                doubleClick: 'reset+autosize',
+                showTips: true,
+                showLink: false
+              }}
+              useResizeHandler={false}
+            />
+          ) : (
+            <Plot 
+              ref={plotlyDivRef}
+              key={`${id}-${chartType}`}
+              data={memoizedData} 
+              layout={memoizedLayout} 
+              style={{ width: '100%', height: `${plotHeight}px` }} 
+              useResizeHandler={false}
+              onError={(err) => {
+                console.warn('Plotly error:', err);
+              }}
+              onInitialized={handlePlotlyInit}
+              onUpdate={handlePlotlyUpdate}
+              config={{
+                displayModeBar: false, // Hide Plotly modebar - actions moved to Chart Actions panel
+                displaylogo: false,
+                staticPlot: !isChartVisible, // Static rendering when not visible
+                responsive: true,
+                doubleClick: 'reset+autosize',
+                showTips: true,
+                showLink: false
+              }}
+            />
+          )}
         </div>
       ) : (
         <div className="text-sm text-gray-500">Loading chart...</div>
