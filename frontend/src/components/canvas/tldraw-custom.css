@@ -1,0 +1,42 @@
+/* Custom TLDraw Styles */
+
+/* Override TLDraw's default background */
+.tl-container {
+  background-color: #fafafa !important;
+}
+
+/* Custom grid */
+.tl-grid {
+  background-image: 
+    linear-gradient(to right, #e5e7eb 1px, transparent 1px),
+    linear-gradient(to bottom, #e5e7eb 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Shape selection indicator */
+.tl-shape-indicator {
+  stroke: #3b82f6 !important;
+  stroke-width: 3 !important;
+}
+
+/* HTMLContainer pointer events fix */
+.tl-html-container {
+  pointer-events: all !important;
+}
+
+/* Ensure charts are interactive */
+.tl-html-container [data-chart-id] {
+  pointer-events: all !important;
+}
+
+/* Text box focus styles */
+.tl-html-container textarea:focus {
+  outline: 2px solid #fbbf24;
+  outline-offset: -2px;
+}
+
+/* Table styles */
+.tl-html-container table {
+  font-variant-numeric: tabular-nums;
+}
+
