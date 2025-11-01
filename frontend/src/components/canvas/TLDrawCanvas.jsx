@@ -5,6 +5,7 @@ import { ChartShape } from './shapes/ChartShape';
 import { TextBoxShape } from './shapes/TextShape';
 import { TableShape } from './shapes/TableShape';
 import { ExpressionShape } from './shapes/ExpressionShape';
+import { convertEdgesToArrows, convertArrowsToEdges } from './util/stateConverter';
 import './tldraw-custom.css';
 
 /**
@@ -13,8 +14,12 @@ import './tldraw-custom.css';
  */
 const TLDrawCanvas = ({
   nodes = [],
+  edges = [],
   onNodesChange,
+  onEdgesChange,
   onNodeClick,
+  onPaneClick,
+  onSelectionChange,
   initialViewport
 }) => {
   const editorRef = useRef(null);
@@ -26,29 +31,55 @@ const TLDrawCanvas = ({
   const handleMount = (editor) => {
     editorRef.current = editor;
 
-    // Import existing nodes as TLDraw shapes (only once)
-    if (!initialImportDone.current && nodes.length > 0) {
+    // Import existing nodes and edges as TLDraw shapes (only once)
+    if (!initialImportDone.current && (nodes.length > 0 || edges.length > 0)) {
       importNodesToTLDraw(editor, nodes);
+      importEdgesToTLDraw(editor, edges);
       initialImportDone.current = true;
     }
 
     // Listen to shape changes
     const unsubscribe = editor.store.listen((entry) => {
       if (entry.source === 'user') {
-        // Get all shapes and convert to nodes format
+        // Get all shapes and separate by type
         const shapes = editor.getCurrentPageShapes();
+        const nodeShapes = shapes.filter(s => ['chart', 'textbox', 'table', 'expression'].includes(s.type));
+        const arrowShapes = shapes.filter(s => s.type === 'arrow');
+        
+        // Convert and emit node changes
         if (onNodesChange) {
-          const convertedNodes = convertShapesToNodes(shapes);
+          const convertedNodes = convertShapesToNodes(nodeShapes);
           onNodesChange(convertedNodes);
+        }
+        
+        // Convert and emit edge changes
+        if (onEdgesChange) {
+          const convertedEdges = convertArrowsToEdges(arrowShapes);
+          onEdgesChange(convertedEdges);
         }
       }
     });
 
     // Listen to selection changes
     editor.on('select', (info) => {
-      if (onNodeClick && info.shapes.length > 0) {
+      if (info.shapes.length > 0) {
         const shape = info.shapes[0];
-        onNodeClick({ node: convertShapeToNode(shape) });
+        if (onNodeClick) {
+          onNodeClick({ node: convertShapeToNode(shape) });
+        }
+        if (onSelectionChange) {
+          const selectedNodes = convertShapesToNodes(info.shapes.filter(s => 
+            ['chart', 'textbox', 'table', 'expression'].includes(s.type)
+          ));
+          onSelectionChange({ nodes: selectedNodes });
+        }
+      }
+    });
+
+    // Listen to canvas click
+    editor.on('click-canvas', () => {
+      if (onPaneClick) {
+        onPaneClick();
       }
     });
 
@@ -231,6 +262,19 @@ function convertShapesToNodes(shapes) {
   return shapes
     .filter(shape => ['chart', 'textbox', 'table', 'expression'].includes(shape.type))
     .map(convertShapeToNode);
+}
+
+/**
+ * Import React Flow edges as TLDraw arrows
+ */
+function importEdgesToTLDraw(editor, edges) {
+  if (!edges || edges.length === 0) return;
+  
+  const arrows = convertEdgesToArrows(edges);
+  
+  if (arrows.length > 0) {
+    editor.createShapes(arrows);
+  }
 }
 
 export default TLDrawCanvas;
