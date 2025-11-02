@@ -56,28 +56,13 @@
   z-index: 1000 !important;
 }
 
-/* Adjust position when report panel is open - maintain same 8px margin */
-.tldraw-report-open .tlui-layout__top__right {
-  right: calc(var(--size-panel-lg, 400px) + 8px) !important;
-}
-
 /* Responsive adjustments for smaller screens */
-@media (max-width: 1024px) {
-  .tldraw-report-open .tlui-layout__top__right {
-    right: calc(var(--size-panel-lg, 400px) + 8px) !important;
-  }
-}
-
 @media (max-width: 768px) {
   .tlui-layout__top__right {
     bottom: 6px !important;
     right: 6px !important;
     transform: scale(0.9);
     transform-origin: bottom right;
-  }
-  
-  .tldraw-report-open .tlui-layout__top__right {
-    right: calc(var(--size-panel-lg, 320px) + 6px) !important;
   }
 }
 

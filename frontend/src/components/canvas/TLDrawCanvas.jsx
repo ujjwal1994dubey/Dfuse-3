@@ -4,7 +4,6 @@ import '@tldraw/tldraw/tldraw.css';
 import { ChartShape } from './shapes/ChartShape';
 import { TextBoxShape } from './shapes/TextShape';
 import { TableShape } from './shapes/TableShape';
-import { ExpressionShape } from './shapes/ExpressionShape';
 import { convertEdgesToArrows, convertArrowsToEdges } from './util/stateConverter';
 import './tldraw-custom.css';
 
@@ -22,8 +21,7 @@ const TLDrawCanvas = ({
   onPaneClick,
   onSelectionChange,
   onChartSelect,
-  initialViewport,
-  reportPanelOpen = false
+  initialViewport
 }) => {
   const editorRef = useRef(null);
   const initialImportDone = useRef(false);
@@ -31,7 +29,7 @@ const TLDrawCanvas = ({
   const previousNodesDataRef = useRef(new Map()); // Track node data to detect changes
 
   // Custom shape utilities
-  const shapeUtils = [ChartShape, TextBoxShape, TableShape, ExpressionShape];
+  const shapeUtils = [ChartShape, TextBoxShape, TableShape];
 
   // Watch for new nodes being added AND existing nodes being updated
   useEffect(() => {
@@ -112,7 +110,7 @@ const TLDrawCanvas = ({
       if (entry.source === 'user') {
         // Get all shapes and separate by type
         const shapes = editor.getCurrentPageShapes();
-        const nodeShapes = shapes.filter(s => ['chart', 'textbox', 'table', 'expression'].includes(s.type));
+        const nodeShapes = shapes.filter(s => ['chart', 'textbox', 'table'].includes(s.type));
         const arrowShapes = shapes.filter(s => s.type === 'arrow');
         
         // Convert and emit node changes
@@ -171,7 +169,7 @@ const TLDrawCanvas = ({
       // Handle onSelectionChange callback
       if (onSelectionChange) {
         const selectedNodes = convertShapesToNodes(currentSelection.filter(s => 
-          ['chart', 'textbox', 'table', 'expression'].includes(s.type)
+          ['chart', 'textbox', 'table'].includes(s.type)
         ));
         if (selectedNodes.length > 0) {
           onSelectionChange({ nodes: selectedNodes });
@@ -195,7 +193,6 @@ const TLDrawCanvas = ({
 
   return (
     <div 
-      className={reportPanelOpen ? 'tldraw-report-open' : ''}
       style={{ 
         width: '100%', 
         height: '100%', 
@@ -256,15 +253,6 @@ function importNodesToTLDraw(editor, nodes) {
         headers: node.data.headers || [],
         rows: node.data.rows || [],
         totalRows: node.data.totalRows || 0
-      };
-    } else if (node.type === 'expression') {
-      shapeType = 'expression';
-      shapeProps = {
-        w: node.data.width || 400,
-        h: node.data.height || 200,
-        expression: node.data.expression || '',
-        result: node.data.result || '',
-        error: node.data.error || ''
       };
     } else {
       // Skip unknown types
@@ -347,19 +335,6 @@ function convertShapeToNode(shape) {
     };
   }
 
-  if (shape.type === 'expression') {
-    return {
-      ...baseNode,
-      data: {
-        expression: shape.props.expression,
-        result: shape.props.result,
-        error: shape.props.error,
-        width: shape.props.w,
-        height: shape.props.h
-      }
-    };
-  }
-
   return baseNode;
 }
 
@@ -368,7 +343,7 @@ function convertShapeToNode(shape) {
  */
 function convertShapesToNodes(shapes) {
   return shapes
-    .filter(shape => ['chart', 'textbox', 'table', 'expression'].includes(shape.type))
+    .filter(shape => ['chart', 'textbox', 'table'].includes(shape.type))
     .map(convertShapeToNode);
 }
 
@@ -463,13 +438,6 @@ function updateNodesInTLDraw(editor, nodes) {
         headers: node.data.headers || existingShape.props.headers,
         rows: node.data.rows || existingShape.props.rows,
         totalRows: node.data.totalRows || existingShape.props.totalRows
-      };
-    } else if (node.type === 'expression') {
-      updatedProps = {
-        w: node.data.width || existingShape.props.w,
-        h: node.data.height || existingShape.props.h,
-        expression: node.data.expression || existingShape.props.expression,
-        result: node.data.result || existingShape.props.result
       };
     }
     

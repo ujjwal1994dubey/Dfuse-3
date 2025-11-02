@@ -70,25 +70,6 @@ export function createTableShape(id, position, tableData) {
 }
 
 /**
- * Create a new expression shape
- */
-export function createExpressionShape(id, position) {
-  return {
-    id: id,
-    type: 'expression',
-    x: position.x,
-    y: position.y,
-    props: {
-      w: 400,
-      h: 200,
-      expression: '',
-      result: '',
-      error: ''
-    }
-  };
-}
-
-/**
  * Update chart shape data
  */
 export function updateChartShape(editor, shapeId, updates) {

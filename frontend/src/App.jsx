@@ -7,7 +7,7 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
 import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui';
-import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, AlignStartVertical, MenuIcon, Upload, Calculator, ArrowRight, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, CirclePlus, StickyNote } from 'lucide-react';
+import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, CirclePlus } from 'lucide-react';
 import { marked } from 'marked';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
@@ -787,45 +787,6 @@ const sanitizeLayout = (layout) => {
 // We'll implement autocomplete manually using a simple input approach
 
 /**
- * ArrowNode Component
- * Renders a visual arrow/connector node on the canvas with customizable text label.
- * Used to show relationships or flows between different elements.
- * 
- * @param {Object} data - Contains label text and styling information
- */
-const ArrowNode = React.memo(function ArrowNode({ data }) {
-  const { id, start, end } = data;
-
-  // Compute local coordinates inside a bbox anchored at (minX, minY)
-  const minX = Math.min(start.x, end.x);
-  const minY = Math.min(start.y, end.y);
-  const sx = start.x - minX;
-  const sy = start.y - minY;
-  const ex = end.x - minX;
-  const ey = end.y - minY;
-  const width = Math.max(sx, ex) + 20;
-  const height = Math.max(sy, ey) + 20;
-
-  return (
-    <svg width={width} height={height} style={{ pointerEvents: 'none', overflow: 'visible' }}>
-      <defs>
-        <marker id={`arrow-head-${id}`} markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
-          <path d="M0,0 L12,6 L0,12 Z" fill="#2563eb" />
-        </marker>
-      </defs>
-      <line x1={sx} y1={sy} x2={ex} y2={ey} stroke="#2563eb" strokeWidth="3" markerEnd={`url(#arrow-head-${id})`} />
-    </svg>
-  );
-}, (prevProps, nextProps) => {
-  // Custom comparison function for ArrowNode performance optimization
-  return (
-    prevProps.data.id === nextProps.data.id &&
-    JSON.stringify(prevProps.data.start) === JSON.stringify(nextProps.data.start) &&
-    JSON.stringify(prevProps.data.end) === JSON.stringify(nextProps.data.end)
-  );
-});
-
-/**
  * TableNode Component
  * Displays tabular data in a compact, scrollable table format on the canvas.
  * Shows column headers and data rows with zebra striping for readability.
@@ -1038,823 +999,6 @@ const TextBoxNode = React.memo(function TextBoxNode({ data, id, selected }) {
 });
 
 /**
- * ExpressionNode Component
- * Interactive calculator node that evaluates mathematical expressions in real-time.
- * Supports basic arithmetic, math functions (sin, cos, sqrt, etc.), and variables.
- * Connects to backend AI for complex expression parsing and evaluation.
- * 
- * @param {Object} data - Contains expression and result state
- * @param {string} id - Unique identifier for this expression node
- * @param {string} apiKey - Gemini API key for AI-powered expression evaluation
- * @param {string} selectedModel - Gemini model to use
- * @param {Function} setShowSettings - Opens settings panel if API key is missing
- * @param {Function} updateTokenUsage - Updates token usage metrics
- */
-const ExpressionNode = function ExpressionNode({ data, id, apiKey, selectedModel, setShowSettings, updateTokenUsage }) {
-  const [expression, setExpression] = useState(data.expression || '');
-  const [result, setResult] = useState(data.result || null);
-  const [isEditing, setIsEditing] = useState(data.isNew || false);
-  const [showFilters, setShowFilters] = useState(false);
-  const [filters, setFilters] = useState(data.filters || {});
-  const [availableMeasures, setAvailableMeasures] = useState([]);
-  const [availableDimensions, setAvailableDimensions] = useState([]);
-  const [validationErrors, setValidationErrors] = useState([]);
-  
-  // Autocomplete state
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [suggestions, setSuggestions] = useState([]);
-  const [suggestionType, setSuggestionType] = useState(''); // 'measures' or 'aggregations'
-  const [suggestionPosition, setSuggestionPosition] = useState({ top: 0, left: 0 });
-  // const [currentQuery, setCurrentQuery] = useState(''); // Removed unused variable
-  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
-  const editorContainerRef = useRef(null);
-  const editorRef = useRef(null);
-  
-  // AI Metric Calculation state
-  const [aiMode, setAiMode] = useState(false);
-  const [aiQuery, setAiQuery] = useState('');
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiResult, setAiResult] = useState(null);
-  
-  // Menu dropdown state
-  const [showDropdownMenu, setShowDropdownMenu] = useState(false);
-  
-  // Available aggregation methods
-  const aggregationMethods = useMemo(() => [
-    { name: 'SUM', description: 'Sum of all values' },
-    { name: 'AVG', description: 'Average of all values' },
-    { name: 'MIN', description: 'Minimum value' },
-    { name: 'MAX', description: 'Maximum value' },
-    { name: 'COUNT', description: 'Count of records' },
-    { name: 'COUNT_DISTINCT', description: 'Count of unique values' },
-    { name: 'MEDIAN', description: 'Median value' },
-    { name: 'STDDEV', description: 'Standard deviation' }
-  ], []);
-  
-  // Autocomplete helper functions
-  const getCursorPosition = useCallback((editor) => {
-    if (!editor || !editor.view || !editorContainerRef.current) return null;
-    
-    try {
-      const { state } = editor;
-      const { selection } = state;
-      const { from } = selection;
-      
-      // Get the DOM position of the cursor
-      const coords = editor.view.coordsAtPos(from);
-      const containerRect = editorContainerRef.current.getBoundingClientRect();
-      
-      // Position dropdown below the cursor, accounting for container padding
-      return {
-        top: coords.top - containerRect.top + 25, // 25px below cursor
-        left: coords.left - containerRect.left
-      };
-    } catch (error) {
-      console.warn('Could not get cursor position:', error);
-      // Fallback position if cursor position can't be determined
-      return {
-        top: 60, // Below the editor area
-        left: 20
-      };
-    }
-  }, []);
-  
-  const checkForAutocompleteTriggers = useCallback((editor) => {
-    if (!editor || !editor.view || !isEditing) return;
-    
-    const { state } = editor;
-    const { selection } = state;
-    const { from } = selection;
-    
-    // Get text before cursor (last 50 characters to handle long measure names)
-    const textBefore = state.doc.textBetween(Math.max(0, from - 50), from);
-    
-    // Check for @ trigger (measures)
-    const atMatch = textBefore.match(/@([a-zA-Z0-9_]*)$/);
-
-    if (atMatch) {
-      const query = atMatch[1].toLowerCase();
-      const filteredMeasures = availableMeasures.filter(measure => 
-        measure.toLowerCase().includes(query)
-      ).map(measure => ({ name: measure, type: 'measure' }));
-      
-      const position = getCursorPosition(editor);
-      if (position) {
-        setSuggestions(filteredMeasures);
-        setSuggestionType('measures');
-        setSuggestionPosition(position);
-        // setCurrentQuery(query); // Not needed for functionality
-        setSelectedSuggestionIndex(0);
-        setShowSuggestions(true);
-      }
-      return;
-    }
-    
-    // Check for . trigger (aggregations)
-    const dotMatch = textBefore.match(/@[a-zA-Z0-9_]+\.([a-zA-Z]*)$/);
-
-    if (dotMatch) {
-      const query = dotMatch[1].toLowerCase();
-      const filteredAggregations = aggregationMethods.filter(agg => 
-        agg.name.toLowerCase().includes(query)
-      ).map(agg => ({ name: agg.name, description: agg.description, type: 'aggregation' }));
-      
-      const position = getCursorPosition(editor);
-      if (position) {
-        setSuggestions(filteredAggregations);
-        setSuggestionType('aggregations');
-        setSuggestionPosition(position);
-        // setCurrentQuery(query); // Not needed for functionality
-        setSelectedSuggestionIndex(0);
-        setShowSuggestions(true);
-      }
-      return;
-    }
-    
-    // Hide suggestions if no triggers
-    setShowSuggestions(false);
-  }, [availableMeasures, aggregationMethods, getCursorPosition, isEditing]);
-  
-  const insertSuggestion = useCallback((suggestion) => {
-    if (!editorRef.current || !editorRef.current.view || !editorRef.current.commands) return;
-    
-
-    try {
-      const { state } = editorRef.current;
-      const { selection } = state;
-      const { from } = selection;
-      
-      // Get text before cursor to find what to replace
-      const textBefore = state.doc.textBetween(Math.max(0, from - 50), from);
-      
-      let replaceFrom = from;
-      let replaceText = suggestion.name;
-      
-      if (suggestionType === 'measures') {
-        // Replace @query with @MeasureName
-        const atMatch = textBefore.match(/@([a-zA-Z0-9_]*)$/);
-        if (atMatch) {
-          replaceFrom = from - atMatch[0].length;
-          replaceText = `@${suggestion.name}`;
-        } else {
-          // Fallback: just replace the @ character if no query found
-          const simpleAtMatch = textBefore.match(/@$/);
-          if (simpleAtMatch) {
-            replaceFrom = from - 1;
-            replaceText = `@${suggestion.name}`;
-          }
-        }
-      } else if (suggestionType === 'aggregations') {
-        // Replace .query with .AGGREGATION
-        const dotMatch = textBefore.match(/\.([a-zA-Z]*)$/);
-        if (dotMatch) {
-          replaceFrom = from - dotMatch[0].length;
-          replaceText = `.${suggestion.name}`;
-        } else {
-          // Fallback: just replace the . character if no query found
-          const simpleDotMatch = textBefore.match(/\.$/);
-          if (simpleDotMatch) {
-            replaceFrom = from - 1;
-            replaceText = `.${suggestion.name}`;
-          }
-        }
-      }
-      
-      // Replace the text
-      editorRef.current.commands.deleteRange({ from: replaceFrom, to: from });
-      editorRef.current.commands.insertContent(replaceText);
-      
-      // Hide suggestions
-      setShowSuggestions(false);
-    } catch (error) {
-      console.warn('Could not insert suggestion:', error);
-    }
-  }, [suggestionType]);
-  
-  const handleKeyDown = useCallback((event) => {
-    if (!showSuggestions || suggestions.length === 0) return;
-    
-    switch (event.key) {
-      case 'ArrowDown':
-        event.preventDefault();
-        setSelectedSuggestionIndex(prev => 
-          prev < suggestions.length - 1 ? prev + 1 : 0
-        );
-        break;
-      case 'ArrowUp':
-        event.preventDefault();
-        setSelectedSuggestionIndex(prev => 
-          prev > 0 ? prev - 1 : suggestions.length - 1
-        );
-        break;
-      case 'Enter':
-      case 'Tab':
-        event.preventDefault();
-
-        if (suggestions[selectedSuggestionIndex]) {
-          insertSuggestion(suggestions[selectedSuggestionIndex]);
-        }
-        break;
-      case 'Escape':
-        event.preventDefault();
-        setShowSuggestions(false);
-        break;
-      default:
-        // No action needed for other keys
-        break;
-    }
-  }, [showSuggestions, suggestions, selectedSuggestionIndex, insertSuggestion]);
-
-  // Add keyboard event listener for autocomplete
-  useEffect(() => {
-    const handleGlobalKeyDown = (event) => {
-      if (isEditing && showSuggestions) {
-        handleKeyDown(event);
-      }
-    };
-    
-    document.addEventListener('keydown', handleGlobalKeyDown);
-    return () => document.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [isEditing, showSuggestions, handleKeyDown]);
-
-  // Hide suggestions when not editing
-  useEffect(() => {
-    if (!isEditing) {
-      setShowSuggestions(false);
-    }
-  }, [isEditing]);
-  
-  // Handle expression change from TipTap editor
-  const handleExpressionChange = useCallback((newExpression) => {
-    setExpression(newExpression);
-    if (data.onExpressionChange) {
-      data.onExpressionChange(newExpression);
-    }
-  }, [data]);
-
-  // Simple TipTap editor without custom extensions
-  const editor = useEditor({
-    extensions: [StarterKit],
-    content: expression ? `<p>${expression}</p>` : '<p></p>',
-    editable: isEditing,
-    onUpdate: ({ editor }) => {
-      const content = editor.getText();
-      handleExpressionChange(content);
-      
-      // Check for autocomplete triggers when editing
-      if (isEditing) {
-        checkForAutocompleteTriggers(editor);
-      }
-    },
-    onCreate: ({ editor }) => {
-      // TipTap editor created
-      editorRef.current = editor;
-      // Ensure editor is properly initialized
-      if (isEditing) {
-        setTimeout(() => {
-          if (editor && editor.view && editor.commands && !editor.isDestroyed) {
-            try {
-              editor.setEditable(true);
-              editor.commands.focus();
-            } catch (error) {
-              console.warn('Could not focus editor on create:', error);
-            }
-          }
-        }, 100);
-      }
-    },
-    onFocus: () => {
-      // TipTap editor focused
-    },
-  }, [isEditing, checkForAutocompleteTriggers]);
-
-  // Update editor content when expression changes externally
-  useEffect(() => {
-    if (editor && editor.view && editor.commands && !editor.isDestroyed) {
-      try {
-        const currentText = editor.getText();
-        if (expression !== currentText) {
-          editor.commands.setContent(expression ? `<p>${expression}</p>` : '<p></p>');
-        }
-      } catch (error) {
-        console.warn('Could not update editor content:', error);
-      }
-    }
-  }, [editor, expression]);
-
-  // Cleanup editor on unmount
-  useEffect(() => {
-    return () => {
-      if (editorRef.current && !editorRef.current.isDestroyed) {
-        try {
-          editorRef.current.destroy();
-        } catch (error) {
-          console.warn('Could not destroy editor:', error);
-        }
-      }
-    };
-  }, []);
-
-  // Fetch available measures and dimensions
-  useEffect(() => {
-    if (data.datasetId) {
-      // Fetching measures for dataset
-      fetch(`${API}/dataset/${data.datasetId}/measures`)
-        .then(res => res.json())
-        .then(data => {
-          // Received measures data
-          const measures = [...new Set(data.measures || [])];
-          const dimensions = [...new Set(data.dimensions || [])];
-          
-          // Unique measures and dimensions
-          
-          setAvailableMeasures(measures);
-          setAvailableDimensions(dimensions);
-        })
-        .catch(err => console.error('Failed to fetch measures:', err));
-    }
-  }, [data.datasetId]);
-
-  // Validate expression on change
-  useEffect(() => {
-    if (expression && data.datasetId) {
-      fetch(`${API}/expression/validate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          dataset_id: data.datasetId,
-          expression: expression
-        })
-      })
-      .then(res => res.json())
-      .then(validation => {
-        setValidationErrors(validation.errors || []);
-      })
-      .catch(err => console.error('Validation failed:', err));
-    }
-  }, [expression, data.datasetId]);
-
-  // Evaluate expression
-  const evaluateExpression = useCallback(async () => {
-    if (!expression || !data.datasetId) return;
-    
-    try {
-      const response = await fetch(`${API}/expression/evaluate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          dataset_id: data.datasetId,
-          expression: expression,
-          filters: filters
-        })
-      });
-      
-      if (response.ok) {
-        const evalResult = await response.json();
-        setResult(evalResult.result);
-        data.onExpressionChange?.(id, expression, evalResult.result, filters);
-      } else {
-        const error = await response.json();
-        console.error('Evaluation failed:', error.detail);
-        setResult(null);
-      }
-    } catch (err) {
-      console.error('Failed to evaluate expression:', err);
-      setResult(null);
-    }
-  }, [expression, data.datasetId, filters, id, data.onExpressionChange]);
-
-  // Auto-evaluate when expression or filters change
-  useEffect(() => {
-    if (!isEditing) {
-      evaluateExpression();
-    }
-  }, [expression, filters, isEditing, evaluateExpression]);
-
-  const handleSave = useCallback(() => {
-    setIsEditing(false);
-    setShowSuggestions(false); // Hide autocomplete when saving
-    if (editor && editor.view && !editor.isDestroyed) {
-      try {
-        editor.setEditable(false);
-      } catch (error) {
-        console.warn('Could not set editor editable state:', error);
-      }
-    }
-  }, [editor]);
-
-  const handleCancel = useCallback(() => {
-    setExpression(data.expression || '');
-    setIsEditing(false);
-    setShowSuggestions(false); // Hide autocomplete when canceling
-    if (editor && editor.view && editor.commands && !editor.isDestroyed) {
-      try {
-        editor.setEditable(false);
-        editor.commands.setContent(`<p>${data.expression || ''}</p>`);
-      } catch (error) {
-        console.warn('Could not cancel editor changes:', error);
-      }
-    }
-  }, [data.expression, editor]);
-
-  const handleEdit = useCallback(() => {
-    setIsEditing(true);
-    // Use a longer delay to ensure the editor is fully ready
-    setTimeout(() => {
-      if (editor && editor.view && editor.commands && !editor.isDestroyed) {
-        try {
-          editor.setEditable(true);
-          editor.commands.focus();
-          // Force cursor to end of content
-          editor.commands.setTextSelection(editor.state.doc.content.size);
-        } catch (error) {
-          console.warn('Could not focus editor:', error);
-        }
-      }
-    }, 150);
-  }, [editor]);
-
-  const toggleFilter = (dimension, value) => {
-    setFilters(prev => {
-      const current = prev[dimension] || [];
-      const updated = current.includes(value) 
-        ? current.filter(v => v !== value)
-        : [...current, value];
-      
-      return updated.length > 0 
-        ? { ...prev, [dimension]: updated }
-        : { ...prev, [dimension]: undefined };
-    });
-  };
-
-  // AI Metric Calculation Handler
-  const handleAIMetricCalculation = useCallback(async () => {
-    if (!aiQuery.trim() || !data.datasetId) return;
-    
-    // Check if API key is configured
-    const currentApiKey = apiKey || localStorage.getItem('gemini_api_key');
-    const currentModel = selectedModel || localStorage.getItem('gemini_model') || 'gemini-2.0-flash';
-    
-    if (!currentApiKey.trim()) {
-      setAiResult({
-        success: false,
-        error: '⚠️ Please configure your Gemini API key in Settings first.'
-      });
-      setShowSettings(true);
-      return;
-    }
-    
-    setAiLoading(true);
-    try {
-      // Calculating AI metric
-      
-      if (!data.datasetId) {
-        throw new Error('No dataset ID available. Please ensure you have uploaded data first.');
-      }
-      
-      const response = await fetch(`${API}/ai-calculate-metric`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user_query: aiQuery,
-          dataset_id: data.datasetId,
-          api_key: currentApiKey,
-          model: currentModel
-        })
-      });
-      
-      const result = await response.json();
-      
-      if (result.success) {
-        // AI metric calculated
-        
-        // Track token usage
-        if (result.token_usage) {
-          updateTokenUsage(result.token_usage);
-        }
-        
-        // Python code generated by AI and executed
-        
-        setAiResult(result);
-        setResult(result.value);
-        
-        // If AI suggests a traditional expression, update the expression field
-        if (result.traditional_syntax) {
-          setExpression(result.traditional_syntax);
-        }
-        
-        // Show success message
-        // AI calculation completed
-      } else {
-        // AI metric calculation failed
-        setAiResult(result);
-      }
-    } catch (error) {
-      console.error('Failed to calculate AI metric:', error);
-      setAiResult({
-        success: false,
-        error: `Network error occurred while calculating metric. ${error.message.includes('401') || error.message.includes('403') ? 'Please check your API key in Settings.' : ''}`
-      });
-    } finally {
-      setAiLoading(false);
-    }
-  }, [aiQuery, data.datasetId, apiKey, selectedModel, updateTokenUsage]);
-  
-  // Handle AI mode toggle
-  const handleAIModeToggle = useCallback(() => {
-    setAiMode(!aiMode);
-    setAiQuery('');
-    setAiResult(null);
-    if (!aiMode) {
-      // When switching to AI mode, clear any autocomplete
-      setShowSuggestions(false);
-    }
-  }, [aiMode]);
-
-  // Click outside handler to close dropdown menu
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (showDropdownMenu && editorContainerRef.current && !editorContainerRef.current.contains(event.target)) {
-        setShowDropdownMenu(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [showDropdownMenu]);
-
-  return (
-    <Card className="min-w-[400px]">
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
-          <span className="text-lg font-semibold text-gray-800">Expression</span>
-          <div className="flex items-center space-x-3">
-            <Button
-              onClick={handleAIModeToggle}
-              variant={aiMode ? "default" : "ghost"}
-              size="icon"
-              title={aiMode ? "Switch to Manual Expression" : "Switch to AI Assistant"}
-              className={`transition-all duration-200 ${aiMode ? "bg-blue-600 text-white hover:bg-blue-700 shadow-sm" : "text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
-            >
-              <Sparkles size={16} />
-            </Button>
-            <div className="relative">
-            <Button
-              onClick={() => setShowDropdownMenu(!showDropdownMenu)}
-              variant="ghost"
-              size="icon"
-              title="Options"
-              className="text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-all duration-200"
-            >
-              <Menu size={16} />
-            </Button>
-            
-            {/* Custom Dropdown Menu */}
-            {showDropdownMenu && (
-              <div 
-                className="absolute right-0 top-8 mt-1 w-48 bg-white rounded-md shadow-lg border border-gray-200 py-1 z-50"
-                style={{ zIndex: 9999 }}
-              >
-                <button
-                  onClick={() => {
-                    isEditing ? handleSave() : handleEdit();
-                    setShowDropdownMenu(false);
-                  }}
-                  className="w-full px-3 py-2 text-left text-sm hover:bg-gray-100 flex items-center"
-                >
-                  <Type className="mr-2 h-4 w-4" />
-                  {isEditing ? "Save Expression" : "Edit Expression"}
-                </button>
-                <button
-                  onClick={() => {
-                    setShowFilters(!showFilters);
-                    setShowDropdownMenu(false);
-                  }}
-                  className="w-full px-3 py-2 text-left text-sm hover:bg-gray-100 flex items-center"
-                >
-                  <Funnel className="mr-2 h-4 w-4" />
-                  {showFilters ? "Hide Filters" : "Show Filters"}
-                </button>
-              </div>
-            )}
-            </div>
-          </div>
-        </div>
-        
-        {/* Calculated Metric Pill - Now below the Expression label with 2x font size */}
-        {result !== null && (
-          <div className="mt-3">
-            <Badge 
-              variant="outline" 
-              className="font-bold px-4 py-2 text-xl"
-              style={{ fontSize: '1.5rem' }}
-            >
-              {typeof result === 'number' ? result.toLocaleString() : result}
-            </Badge>
-          </div>
-        )}
-      </CardHeader>
-      <CardContent className="relative" ref={editorContainerRef}>
-        <div className="space-y-3">
-          {aiMode ? (
-            /* AI Natural Language Input */
-            <div className="w-full max-w-md">
-              <div className="border rounded-lg overflow-hidden bg-blue-50 border-blue-200">
-                <div className="p-3" style={{ minHeight: '48px' }}>
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="text-sm font-medium text-blue-800">AI Calculator</span>
-                  </div>
-                  <input
-                    type="text"
-                    placeholder="e.g., 'Calculate total revenue' or 'Profit margin'"
-                    value={aiQuery}
-                    onChange={(e) => setAiQuery(e.target.value)}
-                    onKeyPress={(e) => {
-                      if (e.key === 'Enter' && !aiLoading) {
-                        handleAIMetricCalculation();
-                      }
-                    }}
-                    className="w-full px-3 py-2 border border-blue-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    disabled={aiLoading}
-                  />
-                  {aiResult && (
-                    <div className="mt-2 text-sm font-medium">
-                      {aiResult.success ? (
-                        <span className="text-green-700">✅ {aiResult.formatted_value}</span>
-                      ) : (
-                        <span className="text-red-700">❌ Error</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-              
-              {/* Calculate button - positioned below AI input, aligned right */}
-              <div className="flex justify-end space-x-2 mt-2">
-                <Button
-                  onClick={handleAIMetricCalculation}
-                  disabled={aiLoading || !aiQuery.trim()}
-                  size="sm"
-                  className="bg-blue-600 hover:bg-blue-700 text-white"
-                >
-                  {aiLoading ? (
-                    <>
-                      <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white mr-2"></div>
-                      Calculating...
-                    </>
-                  ) : (
-                    <>
-                      <Send size={14} className="mr-1" />
-                      Calculate
-                    </>
-                  )}
-                </Button>
-              </div>
-              
-              {aiResult && aiResult.success && aiResult.traditional_syntax && (
-                <div className="text-xs text-blue-700 bg-blue-100 p-2 rounded mt-2">
-                  <strong>Equivalent expression:</strong> {aiResult.traditional_syntax}
-                </div>
-              )}
-            </div>
-          ) : (
-            /* Traditional Expression Input */
-            <div className="w-full max-w-md">
-              <div className={`border rounded-lg overflow-hidden ${isEditing ? 'bg-white border-blue-300' : 'bg-gray-50'}`}>
-                <div className="p-3 relative" style={{ minHeight: '48px' }}>
-                  {editor ? (
-                    <div 
-                      className={`w-full ${isEditing ? 'cursor-text' : 'pointer-events-none cursor-default'}`}
-                      onClick={() => {
-                        if (isEditing && editor) {
-                          editor.commands.focus();
-                        }
-                      }}
-                    >
-                      <EditorContent 
-                        editor={editor}
-                        className="prose prose-sm max-w-none focus:outline-none w-full"
-                        style={{ 
-                          minHeight: '24px', 
-                          maxHeight: '24px', 
-                          lineHeight: '24px',
-                          overflow: 'hidden',
-                          whiteSpace: 'nowrap'
-                        }}
-                      />
-                    </div>
-                  ) : (
-                    <div className="text-gray-400 italic font-mono text-sm leading-6">
-                      {expression || 'Click Edit to create an expression...'}
-                    </div>
-                  )}
-                </div>
-              </div>
-              
-              {/* Save/Cancel buttons - positioned below expression input */}
-              {isEditing && (
-                <div className="flex justify-end space-x-2 mt-2">
-                  <Button
-                    onClick={handleCancel}
-                    variant="secondary"
-                    size="sm"
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    onClick={handleSave}
-                    size="sm"
-                  >
-                    Save
-                  </Button>
-                </div>
-              )}
-            </div>
-          )}
-        
-        {/* Autocomplete Suggestions Dropdown - Positioned outside editor */}
-        {showSuggestions && suggestions.length > 0 && (
-          <div 
-            className="absolute bg-white border border-gray-300 rounded-lg shadow-xl max-h-80 overflow-y-auto"
-            style={{
-              top: suggestionPosition.top,
-              left: suggestionPosition.left,
-              minWidth: '250px',
-              maxWidth: '350px',
-              zIndex: 9999,
-              boxShadow: '0 10px 25px rgba(0, 0, 0, 0.15)'
-            }}
-          >
-            <div className="p-2">
-              <div className="text-xs text-gray-500 mb-2 font-medium">
-                {suggestionType === 'measures' ? 'Available Measures' : 'Aggregation Methods'}
-              </div>
-              {suggestions.map((suggestion, index) => (
-                <div
-                  key={suggestion.name}
-                  className={`px-3 py-2 cursor-pointer rounded-md text-sm transition-colors ${
-                    index === selectedSuggestionIndex
-                      ? 'bg-blue-100 text-blue-800'
-                      : 'hover:bg-gray-100 text-gray-700'
-                  }`}
-                  onClick={() => insertSuggestion(suggestion)}
-                >
-                  <div className="font-medium">{suggestion.name}</div>
-                  {suggestion.description && (
-                    <div className="text-xs text-gray-500 mt-1">
-                      {suggestion.description}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="border-t border-gray-200 px-3 py-2 bg-gray-50 text-xs text-gray-500">
-              ↑↓ Navigate • Enter/Tab Select • Esc Cancel
-            </div>
-          </div>
-        )}
-        
-        {validationErrors.length > 0 && (
-          <div className="text-red-600 text-sm">
-            {validationErrors.map((error, i) => (
-              <div key={i}>• {error}</div>
-            ))}
-          </div>
-        )}
-        <div className="text-xs text-gray-500 mt-2 px-3">
-          {aiMode ? (
-            <span>Describe what you want to calculate in natural language</span>
-          ) : (
-            <span>Use @MeasureName.Aggregation syntax (e.g., @Revenue.Sum, @Cost.Avg)</span>
-          )}
-        </div>
-        </div>
-      </CardContent>
-
-      {/* Filters Panel */}
-      {showFilters && (
-        <div className="border-t border-gray-200 p-4">
-          <div className="text-sm font-medium text-gray-700 mb-3">Filters</div>
-          <div className="space-y-3">
-            {availableDimensions.map(dimension => (
-              <FilterDimension
-                key={dimension}
-                dimension={dimension}
-                datasetId={data.datasetId}
-                selectedValues={filters[dimension] || []}
-                onToggle={(value) => toggleFilter(dimension, value)}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-    </Card>
-  );
-};
-
-/**
  * FilterDimension Component
  * Collapsible filter panel for a specific dimension/column in the dataset.
  * Shows all unique values with checkboxes for multi-select filtering.
@@ -2036,11 +1180,10 @@ function ChartTypeSelector({ dimensions = [], measures = [], currentType, onType
  * @param {Function} onSelect - Callback when chart is selected
  * @param {string} apiKey - Gemini API key for AI features
  * @param {string} selectedModel - Gemini model to use
- * @param {Function} setShowSettings - Opens settings panel if API key is missing
+ * @param {Function} setSettingsPanelOpen - Opens settings panel if API key is missing
  * @param {Function} updateTokenUsage - Updates token usage metrics
- * @param {Function} onAddToReport - Callback to add chart to report document
  */
-const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, selectedModel, setShowSettings, updateTokenUsage, onAddToReport, setReportPanelOpen, onResizeStart, onResizeEnd }) {
+const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, selectedModel, setSettingsPanelOpen, updateTokenUsage, onResizeStart, onResizeEnd }) {
   const { title, figure, isFused, strategy, stats, agg, dimensions = [], measures = [], onAggChange, onShowTable, table = [], chartType: externalChartType } = data;
   const [aiLoading, setAiLoading] = useState(false);
   const [insightSticky, setInsightSticky] = useState(null);
@@ -2354,7 +1497,7 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
     
     if (!currentApiKey.trim()) {
       alert('⚠️ Please configure your Gemini API key in Settings first.');
-      setShowSettings(true);
+      setSettingsPanelOpen(true);
       return;
     }
     
@@ -2657,8 +1800,6 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
   if (prevProps.apiKey === nextProps.apiKey &&
       prevProps.selectedModel === nextProps.selectedModel &&
       prevProps.onSelect === nextProps.onSelect &&
-      prevProps.onAddToReport === nextProps.onAddToReport &&
-      prevProps.setReportPanelOpen === nextProps.setReportPanelOpen &&
       prevProps.onResizeStart === nextProps.onResizeStart &&
       prevProps.onResizeEnd === nextProps.onResizeEnd) {
     return true; // Props are equal, skip re-render
@@ -2667,103 +1808,6 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
   return false; // Props changed, re-render
 });
 
-/**
- * RichTextEditor Component
- * Simple Tiptap-based rich text editor with toolbar for formatting.
- * Used in report panel for text editing.
- * 
- * Features:
- * - Toolbar with formatting buttons
- * - Formatting: Bold, Italic, Underline, Heading 1, Heading 2
- * - Stores content as HTML for semantic structure
- * - Controlled component with onChange callback
- * 
- * @param {string} content - Initial HTML content
- * @param {Function} onChange - Callback with updated HTML on content change
- * @param {boolean} showToolbar - Whether to show the formatting toolbar
- * @param {string} className - Additional CSS classes
- */
-function RichTextEditor({ content, onChange, showToolbar = true, className = '' }) {
-  const editor = useEditor({
-    extensions: [
-      StarterKit,
-      Underline
-    ],
-    content: content || '<p>Start typing...</p>',
-    editable: true,
-    onUpdate: ({ editor }) => {
-      if (onChange) {
-        onChange(editor.getHTML());
-      }
-    }
-  });
-
-  // Update editor when content prop changes externally
-  useEffect(() => {
-    if (editor && content && content !== editor.getHTML()) {
-      editor.commands.setContent(content);
-    }
-  }, [content, editor]);
-
-  // Cleanup editor on unmount
-  useEffect(() => {
-    return () => {
-      if (editor) {
-        editor.destroy();
-      }
-    };
-  }, [editor]);
-
-  if (!editor) {
-    return null;
-  }
-
-  return (
-    <div className={`rich-text-editor-container ${className}`}>
-      {showToolbar && (
-        <div className="editor-toolbar">
-          <button
-            onClick={() => editor.chain().focus().toggleBold().run()}
-            className={`toolbar-btn ${editor.isActive('bold') ? 'is-active' : ''}`}
-            title="Bold"
-          >
-            <Bold size={16} />
-          </button>
-          <button
-            onClick={() => editor.chain().focus().toggleItalic().run()}
-            className={`toolbar-btn ${editor.isActive('italic') ? 'is-active' : ''}`}
-            title="Italic"
-          >
-            <Italic size={16} />
-          </button>
-          <button
-            onClick={() => editor.chain().focus().toggleUnderline().run()}
-            className={`toolbar-btn ${editor.isActive('underline') ? 'is-active' : ''}`}
-            title="Underline"
-          >
-            <UnderlineIcon size={16} />
-          </button>
-          <div className="toolbar-separator" />
-          <button
-            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-            className={`toolbar-btn ${editor.isActive('heading', { level: 1 }) ? 'is-active' : ''}`}
-            title="Heading 1"
-          >
-            <Heading1 size={16} />
-          </button>
-          <button
-            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-            className={`toolbar-btn ${editor.isActive('heading', { level: 2 }) ? 'is-active' : ''}`}
-            title="Heading 2"
-          >
-            <Heading2 size={16} />
-          </button>
-        </div>
-      )}
-      <EditorContent editor={editor} className="editor-content" />
-    </div>
-  );
-}
 
 /**
  * InsightStickyNote Component
@@ -2988,7 +2032,7 @@ function Panel({
   const classes = [
     'panel-base',
     sizeClasses[size],
-    'flex flex-col overflow-hidden transition-all duration-300',
+    'h-full flex flex-col overflow-hidden transition-all duration-300',
     isOpen ? 'opacity-100' : 'opacity-0 w-0',
     className
   ].filter(Boolean).join(' ');
@@ -3036,26 +2080,26 @@ function Modal({ isOpen = false, onClose, children, size = 'md' }) {
 /**
  * UnifiedSidebar Component
  * Left-side vertical toolbar that provides access to all main tools and actions.
- * Includes panel toggles (upload, variables), tool selectors (select, arrow, text, expression),
- * and action buttons (merge, arrange), plus app controls at bottom (settings, instructions, report).
+ * Includes panel toggles (upload, variables, chart actions, merge, instructions, settings).
  * 
  * @param {boolean} uploadPanelOpen - Whether upload panel is currently open
  * @param {Function} setUploadPanelOpen - Toggle upload panel visibility
  * @param {boolean} variablesPanelOpen - Whether variables panel is currently open
  * @param {Function} setVariablesPanelOpen - Toggle variables panel visibility
+ * @param {boolean} chartActionsPanelOpen - Whether chart actions panel is currently open
+ * @param {Function} setChartActionsPanelOpen - Toggle chart actions panel visibility
+ * @param {boolean} mergePanelOpen - Whether merge panel is currently open
+ * @param {Function} setMergePanelOpen - Toggle merge panel visibility
+ * @param {boolean} instructionsPanelOpen - Whether instructions panel is currently open
+ * @param {Function} setInstructionsPanelOpen - Toggle instructions panel visibility
+ * @param {boolean} settingsPanelOpen - Whether settings panel is currently open
+ * @param {Function} setSettingsPanelOpen - Toggle settings panel visibility
  * @param {string} activeTool - Currently active tool ID
  * @param {Function} onToolChange - Callback when tool selection changes
  * @param {Function} onMergeCharts - Callback to merge selected charts
- * @param {Function} onAutoLayout - Callback to auto-arrange nodes
  * @param {number} selectedChartsCount - Number of currently selected charts
  * @param {boolean} canMerge - Whether merge action is enabled (requires exactly 2 charts)
  * @param {Object} selectedChartForActions - Currently selected chart object for actions (or null)
- * @param {boolean} showLearningModal - Whether learning modal is open
- * @param {Function} setShowLearningModal - Toggle learning modal
- * @param {boolean} showSettings - Whether settings panel is open
- * @param {Function} setShowSettings - Toggle settings panel
- * @param {boolean} reportPanelOpen - Whether report panel is open
- * @param {Function} setReportPanelOpen - Toggle report panel
  */
 function UnifiedSidebar({
   // Toggle states
@@ -3067,21 +2111,17 @@ function UnifiedSidebar({
   setChartActionsPanelOpen,
   mergePanelOpen,
   setMergePanelOpen,
+  instructionsPanelOpen,
+  setInstructionsPanelOpen,
+  settingsPanelOpen,
+  setSettingsPanelOpen,
   activeTool,
   onToolChange,
   // Action handlers
   onMergeCharts,
-  onAutoLayout,
   selectedChartsCount,
   canMerge,
-  selectedChartForActions,
-  // App control states
-  showLearningModal,
-  setShowLearningModal,
-  showSettings,
-  setShowSettings,
-  reportPanelOpen,
-  setReportPanelOpen
+  selectedChartForActions
 }) {
   const toggleButtons = [
     { 
@@ -3094,6 +2134,8 @@ function UnifiedSidebar({
           setVariablesPanelOpen(false);
           setChartActionsPanelOpen(false);
           setMergePanelOpen(false);
+          setInstructionsPanelOpen(false);
+          setSettingsPanelOpen(false);
         }
       }, 
       active: uploadPanelOpen 
@@ -3108,6 +2150,8 @@ function UnifiedSidebar({
           setUploadPanelOpen(false);
           setChartActionsPanelOpen(false);
           setMergePanelOpen(false);
+          setInstructionsPanelOpen(false);
+          setSettingsPanelOpen(false);
         }
       }, 
       active: variablesPanelOpen 
@@ -3122,6 +2166,8 @@ function UnifiedSidebar({
           setUploadPanelOpen(false);
           setVariablesPanelOpen(false);
           setMergePanelOpen(false);
+          setInstructionsPanelOpen(false);
+          setSettingsPanelOpen(false);
         }
       }, 
       // Only show as active when panel is actually open
@@ -3144,40 +2190,28 @@ function UnifiedSidebar({
         setUploadPanelOpen(false);
         setVariablesPanelOpen(false);
         setChartActionsPanelOpen(false);
+        setInstructionsPanelOpen(false);
+        setSettingsPanelOpen(false);
       }, 
       active: mergePanelOpen
       // No disabled state - always accessible
     },
-  ];
-  
-  const toolButtons = [
-    { id: 'arrow', icon: ArrowRight, label: 'Arrow Tool' },
-    { id: 'textbox', icon: StickyNote, label: 'Text Tool' },
-    { id: 'expression', icon: Calculator, label: 'Expression Tool' },
-  ];
-  
-  const actionButtons = [
-    { 
-      id: 'arrange', 
-      icon: AlignStartVertical, 
-      label: 'Auto Arrange', 
-      onClick: onAutoLayout 
-    },
-  ];
-  
-  // App control buttons at bottom
-  const appControlButtons = [
+    // Separator indicator
+    { id: 'separator-1', isSeparator: true },
+    // App control buttons (moved from bottom)
     {
       id: 'instructions',
       icon: BookOpen,
       label: 'User Instructions',
-      active: showLearningModal,
+      active: instructionsPanelOpen,
       onClick: () => {
-        if (showLearningModal) {
-          localStorage.setItem('dfuse_instructions_seen', 'true');
-          setShowLearningModal(false);
-        } else {
-          setShowLearningModal(true);
+        setInstructionsPanelOpen(!instructionsPanelOpen);
+        if (!instructionsPanelOpen) {
+          setUploadPanelOpen(false);
+          setVariablesPanelOpen(false);
+          setChartActionsPanelOpen(false);
+          setMergePanelOpen(false);
+          setSettingsPanelOpen(false);
         }
       }
     },
@@ -3185,26 +2219,35 @@ function UnifiedSidebar({
       id: 'settings',
       icon: Settings,
       label: 'AI Settings',
-      active: showSettings,
-      onClick: () => setShowSettings(!showSettings)
-    },
-    {
-      id: 'report',
-      icon: File,
-      label: reportPanelOpen ? 'Hide Report' : 'Show Report',
-      active: reportPanelOpen,
-      onClick: () => setReportPanelOpen(!reportPanelOpen)
+      active: settingsPanelOpen,
+      onClick: () => {
+        setSettingsPanelOpen(!settingsPanelOpen);
+        if (!settingsPanelOpen) {
+          setUploadPanelOpen(false);
+          setVariablesPanelOpen(false);
+          setChartActionsPanelOpen(false);
+          setMergePanelOpen(false);
+          setInstructionsPanelOpen(false);
+        }
+      }
     }
+  ];
+  
+  const toolButtons = [
+    // Removed arrow, sticky note, and expression tools
+    // These features are either provided by TLDraw natively or no longer needed
   ];
   
   return (
     <div 
-      className="flex flex-col items-center py-6 gap-3"
+      className="fixed z-[1100] flex flex-col items-center py-6 gap-3 transition-all duration-300 rounded-xl"
       style={{ 
+        left: '12px',
+        top: '60px',
         width: 'var(--size-sidebar)', 
         backgroundColor: 'var(--color-surface-elevated)',
-        borderRight: '1px solid var(--color-border)',
-        height: '100vh'
+        border: '1px solid var(--color-border)',
+        boxShadow: '0 4px 16px rgba(0, 0, 0, 0.15)'
       }}
     >
       {/* Logo */}
@@ -3212,102 +2255,36 @@ function UnifiedSidebar({
         <SquaresExclude size={32} className="text-primary" />
       </div>
       
-      {/* Toggle Buttons */}
+      {/* Toggle Buttons with Inline Separators */}
       <div className="flex flex-col gap-2">
-        {toggleButtons.map(btn => (
-          <IconButton
+        {toggleButtons.map(btn => {
+          // Render separator
+          if (btn.isSeparator) {
+            return (
+              <div 
             key={btn.id}
-            icon={btn.icon}
-            active={btn.active}
-            disabled={btn.disabled}
-            onClick={btn.onClick}
-            label={btn.label}
-            size="md"
-          />
-        ))}
-      </div>
-      
-      {/* Separator */}
-      <div 
-        className="my-2"
+                className="my-1"
         style={{
           width: '32px',
           height: '1px',
           backgroundColor: 'var(--color-border)'
         }}
       />
-      
-      {/* Tool Buttons */}
-      <div className="flex flex-col gap-2">
-        {toolButtons.map(btn => (
-          <IconButton
-            key={btn.id}
-            icon={btn.icon}
-            active={activeTool === btn.id}
-            onClick={() => {
-              if (activeTool === btn.id) {
-                onToolChange('select');
-              } else {
-                onToolChange(btn.id);
-              }
-            }}
-            label={btn.label}
-            size="md"
-          />
-        ))}
-      </div>
-      
-      {/* Separator */}
-      <div 
-        className="my-2"
-        style={{
-          width: '32px',
-          height: '1px',
-          backgroundColor: 'var(--color-border)'
-        }}
-      />
-      
-      {/* Action Buttons */}
-      <div className="flex flex-col gap-2">
-        {actionButtons.map(btn => (
-          <IconButton
-            key={btn.id}
-            icon={btn.icon}
-            disabled={btn.disabled}
-            active={btn.active}
-            onClick={btn.onClick}
-            label={btn.label}
-            badge={btn.badge}
-            size="md"
-          />
-        ))}
-      </div>
-      
-      {/* Spacer to push bottom buttons down */}
-      <div style={{ flexGrow: 1 }} />
-      
-      {/* Separator */}
-      <div 
-        className="my-2"
-        style={{
-          width: '32px',
-          height: '1px',
-          backgroundColor: 'var(--color-border)'
-        }}
-      />
-      
-      {/* App Control Buttons at Bottom */}
-      <div className="flex flex-col gap-2">
-        {appControlButtons.map(btn => (
+            );
+          }
+          // Render regular button
+          return (
           <IconButton
             key={btn.id}
             icon={btn.icon}
             active={btn.active}
+              disabled={btn.disabled}
             onClick={btn.onClick}
             label={btn.label}
             size="md"
           />
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -3326,7 +2303,7 @@ function UnifiedSidebar({
  */
 function SlidingPanel({ isOpen, title, children, onClose, size = 'md' }) {
   return (
-    <Panel isOpen={isOpen} size={size} position="left" className="border-r">
+    <Panel isOpen={isOpen} size={size} position="left" className="rounded-xl">
       {isOpen && (
         <>
           {/* Panel Header */}
@@ -3370,19 +2347,19 @@ function SlidingPanel({ isOpen, title, children, onClose, size = 'md' }) {
 /**
  * ChartActionsPanel Component
  * Side panel for managing chart-specific actions and AI exploration
- * Consolidates chart type selection, aggregation, data table toggle, report addition, and AI queries
+ * Consolidates chart type selection, aggregation, data table toggle, report addition, chart insights, and AI queries
  * 
  * @param {boolean} isOpen - Whether panel is currently visible
  * @param {Object} selectedChart - Currently selected chart node
  * @param {Function} onClose - Callback when panel is closed
  * @param {string} apiKey - Gemini API key
  * @param {string} selectedModel - Selected AI model
- * @param {Function} setShowSettings - Function to open settings panel
+ * @param {Function} setSettingsPanelOpen - Function to open settings panel
  * @param {Function} updateTokenUsage - Function to track token usage
  * @param {Function} onChartTypeChange - Callback to change chart type
  * @param {Function} onAggChange - Callback to change aggregation
  * @param {Function} onShowTable - Callback to show data table
- * @param {Function} onAddToReport - Callback to add chart to report
+ * @param {Object} tldrawEditorRef - Reference to TLDraw editor for creating sticky notes
  */
 function ChartActionsPanel({ 
   isOpen,
@@ -3390,12 +2367,12 @@ function ChartActionsPanel({
   onClose,
   apiKey,
   selectedModel,
-  setShowSettings,
+  setSettingsPanelOpen,
   updateTokenUsage,
   onChartTypeChange,
   onAggChange,
   onShowTable,
-  onAddToReport
+  tldrawEditorRef
 }) {
   // AI state
   const [aiQuery, setAiQuery] = useState('');
@@ -3404,7 +2381,7 @@ function ChartActionsPanel({
   
   // Local state for buttons
   const [showTableClicked, setShowTableClicked] = useState(false);
-  const [addingToReport, setAddingToReport] = useState(false);
+  const [insightsLoading, setInsightsLoading] = useState(false);
   
   // Update local state when selected chart changes
   useEffect(() => {
@@ -3412,7 +2389,7 @@ function ChartActionsPanel({
       // Reset AI results and button states when chart changes
       setAiResult(null);
       setShowTableClicked(false);
-      setAddingToReport(false);
+      setInsightsLoading(false);
     }
   }, [selectedChart?.id]);
   
@@ -3424,7 +2401,7 @@ function ChartActionsPanel({
         success: false,
         answer: '⚠️ Please configure your Gemini API key in Settings first.'
       });
-      setShowSettings(true);
+      setSettingsPanelOpen(true);
       return;
     }
     
@@ -3459,6 +2436,109 @@ function ChartActionsPanel({
       });
     } finally {
       setAiLoading(false);
+    }
+  };
+  
+  const handleGenerateInsights = async () => {
+    if (insightsLoading || !selectedChart) return;
+    
+    // Validate API key
+    if (!apiKey?.trim()) {
+      alert('⚠️ Please configure your Gemini API key in Settings first.');
+      setSettingsPanelOpen(true);
+      return;
+    }
+    
+    // Validate TLDraw editor reference
+    if (!tldrawEditorRef?.current) {
+      alert('⚠️ Canvas editor not ready. Please try again.');
+      return;
+    }
+    
+    setInsightsLoading(true);
+    
+    try {
+      // Call chart insights API
+      const response = await fetch(`${API}/chart-insights`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chart_id: selectedChart.id,
+          api_key: apiKey,
+          model: selectedModel || 'gemini-2.0-flash',
+          user_context: selectedChart.data?.user_goal || null
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText);
+      }
+      
+      const result = await response.json();
+      
+      // Track token usage
+      if (result.token_usage) {
+        updateTokenUsage(result.token_usage);
+      }
+      
+      // Get the chart shape from TLDraw to calculate position
+      // Try to get shape directly first, or search through all shapes
+      let chartShape = tldrawEditorRef.current.getShape(selectedChart.id);
+      
+      if (!chartShape) {
+        // If direct lookup fails, search through all shapes for matching ID
+        const allShapes = tldrawEditorRef.current.getCurrentPageShapes();
+        console.log('🔍 Searching for chart shape. Looking for ID:', selectedChart.id);
+        console.log('📊 Available shapes:', allShapes.map(s => ({ id: s.id, type: s.type, title: s.props?.title })));
+        
+        chartShape = allShapes.find(shape => 
+          shape.id === selectedChart.id || 
+          shape.id.includes(selectedChart.id) ||
+          (shape.type === 'chart' && shape.props?.title === selectedChart.data?.title)
+        );
+        
+        if (chartShape) {
+          console.log('✅ Found chart shape:', chartShape.id);
+        }
+      }
+      
+      if (!chartShape) {
+        throw new Error('Chart shape not found in canvas. Please ensure you are using TLDraw mode.');
+      }
+      
+      // Calculate position for sticky note (to the right of chart)
+      const stickyX = chartShape.x + chartShape.props.w + 50;
+      const stickyY = chartShape.y;
+      
+      // Prepare insights text (prefer generic_insights, fallback to insight)
+      const insightsText = result.generic_insights || result.insight || 'No insights generated';
+      
+      // Create native TLDraw sticky note
+      const { createShapeId } = await import('@tldraw/tldraw');
+      const stickyNoteId = createShapeId();
+      
+      tldrawEditorRef.current.createShape({
+        id: stickyNoteId,
+        type: 'note',
+        x: stickyX,
+        y: stickyY,
+        props: {
+          text: insightsText,
+          color: 'yellow',
+          size: 's',
+          font: 'sans',
+          align: 'start'
+        }
+      });
+      
+      console.log('✅ Chart insights generated and displayed on canvas');
+      
+    } catch (error) {
+      console.error('Generate insights failed:', error);
+      alert(`Failed to generate insights: ${error.message}`);
+    } finally {
+      setInsightsLoading(false);
     }
   };
   
@@ -3606,151 +2686,26 @@ function ChartActionsPanel({
                 </Button>
               </div>
               
-              {/* Add To Report Button */}
+              {/* Quick Chart Insights Button */}
               <div className="flex items-center justify-between">
                 <span className="text-sm" style={{ color: 'var(--color-text)' }}>
-                  Add Insights To Report
+                  Quick Chart Insights
                 </span>
                 <Button
-                  onClick={async () => {
-                    if (addingToReport) return;
-                    setAddingToReport(true);
-                    
-                    try {
-                      // Capture chart as image using canvas API
-                      const chartNode = document.querySelector(`[data-id="${selectedChart.id}"]`);
-                      const plotlyPlot = chartNode?.querySelector('.js-plotly-plot');
-                      const svgElement = plotlyPlot?.querySelector('.main-svg');
-                      
-                      if (!svgElement) {
-                        alert('Chart not found. Please try again.');
-                        setAddingToReport(false);
-                        return;
-                      }
-                      
-                          // Get SVG dimensions
-                          const bbox = svgElement.getBoundingClientRect();
-                          const width = bbox.width || 800;
-                          const height = bbox.height || 600;
-                          
-                          // Create canvas
-                          const canvas = document.createElement('canvas');
-                          canvas.width = width;
-                          canvas.height = height;
-                          const ctx = canvas.getContext('2d');
-                          
-                          // Convert SVG to image
-                          const svgData = new XMLSerializer().serializeToString(svgElement);
-                          const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-                          const url = URL.createObjectURL(svgBlob);
-                          
-                          const img = new Image();
-                          img.onload = async () => {
-                        try {
-                            ctx.fillStyle = 'white';
-                            ctx.fillRect(0, 0, width, height);
-                            ctx.drawImage(img, 0, 0, width, height);
-                            URL.revokeObjectURL(url);
-                            
-                            // Convert canvas to data URL
-                            const imageData = canvas.toDataURL('image/png');
-                            
-                            // Fetch and add report section if API key is configured
-                            if (apiKey?.trim()) {
-                              try {
-                                const currentApiKey = apiKey;
-                                const currentModel = selectedModel || 'gemini-2.0-flash';
-                                
-                                // Call backend to generate report section (intelligently combines insights)
-                              // Pass AI explore results if available for comprehensive report content
-                                const response = await fetch(`${API}/generate-report-section`, {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({
-                                    chart_id: selectedChart.id,
-                                    api_key: currentApiKey,
-                                    model: currentModel,
-                                  ai_explore_result: aiResult?.answer || null // Pass AI query answer if exists
-                                  })
-                                });
-                                
-                                if (response.ok) {
-                                  const result = await response.json();
-                                  
-                                  // Track token usage
-                                  if (result.token_usage) {
-                                    updateTokenUsage(result.token_usage);
-                                  }
-                                  
-                                  // Create image and text items
-                                  const imageItem = {
-                                    id: `image-${selectedChart.id}-${Date.now()}`,
-                                    type: 'image',
-                                    imageUrl: imageData
-                                  };
-                                  
-                                  const textItem = {
-                                    id: `text-${selectedChart.id}-${Date.now()}`,
-                                    type: 'text',
-                                    content: result.report_section || ''
-                                  };
-                                  
-                                  // Add both items to report
-                                  onAddToReport([imageItem, textItem]);
-                                } else {
-                                  // If report section generation fails, just add the image
-                                  onAddToReport({
-                                    id: `chart-${selectedChart.id}-${Date.now()}`,
-                                    type: 'image',
-                                    imageUrl: imageData
-                                  });
-                                }
-                              } catch (error) {
-                                console.error('Failed to fetch report section:', error);
-                                // Fallback: just add chart image if report section generation fails
-                                onAddToReport({
-                                  id: `chart-${selectedChart.id}-${Date.now()}`,
-                                  type: 'image',
-                                  imageUrl: imageData
-                                });
-                              }
-                            } else {
-                              // No API key - just add chart image
-                              onAddToReport({
-                                id: `chart-${selectedChart.id}-${Date.now()}`,
-                                type: 'image',
-                                imageUrl: imageData
-                              });
-                            }
-                            
-                          // Re-enable button after successful add
-                          setAddingToReport(false);
-                        } catch (error) {
-                          console.error('Failed to process chart image:', error);
-                          setAddingToReport(false);
-                          alert('Failed to add chart to report. Please try again.');
-                        }
-                          };
-                          
-                          img.onerror = () => {
-                            URL.revokeObjectURL(url);
-                        setAddingToReport(false);
-                            alert('Failed to capture chart. Please try again.');
-                          };
-                          
-                          img.src = url;
-                        } catch (error) {
-                          console.error('Failed to capture chart:', error);
-                      setAddingToReport(false);
-                          alert('Failed to add chart to report. Please try again.');
-                    }
-                  }}
-                  disabled={addingToReport}
+                  onClick={handleGenerateInsights}
+                  disabled={insightsLoading}
                   variant="ghost"
                   size="sm"
                   className="text-sm"
                 >
-                  {addingToReport ? 'Adding...' : 'Add'}
+                  {insightsLoading ? (
+                    <span className="flex items-center gap-1">
+                      <Sparkles className="w-3 h-3 animate-spin" />
+                      Generating...
+                    </span>
+                  ) : (
+                    'Generate'
+                  )}
                 </Button>
               </div>
             </div>
@@ -3893,408 +2848,6 @@ function ChartActionsPanel({
 }
 
 /**
- * ReportSection Component
- * Individual report section displaying a chart image and its AI-generated insights.
- * Supports inline editing of content (markdown format) and section removal.
- * 
- * Features:
- * - Displays chart image
- * - Shows markdown-formatted insights
- * - Click-to-edit with textarea
- * - Save/Cancel edit actions
- * - Remove section button
- * - Hidden action buttons in print mode
- * 
- * @param {Object} section - Section data containing chartImage, content, id, chartTitle
- * @param {Function} onRemove - Callback to remove this section from report
- * @param {Function} onUpdate - Callback to update section content after editing
- */
-function ReportItem({ item, onRemove, onUpdate }) {
-  const [isEditing, setIsEditing] = useState(false);
-
-  if (item.type === 'image') {
-    return (
-      <div 
-        className="relative group border rounded-lg overflow-hidden print:border-0 print:shadow-none print:max-w-full print:box-border"
-        style={{ maxWidth: '100%', boxSizing: 'border-box' }}
-      >
-        <img 
-          src={item.imageUrl} 
-          alt="Report chart"
-          className="w-full print:max-w-full print:h-auto print:block"
-          style={{ 
-            maxWidth: '100%', 
-            height: 'auto', 
-            display: 'block',
-            boxSizing: 'border-box'
-          }}
-        />
-        <button
-          onClick={onRemove}
-          className="absolute top-2 right-2 p-1 bg-red-500 text-white rounded opacity-0 group-hover:opacity-100 transition-opacity print:hidden"
-        >
-          <X size={14} />
-        </button>
-      </div>
-    );
-  }
-
-  // Text item
-  const isEmpty = !item.content || item.content === '<p></p>' || item.content === '<p>Start typing...</p>' || item.content === '<p>New text section...</p>';
-
-  if (!isEditing) {
-    // Preview mode
-    return (
-      <div 
-        className="relative group border rounded-lg p-4 cursor-pointer hover:bg-gray-50 transition-colors min-h-[100px] print:border-0 print:cursor-default print:hover:bg-white print:min-h-0 print:max-w-full print:box-border"
-        onClick={() => setIsEditing(true)}
-        style={{ maxWidth: '100%', boxSizing: 'border-box' }}
-      >
-        {isEmpty ? (
-          <p className="text-gray-400 italic print:hidden">Write here...</p>
-        ) : (
-          <div 
-            className="formatted-content print:max-w-full print:box-border"
-            dangerouslySetInnerHTML={{ __html: item.content }}
-            style={{ maxWidth: '100%', boxSizing: 'border-box', wordWrap: 'break-word' }}
-          />
-        )}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
-          className="absolute top-2 right-2 p-1 bg-red-500 text-white rounded opacity-0 group-hover:opacity-100 transition-opacity print:hidden"
-        >
-          <X size={14} />
-        </button>
-      </div>
-    );
-  }
-
-  // Edit mode
-  return (
-    <div className="relative group border rounded-lg print:border-0">
-      <RichTextEditor
-        content={item.content}
-        onChange={(newContent) => onUpdate(item.id, newContent)}
-        showToolbar={true}
-      />
-      <div className="p-2 border-t flex gap-2 justify-end print:hidden">
-        <button
-          onClick={() => setIsEditing(false)}
-          className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
-        >
-          Done
-        </button>
-      </div>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onRemove();
-        }}
-        className="absolute top-2 right-2 p-1 bg-red-500 text-white rounded opacity-0 group-hover:opacity-100 transition-opacity z-10 print:hidden"
-      >
-        <X size={14} />
-      </button>
-    </div>
-  );
-}
-
-/**
- * ReportPanel Component
- * Simplified right-side panel for creating reports with text and images.
- * Users can add text editors and upload images to build their report.
- * 
- * Features:
- * - Add Text button (creates new rich text editor)
- * - Add Image button (uploads/adds chart images)
- * - Each item is editable/removable
- * - Receives items from parent (including chart images and AI insights)
- * - PDF export via browser print
- * 
- * @param {boolean} isOpen - Whether panel is currently visible
- * @param {Function} onClose - Callback when panel is closed
- * @param {Array} reportItems - Array of report items from parent
- * @param {Function} onUpdateItems - Callback to update items array
- */
-function ReportPanel({ isOpen, onClose, reportItems, onUpdateItems }) {
-  const fileInputRef = useRef(null);
-
-  const handleAddText = () => {
-    const newItem = {
-      id: `text-${Date.now()}`,
-      type: 'text',
-      content: ''
-    };
-    onUpdateItems([...reportItems, newItem]);
-  };
-
-  const handleAddImage = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleImageUpload = (e) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const newItem = {
-          id: `image-${Date.now()}`,
-          type: 'image',
-          imageUrl: event.target.result
-        };
-        onUpdateItems([...reportItems, newItem]);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleUpdateItem = (itemId, newContent) => {
-    onUpdateItems(reportItems.map(item =>
-      item.id === itemId ? { ...item, content: newContent } : item
-    ));
-  };
-
-  const handleRemoveItem = (itemId) => {
-    onUpdateItems(reportItems.filter(item => item.id !== itemId));
-  };
-
-  const handlePrint = () => {
-    const reportContent = document.getElementById('report-content');
-    
-    if (!reportContent) {
-      alert('Report content not found. Please ensure you have content in your report.');
-      return;
-    }
-
-    // Check if report has any content
-    const hasContent = reportContent.children.length > 0 && 
-      (reportContent.textContent.trim().length > 0 || reportContent.querySelectorAll('img').length > 0);
-
-    if (!hasContent) {
-      alert('Your report appears to be empty. Please add some content before exporting to PDF.');
-      return;
-    }
-
-    // Remove any existing print container to avoid duplication
-    const existingContainer = document.getElementById('print-only-container');
-    if (existingContainer) {
-      document.body.removeChild(existingContainer);
-    }
-
-    // Create print container
-    const printContainer = document.createElement('div');
-    printContainer.id = 'print-only-container';
-    printContainer.style.cssText = `
-      position: fixed;
-      top: -10000px;
-      left: 0;
-      width: 100%;
-      background: white;
-      padding: 0;
-    `;
-
-    // Get input values before cloning
-    const originalInputs = reportContent.querySelectorAll('input[type="text"]');
-    const inputValues = Array.from(originalInputs).map(input => ({
-      value: input.value,
-      placeholder: input.placeholder
-    }));
-
-    // Clone content
-    const clonedContent = reportContent.cloneNode(true);
-    clonedContent.id = 'cloned-report-content';
-    
-    // Remove buttons
-    clonedContent.querySelectorAll('button').forEach(btn => btn.remove());
-    
-    // Style cloned content
-    clonedContent.style.cssText = 'width: 100%; padding: 15mm; box-sizing: border-box;';
-
-    // Style images - prevent page breaks after them
-    clonedContent.querySelectorAll('img').forEach(img => {
-      img.style.cssText = 'width: 90%; max-width: 90%; height: auto; display: block; margin: 10pt auto 8pt auto; page-break-inside: avoid; page-break-after: avoid;';
-    });
-
-    // Style all report items to keep them together
-    clonedContent.querySelectorAll('.border, .border-l-4, .rounded-lg').forEach(item => {
-      item.style.cssText = item.style.cssText + ' page-break-before: avoid; page-break-inside: avoid; margin-top: 0;';
-    });
-
-    // Convert input fields to styled divs
-    clonedContent.querySelectorAll('input[type="text"]').forEach((input, index) => {
-      const div = document.createElement('div');
-      const data = inputValues[index] || {};
-      div.textContent = data.value || data.placeholder || '';
-      
-      if (index === 0 || data.placeholder === 'Heading') {
-        div.style.cssText = 'font-size: 24pt; font-weight: bold; text-align: center; margin: 0 0 15pt 0; color: #000; page-break-after: avoid;';
-      } else if (index === 1 || data.placeholder === 'Subheading') {
-        div.style.cssText = 'font-size: 16pt; font-weight: 600; text-align: center; margin: 0 0 20pt 0; color: #555; page-break-after: avoid;';
-      } else {
-        div.style.cssText = 'font-size: 14pt; font-weight: bold; margin: 10pt 0; color: #000;';
-      }
-      
-      input.parentNode?.replaceChild(div, input);
-    });
-
-    // Style headings in rich text - prevent page breaks after them
-    clonedContent.querySelectorAll('h2').forEach(h => {
-      h.style.cssText = 'font-size: 16pt; font-weight: bold; margin: 12pt 0 8pt 0; color: #000; page-break-after: avoid;';
-    });
-
-    // Append to DOM
-    printContainer.appendChild(clonedContent);
-    document.body.appendChild(printContainer);
-
-    // Wait for images to load then print
-    const images = Array.from(clonedContent.querySelectorAll('img'));
-    const imagePromises = images.map(img => new Promise(resolve => {
-      if (img.complete) resolve();
-      else {
-        img.onload = () => resolve();
-        img.onerror = () => resolve();
-        setTimeout(resolve, 1500);
-      }
-    }));
-
-    Promise.all(imagePromises).then(() => {
-      setTimeout(() => {
-        window.print();
-        // Cleanup after print dialog closes
-        setTimeout(() => {
-          const container = document.getElementById('print-only-container');
-          if (container) document.body.removeChild(container);
-        }, 1000);
-      }, 100);
-    });
-  };
-
-  return (
-    <div 
-      className="h-full flex flex-col panel-base"
-      style={{
-        backgroundColor: 'var(--color-surface-elevated)',
-        borderLeft: '1px solid var(--color-border)'
-      }}
-    >
-      {/* Panel Header - Hidden in print */}
-      <div 
-        className="flex items-center justify-between p-4 print:hidden"
-        style={{ 
-          borderBottom: '1px solid var(--color-border)',
-          backgroundColor: 'var(--color-surface)'
-        }}
-      >
-        <h2 
-          className="font-semibold"
-          style={{ 
-            fontSize: 'var(--font-size-lg)',
-            color: 'var(--color-text)'
-          }}
-        >
-          Report
-        </h2>
-        <div className="flex gap-2">
-          <IconButton
-            icon={Download}
-            onClick={handlePrint}
-            size="sm"
-            label="Export as PDF"
-          />
-          <IconButton
-            icon={X}
-            onClick={onClose}
-            size="sm"
-            label="Close Report"
-          />
-        </div>
-      </div>
-      
-      {/* Report Content */}
-      <div 
-        id="report-content" 
-        className="flex-1 overflow-y-auto p-4 space-y-4 print:p-0"
-        style={{ 
-          backgroundColor: 'var(--color-bg)',
-          maxWidth: '100%',
-          boxSizing: 'border-box'
-        }}
-      >
-        {/* Heading and Subheading Inputs */}
-        <div 
-          className="space-y-3 pb-4 print:border-0"
-          style={{ borderBottom: '1px solid var(--color-border)' }}
-        >
-          <input
-            type="text"
-            placeholder="Heading"
-            className="w-full font-bold border-0 shadow-none px-0 bg-transparent focus:ring-0 focus:outline-none"
-            style={{ 
-              fontSize: 'var(--font-size-2xl)',
-              color: 'var(--color-text)',
-              '::placeholder': { color: 'var(--color-text-muted)' }
-            }}
-          />
-          <input
-            type="text"
-            placeholder="Subheading"
-            className="w-full font-medium border-0 shadow-none px-0 bg-transparent focus:ring-0 focus:outline-none"
-            style={{ 
-              fontSize: 'var(--font-size-lg)',
-              color: 'var(--color-text)',
-              '::placeholder': { color: 'var(--color-text-muted)' }
-            }}
-          />
-        </div>
-        
-        {reportItems.map((item) => (
-          <ReportItem
-            key={item.id}
-            item={item}
-            onRemove={() => handleRemoveItem(item.id)}
-            onUpdate={handleUpdateItem}
-          />
-        ))}
-      </div>
-
-      {/* Add Buttons - Hidden in print */}
-      <div 
-        className="p-4 flex gap-2 print:hidden"
-        style={{ borderTop: '1px solid var(--color-border)' }}
-      >
-        <DesignButton 
-          onClick={handleAddText}
-          variant="secondary"
-          size="md"
-          className="flex-1 gap-2"
-        >
-          <Type size={16} />
-          Add Text
-        </DesignButton>
-        <DesignButton 
-          onClick={handleAddImage}
-          variant="secondary"
-          size="md"
-          className="flex-1 gap-2"
-        >
-          <Upload size={16} />
-          Add Image
-        </DesignButton>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          onChange={handleImageUpload}
-          className="hidden"
-        />
-      </div>
-    </div>
-  );
-}
-
-/**
  * Get color for minimap nodes based on node type
  * Provides visual differentiation in the minimap for better navigation
  * 
@@ -4307,12 +2860,8 @@ const getMinimapNodeColor = (node) => {
       return '#3b82f6'; // Blue - for chart nodes
     case 'textbox':
       return '#fbbf24'; // Yellow - for sticky notes/text boxes
-    case 'expression':
-      return '#10b981'; // Green - for expression nodes
     case 'table':
       return '#8b5cf6'; // Purple - for table nodes
-    case 'arrow':
-      return '#6b7280'; // Gray - for arrow nodes
     default:
       return '#94a3b8'; // Light gray - fallback
   }
@@ -4343,7 +2892,6 @@ function CustomReactFlow({ children, ...props }) {
  * - Dataset upload and management
  * - Chart creation and manipulation
  * - Node and edge management for React Flow canvas
- * - Tool interactions (arrow, text, expression tools)
  * - Chart merging and auto-layout
  * - AI configuration and token tracking
  * - Report generation and management
@@ -4387,26 +2935,21 @@ function ReactFlowWrapper() {
   
   // Toolbar and tools state
   const [activeTool, setActiveTool] = useState('select');
-  const [arrowStart, setArrowStart] = useState(null);
   const [nodeIdCounter, setNodeIdCounter] = useState(1000);
 
-  // Settings state
-  const [showSettings, setShowSettings] = useState(false);
-  const [showLearningModal, setShowLearningModal] = useState(() => {
-    // Show learning modal by default for first-time users
-    const hasSeenInstructions = localStorage.getItem('dfuse_instructions_seen');
-    return !hasSeenInstructions;
-  });
   
   // Sidebar panel states
   const [uploadPanelOpen, setUploadPanelOpen] = useState(false);
   const [variablesPanelOpen, setVariablesPanelOpen] = useState(false);
   const [chartActionsPanelOpen, setChartActionsPanelOpen] = useState(false);
   const [selectedChartForActions, setSelectedChartForActions] = useState(null);
+  const [instructionsPanelOpen, setInstructionsPanelOpen] = useState(() => {
+    // Show instructions panel by default for first-time users
+    const hasSeenInstructions = localStorage.getItem('dfuse_instructions_seen');
+    return !hasSeenInstructions;
+  });
+  const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
   
-  // Report state
-  const [reportPanelOpen, setReportPanelOpen] = useState(false);
-  const [reportItems, setReportItems] = useState([]);
   const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_api_key') || '');
   const [selectedModel, setSelectedModel] = useState(localStorage.getItem('gemini_model') || 'gemini-2.0-flash');
   const [configStatus, setConfigStatus] = useState('idle'); // idle, testing, success, error
@@ -4627,14 +3170,6 @@ function ReactFlowWrapper() {
     }
   }, [mergePanelOpen, selectedCharts, analyzeMergeScenario]);
 
-  // Handler for adding items to report (must be before nodeTypes)
-  const handleAddReportItems = useCallback((newItems) => {
-    // newItems can be an array of items (image + text) or a single item
-    const itemsArray = Array.isArray(newItems) ? newItems : [newItems];
-    setReportItems(prev => [...prev, ...itemsArray]);
-    // Auto-open report panel when items are added
-    setReportPanelOpen(true);
-  }, []);
 
   // Handle resize start - disable node dragging (must be before nodeTypes)
   const handleChartResizeStart = useCallback((chartId, draggable) => {
@@ -4665,27 +3200,15 @@ function ReactFlowWrapper() {
         selected={props.data.selected}
         apiKey={apiKey}
         selectedModel={selectedModel}
-        setShowSettings={setShowSettings}
+        setSettingsPanelOpen={setSettingsPanelOpen}
         updateTokenUsage={updateTokenUsage}
-        onAddToReport={handleAddReportItems}
-        setReportPanelOpen={setReportPanelOpen}
         onResizeStart={handleChartResizeStart}
         onResizeEnd={handleChartResizeEnd}
       />
     ),
-    arrow: ArrowNode,
     textbox: TextBoxNode,
-    table: TableNode,
-    expression: (props) => (
-      <ExpressionNode
-        {...props}
-        apiKey={apiKey}
-        selectedModel={selectedModel}
-        setShowSettings={setShowSettings}
-        updateTokenUsage={updateTokenUsage}
-      />
-    )
-  }), [apiKey, selectedModel, setShowSettings, updateTokenUsage, handleAddReportItems, setReportPanelOpen, handleChartResizeStart, handleChartResizeEnd]);
+    table: TableNode
+  }), [handleChartResizeStart, handleChartResizeEnd]);
 
   // Viewport transform: [translateX, translateY, zoom]
   const transform = useStore(s => s.transform);
@@ -4775,32 +3298,7 @@ function ReactFlowWrapper() {
     // Convert click to flow coordinates using current transform
     const position = toFlowPosition(event);
     
-    if (activeTool === 'arrow') {
-      if (!arrowStart) {
-        // First click - set arrow start point in flow space
-        setArrowStart(position);
-      } else {
-        // Second click - create arrow with absolute start/end in flow space
-        const start = arrowStart;
-        const end = position;
-        const minX = Math.min(start.x, end.x);
-        const minY = Math.min(start.y, end.y);
-
-        const arrowId = `arrow-${nodeIdCounter}`;
-        const newArrow = {
-          id: arrowId,
-          type: 'arrow',
-          position: { x: minX, y: minY },
-          data: { id: arrowId, start, end },
-          draggable: true,
-          selectable: true
-        };
-
-        setNodes(nds => [...nds, newArrow]);
-        setNodeIdCounter(c => c + 1);
-        setArrowStart(null);
-      }
-    } else if (activeTool === 'textbox') {
+    if (activeTool === 'textbox') {
       // Create text box
       const newTextBox = {
         id: `textbox-${nodeIdCounter}`,
@@ -4831,44 +3329,12 @@ function ReactFlowWrapper() {
       
       setNodes(nds => [...nds, newTextBox]);
       setNodeIdCounter(c => c + 1);
-    } else if (activeTool === 'expression') {
-      // Create expression node
-      if (!datasetId) {
-        alert('Please upload a dataset first to create expressions');
-        return;
-      }
-      
-      const newExpression = {
-        id: `expression-${nodeIdCounter}`,
-        type: 'expression',
-        position,
-        data: {
-          expression: '',
-          result: null,
-          isNew: true,
-          datasetId: datasetId,
-          filters: {},
-          onExpressionChange: (id, expression, result, filters) => {
-            setNodes(nds => nds.map(node => 
-              node.id === id 
-                ? { ...node, data: { ...node.data, expression, result, filters, isNew: false } }
-                : node
-            ));
-          }
-        },
-        draggable: true,
-        selectable: true
-      };
-      
-      setNodes(nds => [...nds, newExpression]);
-      setNodeIdCounter(c => c + 1);
     }
-  }, [activeTool, arrowStart, nodeIdCounter, toFlowPosition, datasetId]);
+  }, [activeTool, nodeIdCounter, toFlowPosition, datasetId]);
   
   // Tool change handler
   const handleToolChange = useCallback((toolId) => {
     setActiveTool(toolId);
-    setArrowStart(null); // Reset arrow state when changing tools
   }, []);
 
   const handleChartSelect = useCallback((chartId) => {
@@ -6646,502 +5112,155 @@ function ReactFlowWrapper() {
     setApiKey(e.target.value);
   }, []);
 
-  // Debounced version of expensive operations for better performance
-  // Note: This will be defined after applyHierarchicalLayout to avoid reference errors
-
-  // Simple Custom Layout Algorithm (No ELK.js dependency)
-  const applyHierarchicalLayout = useCallback(() => {
-    if (nodes.length === 0) return;
-
-    try {
-      // Calculate node dimensions based on type - using ACTUAL chart dimensions
-      const getNodeDimensions = (node) => {
-        switch (node.type) {
-          case 'chart':
-            // Use the SAME logic as ChartNode component for accurate dimensions
-            const { strategy, title, dimensions = [], measures = [], isFused } = node.data;
-            const isDualAxis = strategy === 'same-dimension-different-measures' && title?.includes('(Dual Scale)');
-            const isHeatmap = strategy === 'same-dimension-different-dimensions-heatmap';
-            const isMultiVariable = dimensions.length >= 1 && measures.length >= 1;
-            const isThreeVariable = (dimensions.length >= 2 && measures.length >= 1) || (dimensions.length >= 1 && measures.length >= 2);
-            const isFusedWithLegend = isFused && (
-              (strategy === 'same-dimension-different-measures') || 
-              (strategy === 'same-measure-different-dimensions-stacked')
-            );
-            
-            // Check if this fused chart would use vertical legend
-            const hasVerticalLegend = isFused && (
-              (strategy === 'same-dimension-different-measures' && measures.length > 8) ||
-              (strategy === 'same-measure-different-dimensions-stacked' && dimensions.length > 10)
-            );
-            
-            // Exact same logic as ChartNode component
-            const chartWidth = (isDualAxis || isHeatmap) ? 1000 : 
-              isMultiVariable ? (hasVerticalLegend ? 1000 : 760) : 380;
-            const chartHeight = (isDualAxis || isHeatmap || isThreeVariable) ? (isFusedWithLegend ? 500 : 400) : 300;
-            
-            return {
-              width: chartWidth,
-              height: chartHeight + 100 // Add padding for title, controls, etc.
-            };
-          case 'table':
-            // TableNode uses max-w-2xl (672px) + table height 384px + headers/padding
-            return { width: 672, height: 450 };
-          case 'expression':
-            // ExpressionNode uses max-w-md (448px) + variable height based on content
-            return { width: 448, height: 250 };
-          case 'textbox':
-            // TextBoxNode sticky note with dynamic height (estimate for layout)
-            return { width: 220, height: 300 };
-          case 'arrow':
-            return { width: 50, height: 50 };
-          default:
-            return { width: 300, height: 200 };
+  // Development debugging helpers
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development') {
+      window.debugCanvas = {
+        getNodes: () => nodes,
+        getEdges: () => edges,
+        getSelectedCharts: () => nodes.filter(n => n.data?.selected),
+        getConfig: () => ({
+          useTLDraw: USE_TLDRAW,
+          useECharts: USE_ECHARTS,
+          nodeCount: nodes.length,
+          edgeCount: edges.length
+        }),
+        logState: () => {
+          console.group('🐛 Canvas Debug State');
+          console.log('Nodes:', nodes.length);
+          console.log('Edges:', edges.length);
+          console.log('Selected:', nodes.filter(n => n.data?.selected).length);
+          console.log('Config:', { USE_TLDRAW, USE_ECHARTS });
+          console.groupEnd();
         }
       };
-
-      // Find connected components (groups of interconnected nodes)
-      const findConnectedComponents = () => {
-        const visited = new Set();
-        const components = [];
-        
-        // Build adjacency list
-        const adjacencyList = new Map();
-        nodes.forEach(node => adjacencyList.set(node.id, []));
-        edges.forEach(edge => {
-          if (adjacencyList.has(edge.source)) adjacencyList.get(edge.source).push(edge.target);
-          if (adjacencyList.has(edge.target)) adjacencyList.get(edge.target).push(edge.source);
-        });
-        
-        // DFS to find connected components
-        const dfs = (nodeId, component) => {
-          if (visited.has(nodeId)) return;
-          visited.add(nodeId);
-          
-          const node = nodes.find(n => n.id === nodeId);
-          if (node) component.push(node);
-          
-          const neighbors = adjacencyList.get(nodeId) || [];
-          neighbors.forEach(neighborId => dfs(neighborId, component));
-        };
-        
-        // Find all connected components
-        nodes.forEach(node => {
-          if (!visited.has(node.id)) {
-            const component = [];
-            dfs(node.id, component);
-            components.push(component);
-          }
-        });
-        
-        return components;
-      };
-      
-      const connectedComponents = findConnectedComponents();
-      
-      // Separate single nodes from connected groups
-      const individualNodes = connectedComponents.filter(component => component.length === 1).flat();
-      const connectedGroups = connectedComponents.filter(component => component.length > 1);
-
-      // Debug: Log detailed component information
-      console.log('🔍 DEBUG: Connected Components Analysis:');
-      console.log('Total nodes:', nodes.length);
-      console.log('Total edges:', edges.length);
-      console.log('Edges details:', edges.map(e => `${e.source} → ${e.target}`));
-      console.log('All node IDs:', nodes.map(n => n.id));
-      console.log('All components:', connectedComponents.map((comp, i) => ({
-        groupId: i,
-        nodeIds: comp.map(n => n.id),
-        nodeCount: comp.length
-      })));
-      console.log('Connected groups (>1 node):', connectedGroups.length);
-      console.log('Individual nodes (<2 nodes):', individualNodes.length);
-      
-      console.log('📊 Organizing layout:', {
-        total: nodes.length,
-        connectedGroups: connectedGroups.length,
-        groupSizes: connectedGroups.map(g => g.length),
-        individual: individualNodes.length
-      });
-
-      let yOffset = 50; // Starting Y position
-      const nodeSpacing = 100; // Space between nodes in the same row
-      const rowSpacing = 550; // Space between rows
-      let newNodes = [];
-
-      // Rows 1-N: Each connected group gets its own row
-      connectedGroups.forEach((group, groupIndex) => {
-        console.log(`📊 Arranging connected group ${groupIndex + 1} with ${group.length} nodes at Y=${yOffset}`);
-        console.log(`   Group nodes: [${group.map(n => n.id).join(', ')}]`);
-        
-        // Organize nodes in this group by their relationships
-        const organizeGroupNodes = (groupNodes) => {
-          if (groupNodes.length <= 1) return groupNodes;
-          
-          const arrangedNodes = [];
-          const processedNodes = new Set();
-          
-          // Find root nodes in this group (not targets of any edge within the group)
-          const groupNodeIds = new Set(groupNodes.map(n => n.id));
-          const groupEdges = edges.filter(edge => 
-            groupNodeIds.has(edge.source) && groupNodeIds.has(edge.target)
-          );
-          const targetNodes = new Set(groupEdges.map(edge => edge.target));
-          const rootNodes = groupNodes.filter(node => !targetNodes.has(node.id));
-          
-          console.log(`   Root nodes in group: [${rootNodes.map(n => n.id).join(', ')}]`);
-          console.log(`   Group edges: [${groupEdges.map(e => `${e.source}→${e.target}`).join(', ')}]`);
-          
-          // Process chains starting from root nodes
-          const processChain = (nodeId) => {
-            const node = groupNodes.find(n => n.id === nodeId);
-            if (!node || processedNodes.has(nodeId)) return;
-            
-            processedNodes.add(nodeId);
-            arrangedNodes.push(node);
-            
-            // Find children in this group
-            const childEdges = groupEdges.filter(edge => edge.source === nodeId);
-            childEdges.forEach(edge => processChain(edge.target));
-          };
-          
-          // Process all root nodes and their chains
-          rootNodes.forEach(rootNode => processChain(rootNode.id));
-          
-          // Add any remaining nodes in the group
-          groupNodes.forEach(node => {
-            if (!processedNodes.has(node.id)) {
-              arrangedNodes.push(node);
-            }
-          });
-          
-          console.log(`   Final arrangement: [${arrangedNodes.map(n => n.id).join(', ')}]`);
-          return arrangedNodes;
-        };
-        
-        const arrangedGroup = organizeGroupNodes(group);
-        
-        // Arrange this group horizontally
-        let xOffset = 80; // Left margin
-        arrangedGroup.forEach((node, nodeIndex) => {
-          const dimensions = getNodeDimensions(node);
-          console.log(`   Positioning node ${node.id} at (${xOffset}, ${yOffset})`);
-          newNodes.push({
-            ...node,
-            position: { x: xOffset, y: yOffset }
-          });
-          xOffset += dimensions.width + nodeSpacing;
-        });
-        
-        console.log(`   Moving to next row: Y ${yOffset} → ${yOffset + rowSpacing}`);
-        yOffset += rowSpacing; // Move to next row
-      });
-
-      // Final row: Individual nodes (standalone)
-      if (individualNodes.length > 0) {
-        console.log(`📊 Arranging ${individualNodes.length} individual nodes at Y=${yOffset}`);
-        console.log(`   Individual nodes: [${individualNodes.map(n => n.id).join(', ')}]`);
-        let xOffset = 80; // Left margin
-        individualNodes.forEach((node, nodeIndex) => {
-          const dimensions = getNodeDimensions(node);
-          console.log(`   Positioning individual node ${node.id} at (${xOffset}, ${yOffset})`);
-          newNodes.push({
-            ...node,
-            position: { x: xOffset, y: yOffset }
-          });
-          xOffset += dimensions.width + nodeSpacing;
-        });
-      }
-
-      // Update nodes with new positions
-      setNodes(newNodes);
-      
-      console.log('✅ Charts arranged successfully in organized rows');
-
-    } catch (error) {
-      console.error('❌ Error arranging charts:', error);
-      alert('Failed to arrange charts: ' + error.message);
+      console.log('🐛 Debug helpers available: window.debugCanvas.logState()');
     }
   }, [nodes, edges]);
 
-  // Debounced version of expensive operations for better performance
-  const debouncedAutoLayout = useCallback(
-    debounce(() => {
-      if (nodes.length > 0) {
-        applyHierarchicalLayout();
-      }
-    }, 300), 
-    [applyHierarchicalLayout]
-  );
-
-  // Settings panel component - now using Modal from design system
-  // Render function - returns JSX directly to avoid component recreation issues
-  const renderSettingsPanel = () => {
-    const handleTestConfiguration = async () => {
-      if (!apiKey.trim()) {
-        setConfigStatus('error');
-        setConfigMessage('Please enter an API key');
+  // Render main canvas (TLDraw or React Flow)
+  const renderMainCanvas = () => {
+    return (
+      <>
+        {USE_TLDRAW ? (
+          /* TLDraw Canvas Implementation */
+          <CanvasAdapter
+            useTLDraw={true}
+            editorRef={tldrawEditorRef}
+            nodes={nodesWithSelection}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onChartSelect={handleChartSelect}
+            onNodeClick={(event) => {
+              // TLDraw passes { node } object
+              const node = event.node || event;
+              
+              // For other node types, prevent clicks on interactive elements
+              if (event.target) {
+                const target = event.target;
+                const isInteractiveElement = target.closest('button') || 
+                                           target.closest('[role="button"]') || 
+                                           target.closest('[role="menu"]') || 
+                                           target.closest('[role="menuitem"]') ||
+                                           target.closest('input') ||
+                                           target.closest('select') ||
+                                           target.closest('textarea') ||
+                                           target.closest('.tiptap') ||
+                                           target.closest('[data-radix-collection-item]');
+                
+                if (isInteractiveElement) {
+                  return;
+                }
+              }
+            }}
+            onPaneClick={onPaneClick}
+            fitView
+            style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
+          />
+        ) : (
+          /* React Flow Canvas Implementation (Original) */
+          <CustomReactFlow
+            nodes={nodesWithSelection}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onNodesDelete={onNodesDelete}
+            onEdgesDelete={onEdgesDelete}
+            onPaneClick={onPaneClick}
+            onNodeClick={(event, node) => {
+              // Disable React Flow's built-in node selection for chart nodes
+              // Selection is now handled exclusively through checkboxes
+              if (node.type === 'chart') {
+                event.stopPropagation();
+                return;
+              }
+              
+              // For other node types (textbox, expression, etc.), allow normal interaction
+              // but prevent clicks on interactive elements
+              const target = event.target;
+              const isInteractiveElement = target.closest('button') || 
+                                         target.closest('[role="button"]') || 
+                                         target.closest('[role="menu"]') || 
+                                         target.closest('[role="menuitem"]') ||
+                                         target.closest('input') ||
+                                         target.closest('select') ||
+                                         target.closest('textarea') ||
+                                         target.closest('.tiptap') ||
+                                         target.closest('[data-radix-collection-item]');
+              
+              if (isInteractiveElement) {
+                event.stopPropagation();
         return;
       }
-
-      setConfigStatus('testing');
-      setConfigMessage('Testing configuration...');
-
-      try {
-        const response = await fetch(`${API}/test-config`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            api_key: apiKey,
-            model: selectedModel
-          })
-        });
-
-        const result = await response.json();
-        
-        if (result.success) {
-          setConfigStatus('success');
-          setConfigMessage('Configuration successful! LLM is ready to use.');
-          localStorage.setItem('gemini_api_key', apiKey);
-          localStorage.setItem('gemini_model', selectedModel);
-          setIsConfigLocked(true);
-          
-          if (result.token_usage) {
-            updateTokenUsage(result.token_usage);
-          }
-        } else {
-          setConfigStatus('error');
-          setConfigMessage(`❌ ${formatErrorMessage(result.error)}`);
-        }
-      } catch (error) {
-        setConfigStatus('error');
-        setConfigMessage(`❌ ${formatErrorMessage(error.message)}`);
-      }
-    };
-
-    const handleEditConfiguration = () => {
-      setIsConfigLocked(false);
-      setConfigStatus('idle');
-      setConfigMessage('');
-    };
-
-    return (
-      <Modal 
-        isOpen={true} 
-        onClose={() => setShowSettings(false)}
-        size="md"
-      >
-        {/* Modal Header */}
-        <div className="flex items-center justify-between mb-6">
-          <h3 
-            className="font-semibold flex items-center gap-2"
-            style={{ 
-              fontSize: 'var(--font-size-xl)',
-              color: 'var(--color-text)'
             }}
+            fitView
+            style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
+            zoomOnScroll={false}
+            zoomOnPinch={true}
+            panOnScroll={true}
+            panOnScrollMode="free"
+            preventScrolling={false}
+            // Enable viewport culling for better performance with many charts
+            onlyRenderVisibleElements={true}
+            defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+            maxZoom={3}
+            minZoom={0.1}
+            snapToGrid={false}
+            // snapGrid={[16, 16]}  // Disable snapping for now
+            deleteKeyCode="Delete"
+            multiSelectionKeyCode="Meta"
+            selectionKeyCode="Shift"
           >
-            <Settings size={20} />
-            AI Settings
-          </h3>
-          <IconButton
-            icon={X}
-            onClick={() => setShowSettings(false)}
-            size="sm"
-            label="Close Settings"
-          />
-        </div>
-
-        <div className="space-y-5">
-          {/* API Key Input */}
-          <div>
-            <label 
-              className="block font-medium mb-2"
+            <MiniMap 
+              nodeColor={getMinimapNodeColor}
+              nodeStrokeWidth={3}
               style={{ 
-                fontSize: 'var(--font-size-sm)',
-                color: 'var(--color-text)'
+                backgroundColor: '#f8fafc',
+                width: 200,
+                height: 150,
               }}
-            >
-              Gemini API Key
-            </label>
-            <div className="relative">
-              <input
-                key="gemini-api-key-input"
-                type={showApiKey ? "text" : "password"}
-                placeholder="Enter your Gemini API key"
-                value={apiKey}
-                onChange={handleApiKeyChange}
-                disabled={isConfigLocked}
-                className={`input-base pr-12 ${isConfigLocked ? 'opacity-60' : ''}`}
-              />
-              <button
-                type="button"
-                onClick={() => setShowApiKey(!showApiKey)}
-                className="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 rounded transition-colors"
+              position="bottom-right"
+            />
+            <Controls 
                 style={{ 
-                  color: 'var(--color-text-muted)',
-                  ':hover': { color: 'var(--color-text-secondary)' }
-                }}
-              >
-                {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-            <p 
-              className="mt-2"
-              style={{ 
-                fontSize: 'var(--font-size-xs)',
-                color: 'var(--color-text-muted)'
-              }}
-            >
-              Get your free API key from{' '}
-              <a 
-                href="https://makersuite.google.com/app/apikey" 
-                target="_blank" 
-                rel="noopener noreferrer" 
-                className="underline"
-                style={{ color: 'var(--color-primary)' }}
-              >
-                Google AI Studio
-              </a>
-            </p>
-          </div>
-
-          {/* Model Selection */}
-          <div>
-            <label 
-              className="block font-medium mb-2"
-              style={{ 
-                fontSize: 'var(--font-size-sm)',
-                color: 'var(--color-text)'
-              }}
-            >
-              Model Selection
-            </label>
-            <Select value={selectedModel} onValueChange={setSelectedModel} disabled={isConfigLocked}>
-              <SelectTrigger className={`w-full ${isConfigLocked ? 'opacity-60' : ''}`}>
-                <SelectValue placeholder="Select a model" />
-              </SelectTrigger>
-              <SelectContent 
-                position="popper"
-                side="bottom"
-                align="start"
-                sideOffset={5}
-                style={{ zIndex: 9999 }}
-              >
-                <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash</SelectItem>
-                <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash</SelectItem>
-                <SelectItem value="gemini-2.0-flash-exp">Gemini 2.0 Flash Experimental</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Test/Edit Configuration Button */}
-          <DesignButton 
-            variant={isConfigLocked ? "secondary" : "primary"}
-            size="md"
-            onClick={isConfigLocked ? handleEditConfiguration : handleTestConfiguration}
-            disabled={configStatus === 'testing'}
-            className="w-full gap-2"
-          >
-            {configStatus === 'testing' ? (
-              <>
-                <div className="animate-spin h-4 w-4 border-2 border-current border-t-transparent rounded-full" />
-                Testing...
-              </>
-            ) : isConfigLocked ? (
-              <>
-                <Edit size={16} />
-                Edit Configuration
-              </>
-            ) : (
-              <>
-                <Check size={16} />
-                Test Configuration
-              </>
-            )}
-          </DesignButton>
-
-          {/* Status Message */}
-          {configMessage && (
-            <div 
-              className="p-4 rounded-lg text-sm break-words whitespace-normal leading-relaxed border"
-              style={{
-                backgroundColor: configStatus === 'success' 
-                  ? 'var(--color-success-light)' 
-                  : configStatus === 'error'
-                  ? 'var(--color-error-light)'
-                  : 'var(--color-info-light)',
-                color: configStatus === 'success' 
-                  ? 'var(--color-success)' 
-                  : configStatus === 'error'
-                  ? 'var(--color-error)'
-                  : 'var(--color-info)',
-                borderColor: configStatus === 'success' 
-                  ? 'var(--color-success)' 
-                  : configStatus === 'error'
-                  ? 'var(--color-error)'
-                  : 'var(--color-info)'
-              }}
-            >
-              {configMessage}
-            </div>
-          )}
-
-          {/* Token Usage Display */}
-          {tokenUsage.totalTokens > 0 && (
-            <div 
-              className="pt-4 mt-4"
-              style={{ borderTop: '1px solid var(--color-border)' }}
-            >
-              <h4 
-                className="font-medium mb-3"
-                style={{ 
-                  fontSize: 'var(--font-size-sm)',
-                  color: 'var(--color-text)'
-                }}
-              >
-                Token Usage (This Session)
-              </h4>
-              <div 
-                className="space-y-2"
-                style={{ 
-                  fontSize: 'var(--font-size-xs)',
-                  color: 'var(--color-text-secondary)'
-                }}
-              >
-                <div className="flex justify-between">
-                  <span>Input Tokens:</span>
-                  <span>{tokenUsage.inputTokens.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Output Tokens:</span>
-                  <span>{tokenUsage.outputTokens.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between font-medium pt-2" style={{ borderTop: '1px solid var(--color-border)' }}>
-                  <span>Total Tokens:</span>
-                  <span>{tokenUsage.totalTokens.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between font-medium" style={{ color: 'var(--color-success)' }}>
-                  <span>Est. Cost:</span>
-                  <span>${tokenUsage.estimatedCost.toFixed(4)}</span>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </Modal>
+                position: 'absolute', 
+                bottom: '10px', 
+                right: '230px',
+                left: 'auto',
+                transition: 'right 300ms ease'
+              }} 
+              className="modern-controls"
+            />
+            <Background gap={16} />
+          </CustomReactFlow>
+        )}
+      </>
     );
   };
 
-  // Learning Modal component with instruction panel
-  const LearningModal = React.memo(() => {
-    // Handle closing the modal and marking instructions as seen
-    const handleCloseModal = () => {
-      localStorage.setItem('dfuse_instructions_seen', 'true');
-      setShowLearningModal(false);
-    };
-    // Flexible instructions structure - easy to edit and maintain
+  // Instructions data structure for the Instructions panel
     const instructions = {
       title: "Welcome to D.Fuse - Your Data Visualization Playground!",
       subtitle: "Transform your data into stunning insights with our AI-powered platform with Infinite canvas • AI-powered insights • Smart chart fusion • Effortless reporting",
@@ -7244,68 +5363,6 @@ function ReactFlowWrapper() {
           ]
         },
         
-        {
-          title: "Feature 4 — Organize Your Charts",
-          items: [
-            {
-              title: "Auto Arrange",
-              content: [
-                "- Access Auto Arrange from the left action bar.",
-                "- With one click, your dashboard neatly aligns charts — making comparisons and patterns easier to spot."
-              ]
-            },
-            {
-              title: "Arrow Tool",
-              content: [
-                "- Use the Arrow Tool from the left action bar.",
-                "- Draw arrows between charts or notes to visualize relationships, highlight flows, and tell compelling data stories."
-              ]
-            },
-            {
-              title: "Sticky Notes",
-              content: [
-                "- Add Sticky Notes from the left action bar.",
-                "- Use them to jot quick thoughts, findings, or action items next to charts — keeping your ideas visible and connected."
-              ]
-            }
-          ]
-        },
-        
-        {
-          title: "Feature 5 — Create and Share Reports",
-          items: [
-            {
-              title: "Add Charts to Report",
-              content: [
-                "- From any chart, click \"Add to Report\" in its menu.",
-                "- The chart and its AI-generated insights are instantly added to your Report Workspace."
-              ]
-            },
-            {
-              title: "Review Your Report",
-              content: [
-                "- Each added chart appears with its main insights.",
-                "- Build your narrative step by step — chart by chart."
-              ]
-            },
-            {
-              title: "Format and Personalize",
-              content: [
-                "- Enhance your report by adding:",
-                "- Headings for structure",
-                "- Text blocks for explanations or conclusions",
-                "- Images for visual context",
-                "- All edits happen live for real-time refinement."
-              ]
-            },
-            {
-              title: "Download as PDF",
-              content: [
-                "-When ready, click Download to export your report as a PDF — ideal for presentations, sharing, or printing."
-              ]
-            }
-          ]
-        }
       ]
     };
 
@@ -7321,148 +5378,65 @@ function ReactFlowWrapper() {
       return <p className="mb-2 text-sm leading-relaxed">{content}</p>;
     };
 
-    return (
-      <Modal 
-        isOpen={showLearningModal} 
-        onClose={handleCloseModal}
-        size="lg"
-      >
-        {/* Modal Header */}
-        <div className="flex items-center justify-between mb-6">
-          <h3 
-            className="font-semibold flex items-center gap-2"
-            style={{ 
-              fontSize: 'var(--font-size-xl)',
-              color: 'var(--color-text-primary)' 
-            }}
-          >
-            <BookOpen size={20} />
-            User Instructions
-          </h3>
-          <button 
-            onClick={handleCloseModal}
-            className="p-1 hover:bg-gray-100 rounded transition-colors"
-          >
-            <X size={20} />
-          </button>
-        </div>
-
-        {/* Instruction Panel */}
-        <div 
-          className="max-h-96 overflow-y-auto border rounded-lg p-4 bg-gray-50"
-          style={{ 
-            maxHeight: '60vh',
-            fontSize: 'var(--font-size-sm)',
-            lineHeight: '1.6'
-          }}
-        >
-          <div className="prose prose-sm max-w-none">
-            {/* Title and Introduction */}
-            <h1 className="text-xl font-bold text-gray-900 mb-3">{instructions.title}</h1>
-            <p className="text-gray-600 mb-4 leading-relaxed">{instructions.subtitle}</p>
-            
-            {/* YouTube Tutorial Video */}
-            <div className="mb-6 text-center">
-              <div 
-                className="inline-block rounded-lg overflow-hidden shadow-lg"
-                style={{ maxWidth: '100%' }}
-              >
-                <div 
-                  dangerouslySetInnerHTML={{ __html: instructions.videoIframe }}
-                  style={{
-                    width: '100%',
-                    maxWidth: '560px',
-                    aspectRatio: '16/9'
-                  }}
-                />
-              </div>
-            </div>
-
-            {/* Sections */}
-            {instructions.sections.map((section, sectionIndex) => (
-              <div key={sectionIndex} className="mb-8">
-                <h2 className="text-lg font-semibold text-gray-800 mb-4 border-b border-gray-200 pb-2">
-                  {section.title}
-                </h2>
-                
-                {/* Section with items */}
-                {section.items && section.items.map((item, itemIndex) => (
-                  <div key={itemIndex} className="mb-4">
-                    <h4 className="font-medium text-gray-700 mb-2">{item.title}</h4>
-                    <div className="ml-4">
-                      {renderContent(item.content)}
-                    </div>
-                  </div>
-                ))}
-                
-                {/* Section with direct content */}
-                {section.content && (
-                  <div className="mb-4">
-                    {renderContent(section.content)}
-                  </div>
-                )}
-                
-                {/* Tip box */}
-                {section.tip && (
-                  <div className="bg-green-50 border border-green-200 rounded p-3 mt-4">
-                    <p className="text-sm text-green-800 font-medium mb-0">
-                      Tip: {section.tip}
-                    </p>
-                  </div>
-                )}
-              </div>
-            ))}
-
-            {/* Call to Action */}
-            <div 
-              className="text-center p-4 rounded-lg text-white mb-6"
-              style={{
-                background: 'linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%)'
-              }}
-            >
-              <p className="font-semibold mb-1">Ready to create amazing visualizations?</p>
-              <p className="text-sm opacity-90">Start by uploading your first dataset and let D.Fuse work its magic!</p>
-            </div>
-
-            {/* Support */}
-            <div className="text-center text-gray-500 text-sm border-t border-gray-200 pt-4">
-              <p>Questions? Reach out at <strong>dubey.ujjjwal1994@gmail.com</strong></p>
-            </div>
-          </div>
-        </div>
-      </Modal>
-    );
-  });
-
-  // Development debugging helpers
-  useEffect(() => {
-    if (process.env.NODE_ENV === 'development') {
-      window.debugCanvas = {
-        getNodes: () => nodes,
-        getEdges: () => edges,
-        getSelectedCharts: () => nodes.filter(n => n.data?.selected),
-        getConfig: () => ({
-          useTLDraw: USE_TLDRAW,
-          useECharts: USE_ECHARTS,
-          nodeCount: nodes.length,
-          edgeCount: edges.length
-        }),
-        logState: () => {
-          console.group('🐛 Canvas Debug State');
-          console.log('Nodes:', nodes.length);
-          console.log('Edges:', edges.length);
-          console.log('Selected:', nodes.filter(n => n.data?.selected).length);
-          console.log('Config:', { USE_TLDRAW, USE_ECHARTS });
-          console.groupEnd();
-        }
-      };
-      console.log('🐛 Debug helpers available: window.debugCanvas.logState()');
+  // Settings panel handlers
+  const handleTestConfiguration = async () => {
+    if (!apiKey.trim()) {
+      setConfigStatus('error');
+      setConfigMessage('Please enter an API key');
+      return;
     }
-  }, [nodes, edges]);
+
+    setConfigStatus('testing');
+    setConfigMessage('Testing configuration...');
+
+    try {
+      const response = await fetch(`${API}/test-config`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          api_key: apiKey,
+          model: selectedModel
+        })
+      });
+
+      const result = await response.json();
+      
+      if (result.success) {
+        setConfigStatus('success');
+        setConfigMessage('Configuration successful! LLM is ready to use.');
+        localStorage.setItem('gemini_api_key', apiKey);
+        localStorage.setItem('gemini_model', selectedModel);
+        setIsConfigLocked(true);
+        
+        if (result.token_usage) {
+          updateTokenUsage(result.token_usage);
+        }
+      } else {
+        setConfigStatus('error');
+        setConfigMessage(`❌ ${formatErrorMessage(result.error)}`);
+      }
+    } catch (error) {
+      setConfigStatus('error');
+      setConfigMessage(`❌ ${formatErrorMessage(error.message)}`);
+    }
+  };
+
+  const handleEditConfiguration = () => {
+    setIsConfigLocked(false);
+    setConfigStatus('idle');
+    setConfigMessage('');
+  };
 
   return (
-    <div className="w-screen h-screen flex">
-      {/* Unified Sidebar */}
+    <div className="w-screen h-screen relative">
+      {/* Full-width Canvas - Base Layer */}
+      <div className="absolute inset-0">
+        {renderMainCanvas()}
+      </div>
+      
+      {/* Floating Overlay Sidebar */}
       <UnifiedSidebar
         uploadPanelOpen={uploadPanelOpen}
         setUploadPanelOpen={setUploadPanelOpen}
@@ -7472,21 +5446,28 @@ function ReactFlowWrapper() {
         setChartActionsPanelOpen={setChartActionsPanelOpen}
         mergePanelOpen={mergePanelOpen}
         setMergePanelOpen={setMergePanelOpen}
+        instructionsPanelOpen={instructionsPanelOpen}
+        setInstructionsPanelOpen={setInstructionsPanelOpen}
+        settingsPanelOpen={settingsPanelOpen}
+        setSettingsPanelOpen={setSettingsPanelOpen}
         activeTool={activeTool}
         onToolChange={handleToolChange}
         onMergeCharts={mergeSelectedCharts}
-        onAutoLayout={applyHierarchicalLayout}
         selectedChartsCount={selectedCharts.length}
         canMerge={selectedCharts.length === 2}
         selectedChartForActions={selectedChartForActions}
-        showLearningModal={showLearningModal}
-        setShowLearningModal={setShowLearningModal}
-        showSettings={showSettings}
-        setShowSettings={setShowSettings}
-        reportPanelOpen={reportPanelOpen}
-        setReportPanelOpen={setReportPanelOpen}
       />
       
+      {/* Floating Panels Container - Positioned next to sidebar */}
+      <div 
+        className="fixed z-[1100] transition-all duration-300 rounded-xl overflow-hidden"
+        style={{
+          left: 'calc(var(--size-sidebar) + 14px)',
+          top: '60px',
+          bottom: '100px',
+          pointerEvents: (uploadPanelOpen || variablesPanelOpen || chartActionsPanelOpen || mergePanelOpen || instructionsPanelOpen || settingsPanelOpen) ? 'auto' : 'none'
+        }}
+      >
       {/* Single Panel Container - Only one panel can be open at a time */}
       {uploadPanelOpen && (
         <SlidingPanel 
@@ -7698,6 +5679,282 @@ function ReactFlowWrapper() {
               )}
             </div>
           </div>
+          </SlidingPanel>
+        )}
+
+        {/* Settings Panel */}
+        {settingsPanelOpen && (
+          <SlidingPanel
+            isOpen={settingsPanelOpen}
+            title="AI Settings"
+            onClose={() => setSettingsPanelOpen(false)}
+            size="md"
+          >
+            <div className="p-4 space-y-5">
+              {/* API Key Input */}
+              <div>
+                <label 
+                  className="block font-medium mb-2"
+                  style={{ 
+                    fontSize: 'var(--font-size-sm)',
+                    color: 'var(--color-text)'
+                  }}
+                >
+                  Gemini API Key
+                </label>
+                <div className="relative">
+                  <input
+                    key="gemini-api-key-input"
+                    type={showApiKey ? "text" : "password"}
+                    placeholder="Enter your Gemini API key"
+                    value={apiKey}
+                    onChange={handleApiKeyChange}
+                    disabled={isConfigLocked}
+                    className={`input-base pr-12 ${isConfigLocked ? 'opacity-60' : ''}`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey(!showApiKey)}
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 rounded transition-colors"
+                    style={{ 
+                      color: 'var(--color-text-muted)',
+                      ':hover': { color: 'var(--color-text-secondary)' }
+                    }}
+                  >
+                    {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+                <p 
+                  className="mt-2"
+                  style={{ 
+                    fontSize: 'var(--font-size-xs)',
+                    color: 'var(--color-text-muted)'
+                  }}
+                >
+                  Get your free API key from{' '}
+                  <a 
+                    href="https://makersuite.google.com/app/apikey" 
+                    target="_blank" 
+                    rel="noopener noreferrer" 
+                    className="underline"
+                    style={{ color: 'var(--color-primary)' }}
+                  >
+                    Google AI Studio
+                  </a>
+                </p>
+              </div>
+
+              {/* Model Selection */}
+              <div>
+                <label 
+                  className="block font-medium mb-2"
+                  style={{ 
+                    fontSize: 'var(--font-size-sm)',
+                    color: 'var(--color-text)'
+                  }}
+                >
+                  Model Selection
+                </label>
+                <Select value={selectedModel} onValueChange={setSelectedModel} disabled={isConfigLocked}>
+                  <SelectTrigger className={`w-full ${isConfigLocked ? 'opacity-60' : ''}`}>
+                    <SelectValue placeholder="Select a model" />
+                  </SelectTrigger>
+                  <SelectContent 
+                    position="popper"
+                    side="bottom"
+                    align="start"
+                    sideOffset={5}
+                    style={{ zIndex: 9999 }}
+                  >
+                    <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash</SelectItem>
+                    <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash</SelectItem>
+                    <SelectItem value="gemini-2.0-flash-exp">Gemini 2.0 Flash Experimental</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Test/Edit Configuration Button */}
+              <DesignButton 
+                variant={isConfigLocked ? "secondary" : "primary"}
+                size="md"
+                onClick={isConfigLocked ? handleEditConfiguration : handleTestConfiguration}
+                disabled={configStatus === 'testing'}
+                className="w-full gap-2"
+              >
+                {configStatus === 'testing' ? (
+                  <>
+                    <div className="animate-spin h-4 w-4 border-2 border-current border-t-transparent rounded-full" />
+                    Testing...
+                  </>
+                ) : isConfigLocked ? (
+                  <>
+                    <Edit size={16} />
+                    Edit Configuration
+                  </>
+                ) : (
+                  <>
+                    <Check size={16} />
+                    Test Configuration
+                  </>
+                )}
+              </DesignButton>
+
+              {/* Status Message */}
+              {configMessage && (
+                <div 
+                  className="p-4 rounded-lg text-sm break-words whitespace-normal leading-relaxed border"
+                  style={{
+                    backgroundColor: configStatus === 'success' 
+                      ? 'var(--color-success-light)' 
+                      : configStatus === 'error'
+                      ? 'var(--color-error-light)'
+                      : 'var(--color-info-light)',
+                    color: configStatus === 'success' 
+                      ? 'var(--color-success)' 
+                      : configStatus === 'error'
+                      ? 'var(--color-error)'
+                      : 'var(--color-info)',
+                    borderColor: configStatus === 'success' 
+                      ? 'var(--color-success)' 
+                      : configStatus === 'error'
+                      ? 'var(--color-error)'
+                      : 'var(--color-info)'
+                  }}
+                >
+                  {configMessage}
+                </div>
+              )}
+
+              {/* Token Usage Display */}
+              {tokenUsage.totalTokens > 0 && (
+                <div 
+                  className="pt-4 mt-4"
+                  style={{ borderTop: '1px solid var(--color-border)' }}
+                >
+                  <h4 
+                    className="font-medium mb-3"
+                    style={{ 
+                      fontSize: 'var(--font-size-sm)',
+                      color: 'var(--color-text)'
+                    }}
+                  >
+                    Token Usage (This Session)
+                  </h4>
+                  <div 
+                    className="space-y-2"
+                    style={{ 
+                      fontSize: 'var(--font-size-xs)',
+                      color: 'var(--color-text-secondary)'
+                    }}
+                  >
+                    <div className="flex justify-between">
+                      <span>Input Tokens:</span>
+                      <span>{tokenUsage.inputTokens.toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Output Tokens:</span>
+                      <span>{tokenUsage.outputTokens.toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between font-medium pt-2" style={{ borderTop: '1px solid var(--color-border)' }}>
+                      <span>Total Tokens:</span>
+                      <span>{tokenUsage.totalTokens.toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between font-medium" style={{ color: 'var(--color-success)' }}>
+                      <span>Est. Cost:</span>
+                      <span>${tokenUsage.estimatedCost.toFixed(4)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </SlidingPanel>
+        )}
+
+        {/* User Instructions Panel */}
+        {instructionsPanelOpen && (
+          <SlidingPanel
+            isOpen={instructionsPanelOpen}
+            title="User Instructions"
+            onClose={() => {
+              localStorage.setItem('dfuse_instructions_seen', 'true');
+              setInstructionsPanelOpen(false);
+            }}
+            size="lg"
+          >
+            <div className="p-4">
+              <div className="space-y-4">
+                {/* Title and subtitle */}
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900 mb-2">
+                    {instructions.title}
+                  </h2>
+                  <p className="text-gray-600 mb-4 leading-relaxed">{instructions.subtitle}</p>
+                </div>
+
+                {/* Video */}
+                <div className="mb-4">
+                  <div 
+                    dangerouslySetInnerHTML={{ __html: instructions.videoIframe }}
+                    style={{
+                      width: '100%',
+                      maxWidth: '560px',
+                      aspectRatio: '16/9'
+                    }}
+                  />
+                </div>
+
+                {/* Sections */}
+                {instructions.sections.map((section, sectionIndex) => (
+                  <div key={sectionIndex} className="mb-6">
+                    <h3 className="text-lg font-semibold text-gray-800 mb-3 border-b border-gray-200 pb-2">
+                      {section.title}
+                    </h3>
+                    
+                    {/* Section with items */}
+                    {section.items && section.items.map((item, itemIndex) => (
+                      <div key={itemIndex} className="mb-4">
+                        <h4 className="font-medium text-gray-700 mb-2">{item.title}</h4>
+                        <div className="ml-4">
+                          {renderContent(item.content)}
+                        </div>
+                      </div>
+                    ))}
+                    
+                    {/* Section with direct content */}
+                    {section.content && (
+                      <div className="mb-4">
+                        {renderContent(section.content)}
+                      </div>
+                    )}
+                    
+                    {/* Tip box */}
+                    {section.tip && (
+                      <div className="bg-green-50 border border-green-200 rounded p-3 mt-4">
+                        <p className="text-sm text-green-800 font-medium mb-0">
+                          Tip: {section.tip}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {/* Call to Action */}
+                <div 
+                  className="text-center p-4 rounded-lg text-white mb-6"
+                  style={{
+                    background: 'linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%)'
+                  }}
+                >
+                  <p className="font-semibold mb-1">Ready to create amazing visualizations?</p>
+                  <p className="text-sm opacity-90">Start by uploading your first dataset and let D.Fuse work its magic!</p>
+                </div>
+
+                {/* Support */}
+                <div className="text-center text-gray-500 text-sm border-t border-gray-200 pt-4">
+                  <p>Questions? Reach out at <strong>dubey.ujjjwal1994@gmail.com</strong></p>
+                </div>
+            </div>
+          </div>
         </SlidingPanel>
       )}
       
@@ -7732,9 +5989,6 @@ function ReactFlowWrapper() {
                     className="w-full min-h-[80px] p-3 text-sm border border-gray-300 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     maxLength={500}
                   />
-                  <div className="text-xs text-gray-500 mt-1">
-                    {goalText.length}/500 characters
-                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -7772,12 +6026,6 @@ function ReactFlowWrapper() {
                   {suggestions.length > 0 && (
                     <div className="text-xs bg-teal-50 border border-teal-200 text-teal-800 p-2 rounded">
                       Generated {suggestions.length} visualization{suggestions.length !== 1 ? 's' : ''} based on your goal
-                    </div>
-                  )}
-                  
-                  {!datasetAnalysis && datasetId && (
-                    <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
-                      💡 Analyze your dataset first to enable Smart Visualise
                     </div>
                   )}
                 </div>
@@ -7839,12 +6087,12 @@ function ReactFlowWrapper() {
           onClose={() => setChartActionsPanelOpen(false)}
           apiKey={apiKey}
           selectedModel={selectedModel}
-          setShowSettings={setShowSettings}
+          setSettingsPanelOpen={setSettingsPanelOpen}
           updateTokenUsage={updateTokenUsage}
           onChartTypeChange={updateChartType}
           onAggChange={updateChartAgg}
           onShowTable={handleShowTable}
-          onAddToReport={handleAddReportItems}
+          tldrawEditorRef={tldrawEditorRef}
         />
       )}
 
@@ -8102,173 +6350,7 @@ function ReactFlowWrapper() {
           </div>
         </SlidingPanel>
       )}
-
-      {/* Main Canvas - Responsive to Report Panel */}
-      <div className="flex-1 relative flex">
-        {/* Canvas Area */}
-        <div 
-          className="flex-1 relative transition-all duration-300"
-          style={{
-            marginRight: reportPanelOpen ? 'var(--size-panel-lg)' : '0'
-          }}
-        >
-          {USE_TLDRAW ? (
-            /* TLDraw Canvas Implementation */
-            <CanvasAdapter
-              useTLDraw={true}
-              editorRef={tldrawEditorRef}
-              nodes={nodesWithSelection}
-              edges={edges}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onChartSelect={handleChartSelect}
-              onNodeClick={(event) => {
-                // TLDraw passes { node } object
-                const node = event.node || event;
-                
-                // For other node types, prevent clicks on interactive elements
-                if (event.target) {
-                  const target = event.target;
-                  const isInteractiveElement = target.closest('button') || 
-                                             target.closest('[role="button"]') || 
-                                             target.closest('[role="menu"]') || 
-                                             target.closest('[role="menuitem"]') ||
-                                             target.closest('input') ||
-                                             target.closest('select') ||
-                                             target.closest('textarea') ||
-                                             target.closest('.tiptap') ||
-                                             target.closest('[data-radix-collection-item]');
-                  
-                  if (isInteractiveElement) {
-                    return;
-                  }
-                }
-              }}
-              onPaneClick={onPaneClick}
-              reportPanelOpen={reportPanelOpen}
-              fitView
-              style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
-            />
-          ) : (
-            /* React Flow Canvas Implementation (Original) */
-            <CustomReactFlow
-              nodes={nodesWithSelection}
-              edges={edges}
-              nodeTypes={nodeTypes}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onNodesDelete={onNodesDelete}
-              onEdgesDelete={onEdgesDelete}
-              onPaneClick={onPaneClick}
-              onNodeClick={(event, node) => {
-                // Disable React Flow's built-in node selection for chart nodes
-                // Selection is now handled exclusively through checkboxes
-                if (node.type === 'chart') {
-                  event.stopPropagation();
-                  return;
-                }
-                
-                // For other node types (textbox, expression, etc.), allow normal interaction
-                // but prevent clicks on interactive elements
-                const target = event.target;
-                const isInteractiveElement = target.closest('button') || 
-                                           target.closest('[role="button"]') || 
-                                           target.closest('[role="menu"]') || 
-                                           target.closest('[role="menuitem"]') ||
-                                           target.closest('input') ||
-                                           target.closest('select') ||
-                                           target.closest('textarea') ||
-                                           target.closest('.tiptap') ||
-                                           target.closest('[data-radix-collection-item]');
-                
-                if (isInteractiveElement) {
-                  event.stopPropagation();
-                  return;
-                }
-              }}
-              fitView
-              style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
-              zoomOnScroll={false}
-              zoomOnPinch={true}
-              panOnScroll={true}
-              panOnScrollMode="free"
-              preventScrolling={false}
-              // Enable viewport culling for better performance with many charts
-              onlyRenderVisibleElements={true}
-              defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-              maxZoom={3}
-              minZoom={0.1}
-              snapToGrid={false}
-              // snapGrid={[16, 16]}  // Disable snapping for now
-              deleteKeyCode="Delete"
-              multiSelectionKeyCode="Meta"
-              selectionKeyCode="Shift"
-            >
-              <MiniMap 
-                nodeColor={getMinimapNodeColor}
-                nodeStrokeWidth={3}
-                style={{
-                  backgroundColor: '#f8fafc',
-                  width: 200,
-                  height: 150,
-                }}
-                position="bottom-right"
-              />
-              <Controls 
-                style={{ 
-                  position: 'absolute', 
-                  bottom: '10px', 
-                  right: '230px',
-                  left: 'auto',
-                  transition: 'right 300ms ease'
-                }} 
-                className="modern-controls"
-              />
-              <Background gap={16} />
-            </CustomReactFlow>
-          )}
-          
-          {/* Arrow preview line when creating arrow */}
-          {activeTool === 'arrow' && arrowStart && (
-            <div className="absolute top-4 left-4 bg-blue-100 text-blue-800 px-3 py-1 rounded-lg text-sm font-medium z-10">
-              Click to set arrow end point
             </div>
-          )}
-          
-          {/* Settings Panel - Positioned near sidebar when open */}
-          {showSettings && (
-            <div 
-              className="absolute transition-all duration-300"
-              style={{
-                top: 'var(--space-4)',
-                left: 'calc(var(--size-sidebar) + var(--space-4))',
-                zIndex: 'var(--z-fixed)'
-              }}
-            >
-              {renderSettingsPanel()}
-            </div>
-          )}
-        </div>
-        
-        {/* Report Panel - Fixed Position */}
-        <div 
-          className="absolute top-0 right-0 h-full transition-transform duration-300"
-          style={{
-            width: 'var(--size-panel-lg)',
-            transform: reportPanelOpen ? 'translateX(0)' : 'translateX(100%)'
-          }}
-        >
-          <ReportPanel
-            isOpen={reportPanelOpen}
-            onClose={() => setReportPanelOpen(false)}
-            reportItems={reportItems}
-            onUpdateItems={setReportItems}
-          />
-        </div>
-      </div>
-      
-      {/* Learning Modal */}
-      {showLearningModal && <LearningModal />}
     </div>
   );
 }

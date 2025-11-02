@@ -48,8 +48,6 @@ function convertSingleNodeToShape(node) {
       return convertTextBoxNodeToShape(node, baseShape);
     case 'table':
       return convertTableNodeToShape(node, baseShape);
-    case 'expression':
-      return convertExpressionNodeToShape(node, baseShape);
     default:
       console.warn('Unknown node type:', node.type);
       return null;
@@ -128,22 +126,6 @@ function convertTableNodeToShape(node, baseShape) {
 }
 
 /**
- * Convert expression node to shape
- */
-function convertExpressionNodeToShape(node, baseShape) {
-  return {
-    ...baseShape,
-    props: {
-      w: node.data?.width || 400,
-      h: node.data?.height || 200,
-      expression: node.data?.expression || '',
-      result: node.data?.result || '',
-      error: node.data?.error || ''
-    }
-  };
-}
-
-/**
  * Convert TLDraw shapes to React Flow nodes
  * @param {Array} shapes - TLDraw shapes
  * @returns {Array} React Flow nodes
@@ -157,7 +139,7 @@ export function convertShapesToNodes(shapes) {
   return shapes
     .filter(shape => {
       // Only convert our custom shape types
-      return ['chart', 'textbox', 'table', 'expression'].includes(shape.type);
+      return ['chart', 'textbox', 'table'].includes(shape.type);
     })
     .map(shape => {
       try {
@@ -193,8 +175,6 @@ function convertSingleShapeToNode(shape) {
       return convertTextBoxShapeToNode(shape, baseNode);
     case 'table':
       return convertTableShapeToNode(shape, baseNode);
-    case 'expression':
-      return convertExpressionShapeToNode(shape, baseNode);
     default:
       console.warn('Unknown shape type:', shape.type);
       return null;
@@ -262,24 +242,6 @@ function convertTableShapeToNode(shape, baseNode) {
       totalRows: props.totalRows || 0,
       width: props.w || 600,
       height: props.h || 400
-    }
-  };
-}
-
-/**
- * Convert expression shape to node
- */
-function convertExpressionShapeToNode(shape, baseNode) {
-  const props = shape.props || {};
-  
-  return {
-    ...baseNode,
-    data: {
-      expression: props.expression || '',
-      result: props.result || '',
-      error: props.error || '',
-      width: props.w || 400,
-      height: props.h || 200
     }
   };
 }
