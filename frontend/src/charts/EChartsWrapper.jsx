@@ -1,16 +1,43 @@
 import React, { useMemo, useRef, useEffect } from 'react';
 import ReactECharts from 'echarts-for-react';
-import { convertPlotlyToECharts, sampleEChartsData } from './chartHelpers';
+
+/**
+ * Sample data for performance optimization
+ * Reduces data points if dataset is too large
+ */
+function sampleEChartsData(option, maxPoints = 1000) {
+  if (!option || !option.series) return option;
+  
+  const sampledSeries = option.series.map(series => {
+    if (!series.data || !Array.isArray(series.data) || series.data.length <= maxPoints) {
+      return series;
+    }
+    
+    const step = Math.ceil(series.data.length / maxPoints);
+    const sampledData = [];
+    for (let i = 0; i < series.data.length; i += step) {
+      sampledData.push(series.data[i]);
+    }
+    
+    return {
+      ...series,
+      data: sampledData
+    };
+  });
+  
+  return {
+    ...option,
+    series: sampledSeries
+  };
+}
 
 /**
  * ECharts Wrapper Component
- * Drop-in replacement for Plotly Plot component
- * Accepts Plotly figure format and converts to ECharts
+ * Renders charts using ECharts format
  * 
- * Props match Plotly's API for easy migration:
- * @param {Array} data - Plotly data array (will be converted)
- * @param {Object} layout - Plotly layout object (will be converted)
- * @param {Object} config - Chart configuration options (Plotly format, mostly ignored)
+ * @param {Array} data - Series data array (for compatibility, use layout.series instead)
+ * @param {Object} layout - ECharts option object with series, xAxis, yAxis, etc.
+ * @param {Object} config - Chart configuration options
  * @param {Object} style - CSS styles
  * @param {Function} onInitialized - Callback after chart init
  * @param {Function} onUpdate - Callback after chart update
@@ -28,45 +55,23 @@ const EChartsWrapper = React.memo(({
   const chartRef = useRef(null);
   const initCallbackFired = useRef(false);
   
-  // Convert Plotly figure to ECharts option OR use native ECharts option
+  // Use ECharts option directly
   const echartsOption = useMemo(() => {
-    // Check if layout is already a complete ECharts option (has series)
-    if (layout && typeof layout === 'object' && layout.series) {
-      console.log('📊 EChartsWrapper: Using native ECharts option directly', {
-        hasSeries: !!layout.series,
-        seriesLength: layout.series?.length,
-        seriesType: layout.series?.[0]?.type
-      });
-      // Apply data sampling for performance (only if many data points)
-      return sampleEChartsData(layout, 1000);
-    }
-    
-    // Otherwise, assume Plotly format and convert
-    if (!data || data.length === 0) {
-      console.warn('EChartsWrapper: No data provided');
+    // Expect layout to be a complete ECharts option (has series)
+    if (!layout || typeof layout !== 'object' || !layout.series) {
+      console.warn('EChartsWrapper: Invalid ECharts option provided');
       return null;
     }
-
-    const plotlyFigure = { data, layout: layout || {} };
     
-    try {
-      console.log('🔄 EChartsWrapper: Converting Plotly to ECharts');
-      let option = convertPlotlyToECharts(plotlyFigure);
-      
-      if (!option) {
-        console.error('EChartsWrapper: Conversion returned null');
-        return null;
-      }
-      
-      // Apply data sampling for performance (only if many data points)
-      option = sampleEChartsData(option, 1000);
-      
-      return option;
-    } catch (error) {
-      console.error('EChartsWrapper: Error converting chart:', error);
-      return null;
-    }
-  }, [data, layout]);
+    console.log('📊 EChartsWrapper: Using ECharts option', {
+      hasSeries: !!layout.series,
+      seriesLength: layout.series?.length,
+      seriesType: layout.series?.[0]?.type
+    });
+    
+    // Apply data sampling for performance (only if many data points)
+    return sampleEChartsData(layout, 1000);
+  }, [layout]);
   
   // Handle initialization callback
   useEffect(() => {

@@ -554,6 +554,256 @@ async def upload_dataset(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
+def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.0-flash") -> Dict[str, Any]:
+    """
+    AI-Powered Dataset Analysis
+    Performs comprehensive dataset analysis combining statistical profiling with AI-generated semantic insights.
+    
+    Args:
+        df: Pandas DataFrame to analyze
+        dataset_name: Name of the dataset file
+        api_key: Gemini API key for AI analysis
+        model: AI model to use for analysis
+    
+    Returns:
+        Dictionary containing:
+            - dataset_name: Original filename
+            - dataset_summary: AI-generated overall description
+            - columns: List of column analysis objects with stats and AI descriptions
+            - token_usage: AI token consumption metrics
+    
+    Process:
+        1. Calculate statistical summary for each column
+        2. Generate structured schema for AI consumption
+        3. Prompt Gemini for semantic analysis
+        4. Combine statistical and semantic data
+    """
+    try:
+        print(f"🤖 Starting AI analysis for dataset: {dataset_name}")
+        print(f"📊 Dataset shape: {df.shape}")
+        
+        # Step 1: Calculate statistical summary for each column
+        columns_analysis = []
+        
+        for col in df.columns:
+            col_series = df[col]
+            
+            # Basic statistics
+            missing_pct = col_series.isnull().mean() * 100
+            unique_count = col_series.nunique()
+            total_count = len(col_series)
+            
+            # Sample values (non-null)
+            sample_values = col_series.dropna().sample(min(3, col_series.dropna().shape[0])).tolist() if not col_series.dropna().empty else []
+            
+            # Type-specific analysis
+            variance = None
+            if pd.api.types.is_numeric_dtype(col_series):
+                variance = float(col_series.var()) if not col_series.var() != col_series.var() else None  # Check for NaN
+            
+            column_info = {
+                "name": col,
+                "dtype": str(col_series.dtype),
+                "missing_pct": round(missing_pct, 2),
+                "unique_count": unique_count,
+                "total_count": total_count,
+                "variance": variance,
+                "sample_values": sample_values,
+                "description": ""  # Will be filled by AI
+            }
+            
+            columns_analysis.append(column_info)
+        
+        # Step 2: Prepare sample data for AI analysis
+        # Get first 10 rows as sample to help AI understand content
+        sample_rows = df.head(10).to_dict(orient='records')
+        
+        # Create structured data for AI including actual content
+        analysis_data = {
+            "dataset_name": dataset_name,
+            "total_rows": len(df),
+            "total_columns": len(df.columns),
+            "columns": columns_analysis,
+            "sample_data": sample_rows[:5]  # First 5 rows for context
+        }
+        
+        # Step 3: Generate AI insights using Gemini
+        if api_key:
+            from gemini_llm import GeminiDataFormulator
+            ai_formulator = GeminiDataFormulator(api_key=api_key, model=model)
+            
+            # Create comprehensive prompt for semantic dataset analysis
+            prompt = f"""You are an expert data analyst. Analyze this dataset and provide meaningful, context-aware insights about what the data represents in the real world.
+
+DATASET INFORMATION:
+- File: {dataset_name}
+- Size: {len(df)} rows, {len(df.columns)} columns
+
+COLUMN DETAILS:
+{chr(10).join([f"- {col['name']}: {col['dtype']}, {col['unique_count']} unique values, Sample: {col['sample_values']}" for col in columns_analysis])}
+
+SAMPLE DATA (first 5 rows):
+{chr(10).join([f"Row {i+1}: {row}" for i, row in enumerate(sample_rows[:5])])}
+
+INSTRUCTIONS:
+1. Look at the column names, data types, AND actual data values to understand what this dataset is about
+2. Provide a meaningful dataset summary that describes the REAL-WORLD CONTEXT (e.g., "tiger population data", "sales performance", "customer demographics")
+3. For each column, describe what it represents in BUSINESS/DOMAIN terms, not just data types
+
+Focus on SEMANTIC MEANING, not statistical properties. Be specific about the domain/context.
+
+Output ONLY valid JSON in this EXACT format:
+{{
+  "dataset_summary": "Meaningful 2-3 sentence description focusing on what this data represents in the real world",
+  "columns": [
+    {{"name": "column1", "description": "Business/domain description of what this column contains"}},
+    {{"name": "column2", "description": "Business/domain description of what this column contains"}},
+    ...
+  ]
+}}"""
+
+            try:
+                ai_response, token_usage = ai_formulator.run_gemini_with_usage(prompt)
+                
+                print(f"🤖 Raw AI Response: {ai_response[:200]}...")
+                
+                # Clean and parse AI response
+                cleaned_response = ai_response.strip()
+                
+                # Sometimes Gemini returns markdown code blocks, extract JSON
+                if "```json" in cleaned_response:
+                    start_idx = cleaned_response.find("```json") + 7
+                    end_idx = cleaned_response.find("```", start_idx)
+                    if end_idx != -1:
+                        cleaned_response = cleaned_response[start_idx:end_idx].strip()
+                elif "```" in cleaned_response:
+                    start_idx = cleaned_response.find("```") + 3
+                    end_idx = cleaned_response.find("```", start_idx)
+                    if end_idx != -1:
+                        cleaned_response = cleaned_response[start_idx:end_idx].strip()
+                
+                print(f"🧹 Cleaned Response: {cleaned_response[:200]}...")
+                
+                # Parse AI response
+                ai_data = json.loads(cleaned_response)
+                
+                # Merge AI descriptions with statistical data
+                dataset_summary = ai_data.get("dataset_summary", "This dataset contains structured data for analysis.")
+                ai_columns = {col["name"]: col["description"] for col in ai_data.get("columns", [])}
+                
+                # Update column descriptions
+                for col_info in columns_analysis:
+                    col_info["description"] = ai_columns.get(col_info["name"], f"Data column containing {col_info['dtype']} values")
+                
+                print(f"✅ AI analysis completed successfully!")
+                print(f"   Dataset summary generated: {len(dataset_summary)} characters")
+                print(f"   Column descriptions: {len(ai_columns)} columns processed")
+                
+                return {
+                    "dataset_name": dataset_name,
+                    "dataset_summary": dataset_summary,
+                    "columns": columns_analysis,
+                    "token_usage": token_usage,
+                    "success": True
+                }
+                
+            except json.JSONDecodeError as json_error:
+                print(f"❌ AI JSON parsing failed: {str(json_error)}")
+                print(f"📄 Full AI Response: {ai_response}")
+                
+                # Still track token usage even if parsing fails
+                token_usage_result = token_usage if 'token_usage' in locals() else {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+                
+                # Simple generic fallback descriptions
+                for col_info in columns_analysis:
+                    dtype = col_info['dtype']
+                    unique_count = col_info['unique_count']
+                    
+                    if dtype in ['object', 'string']:
+                        col_info["description"] = f"Text data with {unique_count} unique values"
+                    elif dtype in ['int64', 'int32', 'float64', 'float32']:
+                        col_info["description"] = f"Numeric data with {unique_count} unique values"
+                    else:
+                        col_info["description"] = f"Data column ({dtype}) with {unique_count} unique values"
+                
+                # Generic dataset summary
+                summary = f"Dataset containing {len(df)} rows and {len(df.columns)} columns. AI analysis failed - check API key configuration."
+                
+                return {
+                    "dataset_name": dataset_name,
+                    "dataset_summary": summary,
+                    "columns": columns_analysis,
+                    "token_usage": token_usage_result,
+                    "success": False,
+                    "error": f"AI response parsing failed: {str(json_error)}"
+                }
+                
+            except Exception as ai_error:
+                print(f"❌ AI analysis failed: {str(ai_error)}")
+                
+                # Still track token usage if available
+                token_usage_result = token_usage if 'token_usage' in locals() else {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+                
+                # Simple generic fallback descriptions
+                for col_info in columns_analysis:
+                    dtype = col_info['dtype']
+                    unique_count = col_info['unique_count']
+                    
+                    if dtype in ['object', 'string']:
+                        col_info["description"] = f"Text data with {unique_count} unique values"
+                    elif dtype in ['int64', 'int32', 'float64', 'float32']:
+                        col_info["description"] = f"Numeric data with {unique_count} unique values"
+                    else:
+                        col_info["description"] = f"Data column ({dtype}) with {unique_count} unique values"
+                
+                # Generic dataset summary  
+                summary = f"Dataset containing {len(df)} rows and {len(df.columns)} columns. AI analysis failed - check API key configuration."
+                
+                return {
+                    "dataset_name": dataset_name,
+                    "dataset_summary": summary,
+                    "columns": columns_analysis,
+                    "token_usage": token_usage_result,
+                    "success": False,
+                    "error": str(ai_error)
+                }
+        else:
+            # No API key provided - simple generic descriptions
+            for col_info in columns_analysis:
+                dtype = col_info['dtype']
+                unique_count = col_info['unique_count']
+                
+                if dtype in ['object', 'string']:
+                    col_info["description"] = f"Text data with {unique_count} unique values"
+                elif dtype in ['int64', 'int32', 'float64', 'float32']:
+                    col_info["description"] = f"Numeric data with {unique_count} unique values"
+                else:
+                    col_info["description"] = f"Data column ({dtype}) with {unique_count} unique values"
+            
+            # Generic dataset summary
+            summary = f"Dataset with {len(df)} rows and {len(df.columns)} columns. Configure API key in Settings for detailed AI analysis."
+            
+            return {
+                "dataset_name": dataset_name,
+                "dataset_summary": summary,
+                "columns": columns_analysis,
+                "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0},
+                "success": False,
+                "error": "No API key provided"
+            }
+            
+    except Exception as e:
+        print(f"❌ Dataset analysis failed: {str(e)}")
+        return {
+            "dataset_name": dataset_name,
+            "dataset_summary": "Failed to analyze dataset",
+            "columns": [],
+            "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0},
+            "success": False,
+            "error": str(e)
+        }
+
+
 def _generate_chart_title(dimensions: List[str], measures: List[str], agg: str = "sum") -> str:
     """
     Chart Title Generator
@@ -1455,6 +1705,256 @@ async def ai_calculate_metric(request: MetricCalculationRequest):
         raise HTTPException(status_code=500, detail=f"Failed to calculate metric: {error_message}")
 
 
+def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.0-flash") -> Dict[str, Any]:
+    """
+    AI-Powered Dataset Analysis
+    Performs comprehensive dataset analysis combining statistical profiling with AI-generated semantic insights.
+    
+    Args:
+        df: Pandas DataFrame to analyze
+        dataset_name: Name of the dataset file
+        api_key: Gemini API key for AI analysis
+        model: AI model to use for analysis
+    
+    Returns:
+        Dictionary containing:
+            - dataset_name: Original filename
+            - dataset_summary: AI-generated overall description
+            - columns: List of column analysis objects with stats and AI descriptions
+            - token_usage: AI token consumption metrics
+    
+    Process:
+        1. Calculate statistical summary for each column
+        2. Generate structured schema for AI consumption
+        3. Prompt Gemini for semantic analysis
+        4. Combine statistical and semantic data
+    """
+    try:
+        print(f"🤖 Starting AI analysis for dataset: {dataset_name}")
+        print(f"📊 Dataset shape: {df.shape}")
+        
+        # Step 1: Calculate statistical summary for each column
+        columns_analysis = []
+        
+        for col in df.columns:
+            col_series = df[col]
+            
+            # Basic statistics
+            missing_pct = col_series.isnull().mean() * 100
+            unique_count = col_series.nunique()
+            total_count = len(col_series)
+            
+            # Sample values (non-null)
+            sample_values = col_series.dropna().sample(min(3, col_series.dropna().shape[0])).tolist() if not col_series.dropna().empty else []
+            
+            # Type-specific analysis
+            variance = None
+            if pd.api.types.is_numeric_dtype(col_series):
+                variance = float(col_series.var()) if not col_series.var() != col_series.var() else None  # Check for NaN
+            
+            column_info = {
+                "name": col,
+                "dtype": str(col_series.dtype),
+                "missing_pct": round(missing_pct, 2),
+                "unique_count": unique_count,
+                "total_count": total_count,
+                "variance": variance,
+                "sample_values": sample_values,
+                "description": ""  # Will be filled by AI
+            }
+            
+            columns_analysis.append(column_info)
+        
+        # Step 2: Prepare sample data for AI analysis
+        # Get first 10 rows as sample to help AI understand content
+        sample_rows = df.head(10).to_dict(orient='records')
+        
+        # Create structured data for AI including actual content
+        analysis_data = {
+            "dataset_name": dataset_name,
+            "total_rows": len(df),
+            "total_columns": len(df.columns),
+            "columns": columns_analysis,
+            "sample_data": sample_rows[:5]  # First 5 rows for context
+        }
+        
+        # Step 3: Generate AI insights using Gemini
+        if api_key:
+            from gemini_llm import GeminiDataFormulator
+            ai_formulator = GeminiDataFormulator(api_key=api_key, model=model)
+            
+            # Create comprehensive prompt for semantic dataset analysis
+            prompt = f"""You are an expert data analyst. Analyze this dataset and provide meaningful, context-aware insights about what the data represents in the real world.
+
+DATASET INFORMATION:
+- File: {dataset_name}
+- Size: {len(df)} rows, {len(df.columns)} columns
+
+COLUMN DETAILS:
+{chr(10).join([f"- {col['name']}: {col['dtype']}, {col['unique_count']} unique values, Sample: {col['sample_values']}" for col in columns_analysis])}
+
+SAMPLE DATA (first 5 rows):
+{chr(10).join([f"Row {i+1}: {row}" for i, row in enumerate(sample_rows[:5])])}
+
+INSTRUCTIONS:
+1. Look at the column names, data types, AND actual data values to understand what this dataset is about
+2. Provide a meaningful dataset summary that describes the REAL-WORLD CONTEXT (e.g., "tiger population data", "sales performance", "customer demographics")
+3. For each column, describe what it represents in BUSINESS/DOMAIN terms, not just data types
+
+Focus on SEMANTIC MEANING, not statistical properties. Be specific about the domain/context.
+
+Output ONLY valid JSON in this EXACT format:
+{{
+  "dataset_summary": "Meaningful 2-3 sentence description focusing on what this data represents in the real world",
+  "columns": [
+    {{"name": "column1", "description": "Business/domain description of what this column contains"}},
+    {{"name": "column2", "description": "Business/domain description of what this column contains"}},
+    ...
+  ]
+}}"""
+
+            try:
+                ai_response, token_usage = ai_formulator.run_gemini_with_usage(prompt)
+                
+                print(f"🤖 Raw AI Response: {ai_response[:200]}...")
+                
+                # Clean and parse AI response
+                cleaned_response = ai_response.strip()
+                
+                # Sometimes Gemini returns markdown code blocks, extract JSON
+                if "```json" in cleaned_response:
+                    start_idx = cleaned_response.find("```json") + 7
+                    end_idx = cleaned_response.find("```", start_idx)
+                    if end_idx != -1:
+                        cleaned_response = cleaned_response[start_idx:end_idx].strip()
+                elif "```" in cleaned_response:
+                    start_idx = cleaned_response.find("```") + 3
+                    end_idx = cleaned_response.find("```", start_idx)
+                    if end_idx != -1:
+                        cleaned_response = cleaned_response[start_idx:end_idx].strip()
+                
+                print(f"🧹 Cleaned Response: {cleaned_response[:200]}...")
+                
+                # Parse AI response
+                ai_data = json.loads(cleaned_response)
+                
+                # Merge AI descriptions with statistical data
+                dataset_summary = ai_data.get("dataset_summary", "This dataset contains structured data for analysis.")
+                ai_columns = {col["name"]: col["description"] for col in ai_data.get("columns", [])}
+                
+                # Update column descriptions
+                for col_info in columns_analysis:
+                    col_info["description"] = ai_columns.get(col_info["name"], f"Data column containing {col_info['dtype']} values")
+                
+                print(f"✅ AI analysis completed successfully!")
+                print(f"   Dataset summary generated: {len(dataset_summary)} characters")
+                print(f"   Column descriptions: {len(ai_columns)} columns processed")
+                
+                return {
+                    "dataset_name": dataset_name,
+                    "dataset_summary": dataset_summary,
+                    "columns": columns_analysis,
+                    "token_usage": token_usage,
+                    "success": True
+                }
+                
+            except json.JSONDecodeError as json_error:
+                print(f"❌ AI JSON parsing failed: {str(json_error)}")
+                print(f"📄 Full AI Response: {ai_response}")
+                
+                # Still track token usage even if parsing fails
+                token_usage_result = token_usage if 'token_usage' in locals() else {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+                
+                # Simple generic fallback descriptions
+                for col_info in columns_analysis:
+                    dtype = col_info['dtype']
+                    unique_count = col_info['unique_count']
+                    
+                    if dtype in ['object', 'string']:
+                        col_info["description"] = f"Text data with {unique_count} unique values"
+                    elif dtype in ['int64', 'int32', 'float64', 'float32']:
+                        col_info["description"] = f"Numeric data with {unique_count} unique values"
+                    else:
+                        col_info["description"] = f"Data column ({dtype}) with {unique_count} unique values"
+                
+                # Generic dataset summary
+                summary = f"Dataset containing {len(df)} rows and {len(df.columns)} columns. AI analysis failed - check API key configuration."
+                
+                return {
+                    "dataset_name": dataset_name,
+                    "dataset_summary": summary,
+                    "columns": columns_analysis,
+                    "token_usage": token_usage_result,
+                    "success": False,
+                    "error": f"AI response parsing failed: {str(json_error)}"
+                }
+                
+            except Exception as ai_error:
+                print(f"❌ AI analysis failed: {str(ai_error)}")
+                
+                # Still track token usage if available
+                token_usage_result = token_usage if 'token_usage' in locals() else {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+                
+                # Simple generic fallback descriptions
+                for col_info in columns_analysis:
+                    dtype = col_info['dtype']
+                    unique_count = col_info['unique_count']
+                    
+                    if dtype in ['object', 'string']:
+                        col_info["description"] = f"Text data with {unique_count} unique values"
+                    elif dtype in ['int64', 'int32', 'float64', 'float32']:
+                        col_info["description"] = f"Numeric data with {unique_count} unique values"
+                    else:
+                        col_info["description"] = f"Data column ({dtype}) with {unique_count} unique values"
+                
+                # Generic dataset summary  
+                summary = f"Dataset containing {len(df)} rows and {len(df.columns)} columns. AI analysis failed - check API key configuration."
+                
+                return {
+                    "dataset_name": dataset_name,
+                    "dataset_summary": summary,
+                    "columns": columns_analysis,
+                    "token_usage": token_usage_result,
+                    "success": False,
+                    "error": str(ai_error)
+                }
+        else:
+            # No API key provided - simple generic descriptions
+            for col_info in columns_analysis:
+                dtype = col_info['dtype']
+                unique_count = col_info['unique_count']
+                
+                if dtype in ['object', 'string']:
+                    col_info["description"] = f"Text data with {unique_count} unique values"
+                elif dtype in ['int64', 'int32', 'float64', 'float32']:
+                    col_info["description"] = f"Numeric data with {unique_count} unique values"
+                else:
+                    col_info["description"] = f"Data column ({dtype}) with {unique_count} unique values"
+            
+            # Generic dataset summary
+            summary = f"Dataset with {len(df)} rows and {len(df.columns)} columns. Configure API key in Settings for detailed AI analysis."
+            
+            return {
+                "dataset_name": dataset_name,
+                "dataset_summary": summary,
+                "columns": columns_analysis,
+                "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0},
+                "success": False,
+                "error": "No API key provided"
+            }
+            
+    except Exception as e:
+        print(f"❌ Dataset analysis failed: {str(e)}")
+        return {
+            "dataset_name": dataset_name,
+            "dataset_summary": "Failed to analyze dataset",
+            "columns": [],
+            "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0},
+            "success": False,
+            "error": str(e)
+        }
+
+
 @app.post("/analyze-dataset")
 async def analyze_dataset(request: DatasetAnalysisRequest):
     """
@@ -2014,16 +2514,14 @@ Generate insights in TWO sections with this EXACT format:
 CONTEXT-AWARE INSIGHTS:
 • [Insight directly related to the user's goal above]
 • [Another insight addressing the user's goal]
-• [Third insight relevant to the user's goal]
 
 GENERIC INSIGHTS:
 • [Data pattern or trend with specific numbers]
 • [Notable finding about performance, outliers, or comparison]
-• [Distribution or relationship observed in the data]
-• [Additional pattern or interesting data observation]
-• [Summary insight if applicable]
+• [Additional pattern or interesting data observation if needed]
 
 Use simple, clear language. Focus on describing what the data shows. Include specific numbers when relevant.
+Keep insights CONCISE - provide 2-3 bullet points per section.
 Provide ONLY the two labeled sections with bullet points, no other text."""
     else:
         # Standard insights mode: generate single set of insights
@@ -2040,14 +2538,13 @@ CHART ANALYSIS:
 
 IMPORTANT: Only reference data points that exist in the data provided above. Do not invent or hallucinate product names or values.
 
-Generate 3-5 key insights in this EXACT format:
+Generate 2-3 key insights in this EXACT format:
 • [Data pattern or trend with specific numbers]
 • [Notable finding about performance, outliers, or comparison]
-• [Distribution or relationship observed in the data]
-• [Additional pattern or interesting data observation]
-• [Summary insight if applicable]
+• [Additional pattern or interesting data observation if needed]
 
 Use simple, clear language. Focus on describing what the data shows. Include specific numbers when relevant.
+Keep insights CONCISE - provide only 2-3 bullet points.
 Provide ONLY the bullet points, no headers or additional text."""
 
     response, token_usage = formulator.run_gemini_with_usage(prompt)

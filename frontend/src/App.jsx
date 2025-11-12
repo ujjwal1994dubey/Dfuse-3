@@ -1,8 +1,6 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
-import ReactFlow, { Background, Controls, MiniMap, applyNodeChanges, applyEdgeChanges, ReactFlowProvider, useStore, useReactFlow } from 'react-flow-renderer';
-import Plot from 'react-plotly.js';
 import EChartsWrapper from './charts/EChartsWrapper';
-import CanvasAdapter from './components/canvas/CanvasAdapter';
+import TLDrawCanvas from './components/canvas/TLDrawCanvas';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
@@ -17,19 +15,12 @@ import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from '
 // Replace line 13 with:
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
-// MIGRATION: Feature flags for testing ECharts vs Plotly and TLDraw vs React Flow
-const USE_ECHARTS = process.env.REACT_APP_USE_ECHARTS === 'true';
-const USE_TLDRAW = process.env.REACT_APP_USE_TLDRAW === 'true';
-
 // Log configuration on app start
-console.log('🎨 Canvas Configuration:', {
-  chartLibrary: USE_ECHARTS ? 'ECharts' : 'Plotly',
-  canvasLibrary: USE_TLDRAW ? 'TLDraw' : 'React Flow'
-});
+console.log('🎨 Canvas: TLDraw + ECharts (v3.0)');
 
 /**
  * Chart Figure Cache - Performance Optimization
- * Cache computed Plotly figures to prevent unnecessary re-computation
+ * Cache computed chart figures to prevent unnecessary re-computation
  */
 const chartFigureCache = new Map();
 const CACHE_MAX_SIZE = 100; // Prevent memory leaks
@@ -240,487 +231,6 @@ const DEFAULT_LAYOUT = {
   zerolinecolor: '#D1D5DB',
   font: { family: 'Inter, system-ui, sans-serif', size: 12, color: '#4B5563' },
   margin: { l: 80, r: 30, t: 40, b: 80 }
-};
-
-/**
- * Chart Types Registry
- * Defines all supported chart types and their capabilities including:
- * - Chart type metadata (id, label, icon)
- * - Compatibility rules based on dimensions and measures
- * - Figure generation logic for each chart type
- * 
- * Supported types: Bar, Pie, Scatter, Line, Multi-Bar, Histogram
- */
-const CHART_TYPES = {
-  BAR: {
-    id: 'bar',
-    label: 'Bar Chart',
-    icon: BarChart,
-    isSupported: (dims, measures) => dims === 1 && measures === 1,
-    createFigure: (data, payload) => {
-      const xKey = payload.dimensions[0];
-      const yKey = payload.measures[0];
-      const xValues = data.map(r => r[xKey]);
-      return {
-        data: [{
-          type: 'bar',
-          x: xValues.map(v => truncateText(v)),
-          y: data.map(r => r[yKey] || 0),
-          text: xValues.map(v => String(v)), // Full text for hover
-          textposition: 'none', // Don't show text on bars, only in hover
-          hovertemplate: '%{text}<br>%{y}<extra></extra>',
-          marker: { color: DEFAULT_COLORS.categorical[0] }
-        }],
-        layout: {
-          ...DEFAULT_LAYOUT,
-          xaxis: {
-            title: { text: xKey, font: { size: 12, color: '#4B5563' } },
-            tickangle: -45,
-            gridcolor: DEFAULT_LAYOUT.gridcolor,
-            zerolinecolor: DEFAULT_LAYOUT.zerolinecolor
-          },
-          yaxis: {
-            title: { text: yKey || 'Value', font: { size: 12, color: '#4B5563' } },
-            gridcolor: DEFAULT_LAYOUT.gridcolor,
-            zerolinecolor: DEFAULT_LAYOUT.zerolinecolor
-          },
-          showlegend: false,
-          legend: undefined
-        }
-      };
-    }
-  },
-  PIE: {
-    id: 'pie',
-    label: 'Pie Chart',
-    icon: PieChart,
-    isSupported: (dims, measures) => dims === 1 && measures === 1,
-    createFigure: (data, payload) => {
-      const labelKey = payload.dimensions[0];
-      const valueKey = payload.measures[0];
-      const labels = data.map(r => r[labelKey]);
-      return {
-        data: [{
-          type: 'pie',
-          labels: labels.map(l => truncateText(l)),
-          values: data.map(r => r[valueKey] || 0),
-          text: labels.map(l => String(l)), // Full text for hover
-          hovertemplate: '%{text}<br>%{value}<extra></extra>',
-          hole: 0.3,
-          marker: {
-            colors: DEFAULT_COLORS.categorical.slice(0, data.length)
-          }
-        }],
-        layout: {
-          ...DEFAULT_LAYOUT,
-          showlegend: true,
-          legend: { 
-            bgcolor: 'rgba(255,255,255,0.9)',
-            bordercolor: '#E5E7EB',
-            borderwidth: 1,
-            font: { size: 11, color: '#6B7280' },
-            orientation: 'v', 
-            x: 1.05, 
-            y: 0.5 
-          }
-        }
-      };
-    }
-  },
-  SCATTER: {
-    id: 'scatter',
-    label: 'Scatter Plot',
-    icon: Circle,
-    isSupported: (dims, measures) => dims === 1 && measures === 2,
-    createFigure: (data, payload) => {
-      const labelKey = payload.dimensions[0];
-      const xKey = payload.measures[0];
-      const yKey = payload.measures[1];
-      const labels = data.map(r => r[labelKey]);
-      return {
-        data: [{
-          type: 'scatter',
-          mode: 'markers',
-          x: data.map(r => r[xKey] || 0),
-          y: data.map(r => r[yKey] || 0),
-          text: labels.map(l => String(l)), // Full text for hover
-          marker: { 
-            size: 10, 
-            color: DEFAULT_COLORS.quantitative[0],
-            opacity: 0.7,
-            line: { color: 'white', width: 1 }
-          },
-          hovertemplate: '<b>%{text}</b><br>' +
-                         `${xKey}: %{x}<br>` +
-                         `${yKey}: %{y}<br>` +
-                         '<extra></extra>'
-        }],
-        layout: {
-          ...DEFAULT_LAYOUT,
-          xaxis: {
-            title: { text: xKey, font: { size: 12, color: '#4B5563' } },
-            gridcolor: DEFAULT_LAYOUT.gridcolor,
-            zerolinecolor: DEFAULT_LAYOUT.zerolinecolor
-          },
-          yaxis: {
-            title: { text: yKey, font: { size: 12, color: '#4B5563' } },
-            gridcolor: DEFAULT_LAYOUT.gridcolor,
-            zerolinecolor: DEFAULT_LAYOUT.zerolinecolor
-          }
-        }
-      };
-    }
-  },
-  // 3-Variable Chart Types (2 Measures + 1 Dimension)
-  GROUPED_BAR: {
-    id: 'grouped_bar',
-    label: 'Grouped Bar',
-    icon: BarChart,
-    isSupported: (dims, measures) => dims === 1 && measures === 2,
-    createFigure: (data, payload) => {
-      const xKey = payload.dimensions[0];
-      const measureKeys = payload.measures;
-      const xValues = [...new Set(data.map(r => r[xKey]))];
-      
-      return {
-        data: measureKeys.map((measure, i) => ({
-          type: 'bar',
-          name: truncateText(measure), // Truncate long legend labels
-          x: xValues.map(v => truncateText(v)), // Truncate x-axis labels
-          y: xValues.map(v => (data.find(r => r[xKey] === v)?.[measure]) ?? 0),
-          text: xValues.map(v => String(v)), // Full text for hover
-          textposition: 'none', // Don't show text on bars, only in hover
-          hovertemplate: '%{text}<br>%{y}<extra></extra>',
-          marker: { color: DEFAULT_COLORS.comparative[i % DEFAULT_COLORS.comparative.length] }
-        })),
-        layout: {
-          ...DEFAULT_LAYOUT,
-          barmode: 'group',
-          xaxis: {
-            title: { text: xKey, font: { size: 12, color: '#4B5563' } },
-            tickangle: -45,
-            gridcolor: DEFAULT_LAYOUT.gridcolor,
-            zerolinecolor: DEFAULT_LAYOUT.zerolinecolor
-          },
-          yaxis: {
-            title: { text: 'Value', font: { size: 12, color: '#4B5563' } },
-            gridcolor: DEFAULT_LAYOUT.gridcolor,
-            zerolinecolor: DEFAULT_LAYOUT.zerolinecolor
-          },
-          margin: { ...DEFAULT_LAYOUT.margin, b: 140 }, // Keep bottom margin for legend
-          showlegend: measureKeys.length > 1,
-          legend: measureKeys.length > 1 ? {
-            bgcolor: 'rgba(255,255,255,0.9)',
-            bordercolor: '#E5E7EB',
-            borderwidth: 1,
-            font: { size: 11, color: '#6B7280' },
-            orientation: 'h',
-            x: 0.5,
-            xanchor: 'center',
-            y: -0.3,
-            yanchor: 'top'
-          } : undefined
-        }
-      };
-    }
-  },
-  DUAL_AXIS: {
-    id: 'dual_axis',
-    label: 'Dual Axis',
-    icon: TrendingUp,
-    isSupported: (dims, measures) => dims === 1 && measures === 2,
-    createFigure: (data, payload) => {
-      const xKey = payload.dimensions[0];
-      const [m1, m2] = payload.measures;
-      const xValues = [...new Set(data.map(r => r[xKey]))];
-      const m1Values = xValues.map(v => (data.find(r => r[xKey] === v)?.[m1]) ?? 0);
-      const m2Values = xValues.map(v => (data.find(r => r[xKey] === v)?.[m2]) ?? 0);
-      
-      return {
-        data: [
-          {
-            type: 'scatter',
-            mode: 'lines+markers',
-            name: m1,
-            x: xValues.map(v => truncateText(v)),
-            y: m1Values,
-            text: xValues.map(v => String(v)), // Full text for hover
-            hovertemplate: '%{text}<br>%{y}<extra></extra>',
-            yaxis: 'y',
-            line: { color: '#3182ce', width: 3 },
-            marker: { color: '#3182ce', size: 8 }
-          },
-          {
-            type: 'scatter',
-            mode: 'lines+markers',
-            name: m2,
-            x: xValues.map(v => truncateText(v)),
-            y: m2Values,
-            text: xValues.map(v => String(v)), // Full text for hover
-            hovertemplate: '%{text}<br>%{y}<extra></extra>',
-            yaxis: 'y2',
-            line: { color: '#38a169', width: 3 },
-            marker: { color: '#38a169', size: 8 }
-          }
-        ],
-        layout: {
-          xaxis: {
-            title: { text: xKey, font: { size: 14, color: '#4a5568' } },
-            tickangle: -45
-          },
-          yaxis: {
-            title: { text: m1, font: { size: 14, color: '#3182ce' } },
-            side: 'left'
-          },
-          yaxis2: {
-            title: { text: m2, font: { size: 14, color: '#38a169' } },
-            side: 'right',
-            overlaying: 'y'
-          },
-          margin: { t: 20, b: 80, l: 80, r: 80 },
-          plot_bgcolor: 'white',
-          paper_bgcolor: 'white',
-          showlegend: true,
-          legend: {
-            orientation: 'h',
-            x: 0.5,
-            xanchor: 'center',
-            y: -0.15,
-            bgcolor: 'rgba(255,255,255,0.8)',
-            bordercolor: '#E2E8F0',
-            borderwidth: 1
-          }
-        }
-      };
-    }
-  },
-  // 3-Variable Chart Types (2 Dimensions + 1 Measure) - HEATMAP REMOVED
-  STACKED_BAR: {
-    id: 'stacked_bar',
-    label: 'Stacked Bar',
-    icon: BarChart2,
-    isSupported: (dims, measures) => dims === 2 && measures === 1,
-    createFigure: (data, payload) => {
-      const [dim1, dim2] = payload.dimensions;
-      const measure = payload.measures[0];
-      
-      // Safety check for empty data
-      if (!data || data.length === 0) {
-        console.warn('STACKED_BAR: No data provided');
-        return { 
-          data: [], 
-          layout: sanitizeLayout({
-            xaxis: { title: { text: dim1 } },
-            yaxis: { title: { text: measure } },
-            showlegend: false,
-            legend: undefined
-          }) 
-        };
-      }
-      
-      // Simple row-based data handling only
-      const groups = {};
-      data.forEach(row => {
-        const dim1Value = row[dim1];    // First dimension value
-        const dim2Value = row[dim2];    // Second dimension value
-        const value = row[measure] || 0; // Measure value
-        
-        if (dim1Value && dim2Value) { // Ensure valid values
-          if (!groups[dim2Value]) groups[dim2Value] = {};
-          groups[dim2Value][dim1Value] = value;
-        }
-      });
-      
-      const uniqueDim2Values = [...new Set(data.map(r => r[dim2]))];
-      const uniqueDim1Values = [...new Set(data.map(r => r[dim1]))];
-      
-      const chartData = uniqueDim2Values.map((dim2Value, i) => ({
-        type: 'bar',
-        name: truncateText(dim2Value), // Truncate long legend labels
-        x: uniqueDim1Values.map(dim1Val => truncateText(dim1Val)), // Truncate x-axis labels
-        y: uniqueDim1Values.map(dim1Val => groups[dim2Value]?.[dim1Val] || 0),
-        customdata: uniqueDim1Values.map(dim1Val => [String(dim1Val), String(dim2Value)]), // Store both dimension values
-        textposition: 'none', // Don't show text on bars, only in hover
-        hovertemplate: `<b>${dim1}: %{customdata[0]}</b><br>${dim2}: %{customdata[1]}<br>${measure}: %{y}<extra></extra>`,
-        marker: { color: ['#3182ce', '#38a169', '#d69e2e', '#e53e3e', '#805ad5', '#dd6b20', '#38b2ac', '#ed64a6'][i % 8] }
-      }));
-      
-      // Safety check for empty chart data
-      if (chartData.length === 0) {
-        console.warn('STACKED_BAR: No chart data generated');
-        return { 
-          data: [{ type: 'bar', x: [], y: [] }], 
-          layout: sanitizeLayout({ 
-            title: { text: 'No data available' },
-            xaxis: { title: { text: dim1 } },
-            yaxis: { title: { text: measure } },
-            showlegend: false,
-            legend: undefined
-          })
-        };
-      }
-      
-      return {
-        data: chartData,
-        layout: sanitizeLayout({
-          barmode: 'stack',
-          xaxis: {
-            title: { text: dim1, font: { size: 14, color: '#4a5568' } },
-            tickangle: -45
-          },
-          yaxis: {
-            title: { text: measure, font: { size: 14, color: '#4a5568' } }
-          },
-          margin: { t: 20, b: 140, l: 80, r: 30 }, // Keep normal right margin
-          plot_bgcolor: 'white',
-          paper_bgcolor: 'white',
-          showlegend: chartData.length > 1,
-          legend: chartData.length > 1 ? {
-            orientation: 'h',
-            x: 0.5,
-            xanchor: 'center',
-            y: -0.3, // Moved further down to avoid overlap
-            yanchor: 'top',
-            bgcolor: 'rgba(255,255,255,0.8)',
-            bordercolor: '#E2E8F0',
-            borderwidth: 1,
-            font: { size: 11 },
-            tracegroupgap: 5, // Add gap between legend groups
-            itemsizing: 'constant',
-            itemwidth: 30,
-            // Add responsive behavior for many legend items
-            ...(chartData.length > 10 ? {
-              orientation: 'v', // Switch to vertical for many items
-              x: 1.05, // Closer to chart to avoid excessive gap
-              xanchor: 'left',
-              y: 0.5,
-              yanchor: 'middle',
-              itemwidth: 30, // Reduced item width
-              font: { size: 10 }, // Smaller font
-              borderwidth: 0, // Remove border to save space
-              tracegroupgap: 2 // Reduced gap between items
-            } : {})
-          } : undefined
-        })
-      };
-    }
-  },
-  BUBBLE: {
-    id: 'bubble',
-    label: 'Bubble Chart',
-    icon: Circle,
-    isSupported: (dims, measures) => dims === 2 && measures === 1,
-    createFigure: (data, payload) => {
-      const [dim1, dim2] = payload.dimensions;
-      const measure = payload.measures[0];
-      
-      // Simple row-based data handling only
-      const validData = data.filter(r => r[measure] && r[measure] > 0);
-      const maxValue = Math.max(...validData.map(r => r[measure]));
-      
-      return {
-        data: [{
-          type: 'scatter',
-          mode: 'markers',
-          x: validData.map(r => truncateText(r[dim2])), // Truncate x-axis labels
-          y: validData.map(r => truncateText(r[dim1])), // Truncate y-axis labels
-          text: validData.map(r => `${dim1}: ${r[dim1]}<br>${dim2}: ${r[dim2]}<br>${measure}: ${r[measure]}`),
-          marker: {
-            size: validData.map(r => Math.max(8, Math.sqrt(r[measure] / maxValue * 2000) + 5)),
-            color: validData.map(r => r[measure]),
-            colorscale: DEFAULT_COLORS.sequential,
-            colorbar: { 
-              title: { 
-                text: measure, 
-                side: 'right',
-                font: { color: '#4B5563' }
-              },
-              thickness: 15,
-              tickfont: { color: '#4B5563' }
-            },
-            opacity: 0.8,
-            line: { 
-              color: 'white', 
-              width: 2 
-            }
-          },
-          hovertemplate: '%{text}<extra></extra>'
-        }],
-        layout: {
-          ...DEFAULT_LAYOUT,
-          xaxis: {
-            title: { text: dim2, font: { size: 12, color: '#4B5563' } },
-            type: 'category',
-            tickangle: -45,
-            gridcolor: DEFAULT_LAYOUT.gridcolor,
-            zerolinecolor: DEFAULT_LAYOUT.zerolinecolor
-          },
-          yaxis: {
-            title: { text: dim1, font: { size: 12, color: '#4B5563' } },
-            type: 'category',
-            gridcolor: DEFAULT_LAYOUT.gridcolor,
-            zerolinecolor: DEFAULT_LAYOUT.zerolinecolor
-          },
-          margin: { ...DEFAULT_LAYOUT.margin, l: 100, r: 120 },
-          showlegend: false,
-          legend: undefined
-        }
-      };
-    }
-  },
-  LINE: {
-    id: 'line',
-    label: 'Line Chart',
-    icon: TrendingUp,
-    isSupported: (dims, measures) => dims === 1 && measures === 1,
-    createFigure: (data, payload) => {
-      const xKey = payload.dimensions[0];
-      const yKey = payload.measures[0];
-      const lineColor = DEFAULT_COLORS.quantitative[0];
-      const xValues = data.map(r => r[xKey]);
-      return {
-        data: [{
-          type: 'scatter',
-          mode: 'lines+markers',
-          x: xValues.map(v => truncateText(v)),
-          y: data.map(r => r[yKey] || 0),
-          text: xValues.map(v => String(v)), // Full text for hover
-          hovertemplate: '%{text}<br>%{y}<extra></extra>',
-          line: { color: lineColor, width: 3 },
-          marker: { color: lineColor, size: 6 }
-        }],
-        layout: {
-          ...DEFAULT_LAYOUT,
-          xaxis: {
-            title: { text: xKey, font: { size: 12, color: '#4B5563' } },
-            tickangle: -45,
-            gridcolor: DEFAULT_LAYOUT.gridcolor,
-            zerolinecolor: DEFAULT_LAYOUT.zerolinecolor
-          },
-          yaxis: {
-            title: { text: yKey || 'Value', font: { size: 12, color: '#4B5563' } },
-            gridcolor: DEFAULT_LAYOUT.gridcolor,
-            zerolinecolor: DEFAULT_LAYOUT.zerolinecolor
-          },
-          showlegend: false,
-          legend: undefined
-        }
-      };
-    }
-  }
-};
-
-// Helper function to get supported chart types for given dimensions and measures
-const getSupportedChartTypes = (dims, measures) => {
-  return Object.values(CHART_TYPES).filter(chartType => 
-    chartType.isSupported(dims, measures)
-  );
-};
-
-// Helper function to get default chart type for dimensions and measures
-const getDefaultChartType = (dims, measures) => {
-  const supported = getSupportedChartTypes(dims, measures);
-  return supported.length > 0 ? supported[0] : CHART_TYPES.BAR;
 };
 
 // Helper function to truncate long legend labels
@@ -1125,7 +635,7 @@ function ChartTypeSelector({ dimensions = [], measures = [], currentType, onType
   const dims = dimensions.length;
   const meas = measures.length;
   
-  const supportedTypes = getSupportedChartTypes(dims, meas);
+  const supportedTypes = getEChartsSupportedTypes(dims, meas);
   
   // Don't show selector if only one chart type is supported
   if (supportedTypes.length <= 1) return null;
@@ -1230,13 +740,11 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
     []
   );
   
-  // Use ref to prevent state reset during React Flow re-renders
-  const plotlyRef = useRef(null);
+  // Use ref to prevent state reset during re-renders
   const chartContainerRef = useRef(null);
-  const plotlyDivRef = useRef(null);
   
   // Chart type switching state
-  const defaultChartType = getDefaultChartType(dimensions.length, measures.length);
+  const defaultChartType = getEChartsDefaultType(dimensions.length, measures.length);
   const [chartType, setChartType] = useState(externalChartType || defaultChartType.id);
   const [currentFigure, setCurrentFigure] = useState(figure);
   // Only mark as user-changed if there's an explicit external chart type
@@ -1259,20 +767,22 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
         setCurrentFigure(figure);
       } else {
         // User has selected a specific chart type, regenerate that type with new data
-        const chartTypeConfig = CHART_TYPES[chartType.toUpperCase()];
+        const chartTypeConfig = ECHARTS_TYPES[chartType.toUpperCase()];
         
-        // Check if we have data (either array format or heatmap format)
-        const hasData = (Array.isArray(table) && table.length > 0) || 
-                       (table && typeof table === 'object' && table.x && table.y && table.z);
+        // Check if we have data
+        const hasData = Array.isArray(table) && table.length > 0;
                        
         if (chartTypeConfig && hasData) {
           const payload = {
-            table: table,
             dimensions: dimensions,
             measures: measures,
             strategy: strategy ? { type: strategy } : undefined
           };
-          const newFigure = chartTypeConfig.createFigure(Array.isArray(table) ? table : [], payload);
+          const option = chartTypeConfig.createOption(table, payload);
+          const newFigure = {
+            data: [],
+            layout: option
+          };
           setCurrentFigure(newFigure);
         } else {
           // Fallback to the provided figure if chart type regeneration fails
@@ -1285,18 +795,6 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
   // Consolidated cleanup effect - single cleanup on unmount for performance
   useEffect(() => {
     return () => {
-      // Single cleanup on unmount using ref for targeted cleanup
-      if (plotlyDivRef.current) {
-        try {
-          const div = plotlyDivRef.current;
-          div._hoverlayer = null;
-          div._fullLayout = null;
-          div._fullData = null;
-          div._context = null;
-        } catch (e) {
-          // Silent fail
-        }
-      }
       // Cleanup throttled function
       if (throttledSetDimensions.cancel) {
         throttledSetDimensions.cancel();
@@ -1442,22 +940,24 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
     setHasUserChangedType(true); // Mark that user has manually changed chart type
     
     try {
-      // Regenerate figure with new chart type using the chart registry
-      const chartTypeConfig = CHART_TYPES[newChartType.toUpperCase()];
+      // Regenerate figure with new chart type using ECharts registry
+      const chartTypeConfig = ECHARTS_TYPES[newChartType.toUpperCase()];
       
-      // Check if we have data (either array format or heatmap format)
-      const hasData = (Array.isArray(table) && table.length > 0) || 
-                     (table && typeof table === 'object' && table.x && table.y && table.z);
+      // Check if we have data
+      const hasData = Array.isArray(table) && table.length > 0;
       
       if (chartTypeConfig && hasData) {
         const payload = {
-          table: table,
           dimensions: dimensions,
           measures: measures,
           strategy: strategy ? { type: strategy } : undefined
         };
         
-        const newFigure = chartTypeConfig.createFigure(Array.isArray(table) ? table : [], payload);
+        const option = chartTypeConfig.createOption(table, payload);
+        const newFigure = {
+          data: [],
+          layout: option
+        };
         
         // Defensively sanitize the new figure before setting
         if (newFigure && newFigure.layout) {
@@ -1549,7 +1049,7 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
   // Calculate plot height (subtract header and padding from total height)
   const plotHeight = Math.max(chartDimensions.height - 80, 200);
   
-  // Memoize layout to prevent unnecessary Plotly rerenders
+  // Memoize layout to prevent unnecessary rerenders
   const memoizedLayout = useMemo(() => 
     sanitizeLayout({
       ...currentFigure.layout,
@@ -1570,8 +1070,8 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
     return selected || !document.hidden;
   }, [selected]);
   
-  // Memoize Plotly initialization callback
-  const handlePlotlyInit = useCallback((figure, graphDiv) => {
+  // Memoize chart initialization callback
+  const handleChartInit = useCallback((figure, graphDiv) => {
     try {
       if (graphDiv && graphDiv._hoverlayer) {
         graphDiv._hoverlayer.style.pointerEvents = 'auto';
@@ -1580,18 +1080,18 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
         graphDiv.layout = sanitizeLayout(currentFigure.layout || {});
       }
     } catch (e) {
-      console.debug('Plotly init warning:', e);
+      console.debug('Chart init warning:', e);
     }
   }, [currentFigure.layout]);
   
-  // Memoize Plotly update callback
-  const handlePlotlyUpdate = useCallback((figure, graphDiv) => {
+  // Memoize chart update callback
+  const handleChartUpdate = useCallback((figure, graphDiv) => {
     try {
       if (graphDiv && figure && figure.layout) {
         graphDiv.layout = sanitizeLayout(figure.layout);
       }
     } catch (e) {
-      console.debug('Plotly update warning:', e);
+      console.debug('Chart update warning:', e);
     }
   }, []);
   
@@ -1656,52 +1156,27 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
       >
       {currentFigure && currentFigure.data && currentFigure.layout ? (
         <div 
-          className="plotly-container" 
+          className="chart-container" 
           style={{ pointerEvents: 'auto', minHeight: `${plotHeight}px` }}
           data-chart-id={id}
         >
-          {USE_ECHARTS ? (
-            <EChartsWrapper
-              data={memoizedData} 
-              layout={memoizedLayout} 
-              style={{ width: '100%', height: `${plotHeight}px` }}
-              onInitialized={handlePlotlyInit}
-              onUpdate={handlePlotlyUpdate}
-              config={{
-                displayModeBar: false,
-                displaylogo: false,
-                staticPlot: !isChartVisible,
-                responsive: true,
-                doubleClick: 'reset+autosize',
-                showTips: true,
-                showLink: false
-              }}
-              useResizeHandler={false}
-            />
-          ) : (
-            <Plot 
-              ref={plotlyDivRef}
-              key={`${id}-${chartType}`}
-              data={memoizedData} 
-              layout={memoizedLayout} 
-              style={{ width: '100%', height: `${plotHeight}px` }} 
-              useResizeHandler={false}
-              onError={(err) => {
-                console.warn('Plotly error:', err);
-              }}
-              onInitialized={handlePlotlyInit}
-              onUpdate={handlePlotlyUpdate}
-              config={{
-                displayModeBar: false, // Hide Plotly modebar - actions moved to Chart Actions panel
-                displaylogo: false,
-                staticPlot: !isChartVisible, // Static rendering when not visible
-                responsive: true,
-                doubleClick: 'reset+autosize',
-                showTips: true,
-                showLink: false
-              }}
-            />
-          )}
+          <EChartsWrapper
+            data={memoizedData} 
+            layout={memoizedLayout} 
+            style={{ width: '100%', height: `${plotHeight}px` }}
+            onInitialized={handleChartInit}
+            onUpdate={handleChartUpdate}
+            config={{
+              displayModeBar: false,
+              displaylogo: false,
+              staticPlot: !isChartVisible,
+              responsive: true,
+              doubleClick: 'reset+autosize',
+              showTips: true,
+              showLink: false
+            }}
+            useResizeHandler={false}
+          />
         </div>
       ) : (
         <div className="text-sm text-gray-500">Loading chart...</div>
@@ -2545,10 +2020,8 @@ function ChartActionsPanel({
   // Get chart type info
   const dims = selectedChart?.data?.dimensions?.filter(d => d !== 'count').length || 0;
   const meas = selectedChart?.data?.measures?.length || 0;
-  // When using TLDraw, we must use ECharts registry because charts render with EChartsWrapper
-  const shouldUseECharts = USE_ECHARTS || USE_TLDRAW;
   const supportedTypes = selectedChart 
-    ? (shouldUseECharts ? getEChartsSupportedTypes(dims, meas) : getSupportedChartTypes(dims, meas))
+    ? getEChartsSupportedTypes(dims, meas)
     : [];
   const currentType = selectedChart?.data?.chartType || 'bar';
   const currentAgg = selectedChart?.data?.agg || 'sum';
@@ -2868,26 +2341,8 @@ const getMinimapNodeColor = (node) => {
 };
 
 /**
- * CustomReactFlow Component
- * Wrapper component around ReactFlow that adds custom pan/zoom behaviors.
- * Enables canvas panning with two-finger scroll and pinch-to-zoom gestures.
- * 
- * @param {ReactNode} children - ReactFlow child components
- * @param {Object} props - Additional ReactFlow props (passed through)
- */
-function CustomReactFlow({ children, ...props }) {
-  return (
-    <ReactFlow
-      {...props}
-    >
-      {children}
-    </ReactFlow>
-  );
-}
-
-/**
- * ReactFlowWrapper Component
- * Main application component that manages all state and orchestrates the data flow.
+ * Main Application Component
+ * Manages all state and orchestrates the data flow.
  * Handles:
  * - Dataset upload and management
  * - Chart creation and manipulation
@@ -2899,7 +2354,7 @@ function CustomReactFlow({ children, ...props }) {
  * This is the core orchestrator that connects all UI components and manages
  * the application state. It renders the layout with sidebars, panels, canvas, and report.
  */
-function ReactFlowWrapper() {
+function AppWrapper() {
   const [datasetId, setDatasetId] = useState(null);
   const [csvFileName, setCsvFileName] = useState('');
   const [availableDimensions, setAvailableDimensions] = useState([]);
@@ -2925,6 +2380,94 @@ function ReactFlowWrapper() {
   const [selectedCharts, setSelectedCharts] = useState([]);
   const tldrawEditorRef = useRef(null); // Reference to TLDraw editor for programmatic control
   const isProgrammaticDeselect = useRef(false); // Flag to prevent listener from re-selecting during programmatic clear
+  const createdStickyNotes = useRef(new Set()); // Track which charts already have sticky notes
+  
+  // Auto-create sticky notes for charts with preloaded insights
+  useEffect(() => {
+    if (!tldrawEditorRef.current) return;
+    
+    // Find nodes with preloadedInsights that don't have sticky notes yet
+    const nodesWithInsights = nodes.filter(node => 
+      node.data?.preloadedInsights?.contextInsights && 
+      !createdStickyNotes.current.has(node.id)
+    );
+    
+    if (nodesWithInsights.length === 0) return;
+    
+    // Wait a bit longer for TLDraw to fully render all shapes
+    const timeoutId = setTimeout(async () => {
+      for (const node of nodesWithInsights) {
+        try {
+          const editor = tldrawEditorRef.current;
+          if (!editor) continue;
+          
+          // Try multiple ways to find the chart shape
+          const possibleIds = [
+            `shape:${node.id}`,
+            node.id,
+            `shape:ai-viz-${node.id.split('ai-viz-')[1]}`
+          ];
+          
+          let chartShape = null;
+          for (const possibleId of possibleIds) {
+            chartShape = editor.getShape(possibleId);
+            if (chartShape) {
+              console.log(`📊 Found chart shape with ID: ${possibleId}`);
+              break;
+            }
+          }
+          
+          // If still not found, search all shapes
+          if (!chartShape) {
+            const allShapes = editor.getCurrentPageShapes();
+            console.log(`🔍 Searching through ${allShapes.length} shapes for node ${node.id}`);
+            
+            chartShape = allShapes.find(shape => 
+              shape.type === 'chart' &&
+              (shape.id.includes(node.id) || 
+               shape.props?.title === node.data?.title)
+            );
+            
+            if (chartShape) {
+              console.log(`✅ Found chart by search: ${chartShape.id}`);
+            }
+          }
+          
+          if (chartShape) {
+            // Create sticky note to the right of chart
+            const stickyX = chartShape.x + (chartShape.props?.w || 800) + 50;
+            const stickyY = chartShape.y;
+            
+            const { createShapeId } = await import('@tldraw/tldraw');
+            const stickyId = createShapeId();
+            
+            editor.createShape({
+              id: stickyId,
+              type: 'note',
+              x: stickyX,
+              y: stickyY,
+              props: {
+                text: node.data.preloadedInsights.contextInsights,
+                color: 'yellow',
+                size: 's',
+                font: 'sans',
+                align: 'start'
+              }
+            });
+            
+            console.log(`📝 Created sticky note for chart ${node.id}`);
+            createdStickyNotes.current.add(node.id);
+          } else {
+            console.warn(`⚠️ Could not find chart shape for node ${node.id}`);
+          }
+        } catch (error) {
+          console.error(`Failed to create sticky note for ${node.id}:`, error);
+        }
+      }
+    }, 500); // 500ms delay to ensure TLDraw has rendered
+    
+    return () => clearTimeout(timeoutId);
+  }, [nodes]);
   
   // AI-assisted merge state
   const [mergePanelOpen, setMergePanelOpen] = useState(false);
@@ -3210,24 +2753,15 @@ function ReactFlowWrapper() {
     table: TableNode
   }), [handleChartResizeStart, handleChartResizeEnd]);
 
-  // Viewport transform: [translateX, translateY, zoom]
-  const transform = useStore(s => s.transform);
-  const tx = transform ? transform[0] : 0;
-  const ty = transform ? transform[1] : 0;
-  const zoom = transform ? transform[2] : 1;
-
-  // Convert a pane click event to flow-space coordinates
+  // Convert a pane click event to canvas coordinates
   const toFlowPosition = useCallback((event) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    const paneX = event.clientX - rect.left;
-    const paneY = event.clientY - rect.top;
-    return {
-      x: (paneX - tx) / zoom,
-      y: (paneY - ty) / zoom
-    };
-  }, [tx, ty, zoom]);
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    return { x, y };
+  }, []);
 
-  // Get the center of the current viewport in flow coordinates
+  // Get the center of the current viewport in canvas coordinates
   const getViewportCenter = useCallback(() => {
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
@@ -3236,39 +2770,41 @@ function ReactFlowWrapper() {
     const centerScreenX = viewportWidth / 2;
     const centerScreenY = viewportHeight / 2;
     
-    // Convert to flow coordinates using current transform
+    // Return the center coordinates
     return {
-      x: (centerScreenX - tx) / zoom,
-      y: (centerScreenY - ty) / zoom,
+      x: centerScreenX,
+      y: centerScreenY,
     };
-  }, [tx, ty, zoom]);
+  }, []);
 
   const onNodesChange = useCallback(
     (changes) => {
-      // Filter out selection changes that might interfere with interactive elements
-      const filteredChanges = changes.filter(change => {
-        // Allow all changes except selection changes that might be caused by button clicks
-        if (change.type === 'select') {
-          // Check if this selection change is legitimate (not from button clicks)
-          return true; // For now, allow all selection changes
-        }
-        return true;
-      });
+      // Handle node changes from TLDraw
+      // This is a simplified version since we're using TLDraw, not React Flow
+      if (!changes || changes.length === 0) return;
       
-      // Check for node deletions - let React handle cleanup via component unmount
+      // Check for node deletions
       const deletionChanges = changes.filter(change => change.type === 'remove');
       if (deletionChanges.length > 0) {
-        // React will handle cleanup through ChartNode's useEffect cleanup
-        // No manual DOM manipulation needed - improves performance
+        const idsToRemove = deletionChanges.map(change => change.id);
+        setNodes((nds) => nds.filter(node => !idsToRemove.includes(node.id)));
       }
-      
-      setNodes((nds) => applyNodeChanges(filteredChanges, nds));
     },
     []
   );
   
   const onEdgesChange = useCallback(
-    (changes) => setEdges((eds) => applyEdgeChanges(changes, eds)),
+    (changes) => {
+      // Handle edge changes from TLDraw
+      // This is a simplified version since we're using TLDraw, not React Flow
+      if (!changes || changes.length === 0) return;
+      
+      const deletionChanges = changes.filter(change => change.type === 'remove');
+      if (deletionChanges.length > 0) {
+        const idsToRemove = deletionChanges.map(change => change.id);
+        setEdges((eds) => eds.filter(edge => !idsToRemove.includes(edge.id)));
+      }
+    },
     []
   );
 
@@ -3455,7 +2991,7 @@ function ReactFlowWrapper() {
       alert('Please select exactly 2 charts to merge');
       return;
     }
-
+    console.log("Hi");
     const [c1Raw, c2Raw] = selectedCharts;
     
     // Normalize IDs by removing "shape:" prefix if present
@@ -3483,12 +3019,19 @@ function ReactFlowWrapper() {
       if (!res.ok) throw new Error(await res.text());
       
       const fused = await res.json();
+      console.log('🔀 Merge response from backend:', fused);
       const newId = fused.chart_id;
       
       // Position the fused node in the center of the current viewport
       const position = getViewportCenter();
       
-      const figure = figureFromPayload(fused);
+      // Pass the determined chart type to figureFromPayload for proper ECharts option generation
+      const chartTypeToUse = fused.dimensions && fused.measures 
+        ? getEChartsDefaultType(fused.dimensions.length, fused.measures.length).id
+        : null;
+      
+      const figure = figureFromPayload(fused, chartTypeToUse);
+      console.log('📊 Figure generated from merge:', figure);
       
       // Add the new merged chart
       
@@ -3496,6 +3039,15 @@ function ReactFlowWrapper() {
       let finalDimensions = fused.dimensions || [];
       let finalMeasures = fused.measures || [];
       
+      // Determine default chart type based on dimensions and measures
+      console.log('🔍 Determining chart type for merge:', {
+        dimensions: finalDimensions,
+        measures: finalMeasures,
+        dimCount: finalDimensions.length,
+        measCount: finalMeasures.length
+      });
+      const defaultChartType = getEChartsDefaultType(finalDimensions.length, finalMeasures.length);
+      console.log('🔍 Default chart type:', defaultChartType);
       setNodes(nds => nds.concat({ 
         id: newId, 
         type: 'chart', 
@@ -3516,7 +3068,8 @@ function ReactFlowWrapper() {
           measures: finalMeasures,
           agg: fused.agg || 'sum',
           datasetId: fused.dataset_id, // Store dataset ID for aggregation updates
-          table: fused.table || [] // Add table data for chart type switching
+          table: fused.table || [], // Add table data for chart type switching
+          chartType: defaultChartType.id
         } 
       }));
       
@@ -3559,14 +3112,20 @@ function ReactFlowWrapper() {
         meas, 
         currentDatasetId,
         isFused: node.data.isFused,
+        isAIMerged: node.data.isAIMerged,
+        strategy: node.data.strategy,
         chartType: node.data.chartType
       });
       
-      // Special handling for fused charts
+      // Validation for fused charts - only support simple 2D+1M or 1D+2M configurations
       if (node.data.isFused) {
-        console.warn('⚠️ Aggregation changes not supported for fused charts yet');
-        alert('Aggregation changes are not yet supported for fused charts. This feature is coming soon!');
-        return currentNodes;
+        const totalVars = dims.length + meas.length;
+        if (totalVars !== 3 || dims.length > 2 || meas.length > 2) {
+          console.warn('⚠️ Aggregation only supported for 2D+1M or 1D+2M fused charts');
+          alert('Aggregation changes are only supported for simple fused charts (2 dimensions + 1 measure OR 1 dimension + 2 measures)');
+          return currentNodes;
+        }
+        console.log('✅ Fused chart validation passed for aggregation change');
       }
       
       if (!currentDatasetId || dims.length === 0 || meas.length === 0) {
@@ -3623,71 +3182,46 @@ function ReactFlowWrapper() {
           
           const title = chart.title || `${(newAgg || 'sum').toUpperCase()} ${meas.join(', ')} by ${dims.join(', ')}`;
           
-          // When using TLDraw, we MUST use ECharts because ChartShape renders with EChartsWrapper
-          const shouldUseECharts = USE_ECHARTS || USE_TLDRAW;
-          
           console.log('🔧 Regenerating chart with new aggregation:', {
-            chartType: node.data.chartType,
-            shouldUseECharts,
-            USE_ECHARTS,
-            USE_TLDRAW
+            chartType: node.data.chartType
           });
           
-          let updatedData;
+          // Use ECharts registry to regenerate chart
+          const chartType = node.data.chartType || 'bar';
+          const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
           
-          if (shouldUseECharts) {
-            console.log('✅ Using ECharts registry for aggregation update');
-            // Use ECharts registry to regenerate chart
-            const chartType = node.data.chartType || 'bar';
-            const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
-            
-            if (chartConfig && chartConfig.isSupported(dims.length, meas.length)) {
-              console.log('📊 Chart config found and supported:', chartType.toUpperCase());
-              try {
-                const option = chartConfig.createOption(chart.table, {
-                  dimensions: chart.dimensions,
-                  measures: chart.measures
-                });
-                
-                console.log('✨ Generated ECharts option for aggregation:', {
-                  hasSeries: !!option.series,
-                  seriesLength: option.series?.length,
-                  seriesType: option.series?.[0]?.type,
-                  firstSeriesData: option.series?.[0]?.data?.slice(0, 3)
-                });
-                
-                updatedData = {
-                  chartData: option.series,
-                  chartLayout: option,
-                  agg: newAgg || 'sum',
-                  table: chart.table || [],
-                  title: title,
-                  dimensions: chart.dimensions,
-                  measures: chart.measures
-                };
-              } catch (error) {
-                console.error('❌ Error generating ECharts option:', error);
-                throw error;
-              }
-            } else {
-              console.warn('⚠️ Chart config not found or not supported, falling back');
-              // Fallback to Plotly
-              const figure = figureFromPayload(chart);
+          let updatedData;
+          if (chartConfig && chartConfig.isSupported(dims.length, meas.length)) {
+            console.log('📊 Chart config found and supported:', chartType.toUpperCase());
+            try {
+              const option = chartConfig.createOption(chart.table, {
+                dimensions: chart.dimensions,
+                measures: chart.measures
+              });
+              
+              console.log('✨ Generated ECharts option for aggregation:', {
+                hasSeries: !!option.series,
+                seriesLength: option.series?.length,
+                seriesType: option.series?.[0]?.type,
+                firstSeriesData: option.series?.[0]?.data?.slice(0, 3)
+              });
+              
               updatedData = {
-                figure,
+                chartData: option.series,
+                chartLayout: option,
                 agg: newAgg || 'sum',
                 table: chart.table || [],
                 title: title,
                 dimensions: chart.dimensions,
                 measures: chart.measures
               };
+            } catch (error) {
+              console.error('❌ Error generating ECharts option:', error);
+              throw error;
             }
           } else {
-            console.log('📊 Using Plotly for aggregation update');
-            // Use Plotly (existing logic)
-            const figure = figureFromPayload(chart);
+            console.warn('⚠️ Chart config not found or not supported');
             updatedData = {
-              figure,
               agg: newAgg || 'sum',
               table: chart.table || [],
               title: title,
@@ -3725,7 +3259,7 @@ function ReactFlowWrapper() {
 
   // Update chart type on an existing chart node
   const updateChartType = useCallback((nodeId, newChartType) => {
-    console.log('🔄 updateChartType called:', { nodeId, newChartType, USE_ECHARTS, USE_TLDRAW });
+    console.log('🔄 updateChartType called:', { nodeId, newChartType });
     
     setNodes(currentNodes => {
       console.log('📊 Current nodes:', currentNodes.length);
@@ -3748,17 +3282,15 @@ function ReactFlowWrapper() {
           // Extract data needed for regeneration
           const { dimensions, measures, table } = node.data;
           
-          // Regenerate chart with new type based on which chart library is active
+          // Regenerate chart with new type using ECharts
           let updatedData = {
             ...node.data,
             chartType: newChartType
           };
           
-          // When using TLDraw, we MUST use ECharts because ChartShape renders with EChartsWrapper
-          const shouldUseECharts = USE_ECHARTS || USE_TLDRAW;
-          console.log('🔍 Checking chart library:', { USE_ECHARTS, USE_TLDRAW, shouldUseECharts, hasTable: !!table, hasDimensions: !!dimensions, hasMeasures: !!measures });
+          console.log('🔍 Updating chart type:', { hasTable: !!table, hasDimensions: !!dimensions, hasMeasures: !!measures });
           
-          if (shouldUseECharts && table && dimensions && measures) {
+          if (table && dimensions && measures) {
             console.log('✅ Using ECharts registry');
             // Use ECharts registry to regenerate chart
             const chartConfig = ECHARTS_TYPES[newChartType.toUpperCase()];
@@ -3800,28 +3332,6 @@ function ReactFlowWrapper() {
               }
             } else {
               console.warn('⚠️ Chart config not found or not supported');
-            }
-          } else if (!shouldUseECharts && table && dimensions && measures) {
-            // Use Plotly CHART_TYPES registry (existing logic)
-            const chartTypeConfig = CHART_TYPES[newChartType.toUpperCase()];
-            
-            if (chartTypeConfig && chartTypeConfig.isSupported(dimensions.length, measures.length)) {
-              try {
-                const payload = {
-                  table: table,
-                  dimensions: dimensions,
-                  measures: measures
-                };
-                const newFigure = chartTypeConfig.createFigure(table, payload);
-                updatedData = {
-                  ...updatedData,
-                  figure: newFigure
-                };
-                console.log('✅ Chart type changed to', newChartType, 'using Plotly');
-              } catch (error) {
-                console.error('Error regenerating chart with Plotly:', error);
-                // Keep existing data on error
-              }
             }
           }
           
@@ -3871,7 +3381,7 @@ function ReactFlowWrapper() {
   }, [nodes, selectedCharts, handleChartSelect]);
 
   function figureFromPayload(payload, chartType = null) {
-    // Temporarily disable caching to avoid potential Plotly conflicts
+    // Temporarily disable caching to avoid potential conflicts
     // TODO: Re-enable after resolving hover state issues
     
     // Internal helper to ensure all figures have sanitized layouts
@@ -3885,15 +3395,42 @@ function ReactFlowWrapper() {
     const dims = payload.dimensions || [];
     const measures = payload.measures || [];
     
-    // Strategy A: same-dimension-different-measures => grouped bar or dual-axis
+    // Strategy A: same-dimension-different-measures => Use ECharts registry
     if (payload.strategy?.type === 'same-dimension-different-measures') {
-      // Check if a specific chart type is requested via the chart registry
-      if (chartType && CHART_TYPES[chartType.toUpperCase()]) {
-        const chartTypeConfig = CHART_TYPES[chartType.toUpperCase()];
-        if (chartTypeConfig.isSupported(dims, measures)) {
-          return chartTypeConfig.createFigure(rows, payload);
+      // Always use ECharts registry for consistent behavior
+      let activeChartType;
+      
+      // Check if a specific chart type is requested via ECharts registry
+      if (chartType && ECHARTS_TYPES[chartType.toUpperCase()]) {
+        const chartTypeConfig = ECHARTS_TYPES[chartType.toUpperCase()];
+        if (chartTypeConfig.isSupported(dims.length, measures.length)) {
+          activeChartType = chartTypeConfig;
         }
       }
+      
+      // If no explicit type or type not supported, use default
+      if (!activeChartType) {
+        activeChartType = getEChartsDefaultType(dims.length, measures.length);
+      }
+      
+      console.log('📊 Creating chart for same-dimension-different-measures:', {
+        chartType: activeChartType.id,
+        dims: dims.length,
+        measures: measures.length
+      });
+      
+      const option = activeChartType.createOption(rows, payload);
+      
+      if (option && option.series) {
+        return {
+          data: [],
+          layout: option
+        };
+      } else {
+        console.error('❌ Failed to create ECharts option for strategy A');
+      }
+      
+      // Fallback to old logic if ECharts fails (shouldn't happen)
       const xKey = dims[0];
       const measureKeys = payload.measures.filter(m => m !== xKey);
       const xValues = [...new Set(rows.map(r => r[xKey]))];
@@ -4052,16 +3589,32 @@ function ReactFlowWrapper() {
 
     // Strategy B: same-measure-different-dimensions => STACKED BAR
     if (payload.strategy?.type === 'same-measure-different-dimensions-stacked') {
-      // Check if a specific chart type is requested via the chart registry
-      if (chartType && CHART_TYPES[chartType.toUpperCase()]) {
-        const chartTypeConfig = CHART_TYPES[chartType.toUpperCase()];
+      // Use ECharts registry (with fixed tooltip)
+      let echartsOption;
+      if (chartType && ECHARTS_TYPES[chartType.toUpperCase()]) {
+        const chartTypeConfig = ECHARTS_TYPES[chartType.toUpperCase()];
         if (chartTypeConfig.isSupported(dims, measures)) {
-          return chartTypeConfig.createFigure(rows, payload);
+          echartsOption = chartTypeConfig.createOption(rows, payload);
         }
       }
+      if (!echartsOption) {
+        // Default to ECharts stacked bar
+        echartsOption = ECHARTS_TYPES.STACKED_BAR.createOption(rows, payload);
+      }
       
-      // Default to stacked bar for 2D+1M
-      return CHART_TYPES.STACKED_BAR.createFigure(rows, payload);
+      console.log('📊 Stacked bar option created:', {
+        hasSeries: !!echartsOption?.series,
+        seriesCount: echartsOption?.series?.length,
+        dims,
+        measures
+      });
+      
+      // Wrap ECharts option in the format EChartsWrapper expects
+      // EChartsWrapper checks for layout.series to detect native ECharts format
+      return {
+        data: [],
+        layout: echartsOption
+      };
     }
     
     // Strategy B: same-measure-different-dimensions => multi-series line (fallback)
@@ -4146,15 +3699,15 @@ function ReactFlowWrapper() {
     // Determine chart type: explicit override > strategy > default
     let activeChartType;
     
-    if (chartType && CHART_TYPES[chartType.toUpperCase()]) {
+    if (chartType && ECHARTS_TYPES[chartType.toUpperCase()]) {
       // Explicit chart type requested
-      activeChartType = CHART_TYPES[chartType.toUpperCase()];
+      activeChartType = ECHARTS_TYPES[chartType.toUpperCase()];
     } else {
       // Get default chart type for this dimension/measure combination
       // Pass counts, not arrays, and normalize 'count' handling
       const normalizedDims = (payload.dimensions || []).filter(d => d !== 'count');
       const normalizedMeas = payload.measures || [];
-      activeChartType = getDefaultChartType(normalizedDims.length, normalizedMeas.length);
+      activeChartType = getEChartsDefaultType(normalizedDims.length, normalizedMeas.length);
     }
     
     // Create standardized payload for chart type functions
@@ -4164,8 +3717,40 @@ function ReactFlowWrapper() {
       measures: payload.measures || [numKey].filter(Boolean)
     };
     
-    // Use chart registry to create figure
-    return activeChartType.createFigure(rows, standardPayload);
+    // Use ECharts registry to create option
+    const option = activeChartType.createOption(rows, standardPayload);
+    
+    // Validate that the option has required properties
+    if (!option || !option.series || !Array.isArray(option.series)) {
+      console.error('❌ Invalid ECharts option generated:', {
+        option,
+        activeChartType: activeChartType.name,
+        rows: rows.length,
+        payload: standardPayload
+      });
+      // Return a minimal valid option to prevent crashes
+      return {
+        data: [],
+        layout: {
+          series: [{
+            type: 'bar',
+            data: []
+          }],
+          title: { text: 'Error: Invalid chart data' }
+        }
+      };
+    }
+    
+    console.log('✅ Valid ECharts option created:', {
+      chartType: activeChartType.name,
+      seriesCount: option.series.length,
+      rowsCount: rows.length
+    });
+    
+    return {
+      data: [],
+      layout: option
+    };
   }
 
   // AI Exploration handler - defined after all dependencies (handleShowTable, updateChartAgg, figureFromPayload)
@@ -4239,6 +3824,12 @@ function ReactFlowWrapper() {
       const position = getViewportCenter();
       const figure = figureFromPayload(chart);
       
+      // Determine default chart type for AI-merged chart
+      const aiChartType = getEChartsDefaultType(
+        (aiResult.dimensions || []).length, 
+        (aiResult.measures || []).length
+      );
+      
       // Add the AI-merged chart to canvas
       setNodes(nds => nds.concat({
         id: newId,
@@ -4255,6 +3846,7 @@ function ReactFlowWrapper() {
           onAIExplore: handleAIExplore,
           isFused: true,
           isAIMerged: true,
+          chartType: aiChartType.id,
           ai_reasoning: aiResult.reasoning,
           dimensions: aiResult.dimensions || [],
           measures: aiResult.measures || [],
@@ -4505,7 +4097,8 @@ function ReactFlowWrapper() {
     
     // Reset AI-generated chart counter for new Smart Visualise session
     setAiGeneratedChartCount(0);
-    console.log('🔄 Reset AI chart counter for new Smart Visualise session');
+    createdStickyNotes.current.clear(); // Reset sticky notes tracker
+    console.log('🔄 Reset AI chart counter and sticky notes tracker for new Smart Visualise session');
 
     setSuggestionsLoading(true);
     setSuggestionsError(null);
@@ -5120,8 +4713,9 @@ function ReactFlowWrapper() {
         getEdges: () => edges,
         getSelectedCharts: () => nodes.filter(n => n.data?.selected),
         getConfig: () => ({
-          useTLDraw: USE_TLDRAW,
-          useECharts: USE_ECHARTS,
+          canvas: 'TLDraw',
+          charts: 'ECharts',
+          version: '3.0',
           nodeCount: nodes.length,
           edgeCount: edges.length
         }),
@@ -5130,7 +4724,7 @@ function ReactFlowWrapper() {
           console.log('Nodes:', nodes.length);
           console.log('Edges:', edges.length);
           console.log('Selected:', nodes.filter(n => n.data?.selected).length);
-          console.log('Config:', { USE_TLDRAW, USE_ECHARTS });
+          console.log('Config:', { canvas: 'TLDraw', charts: 'ECharts', version: '3.0' });
           console.groupEnd();
         }
       };
@@ -5141,122 +4735,39 @@ function ReactFlowWrapper() {
   // Render main canvas (TLDraw or React Flow)
   const renderMainCanvas = () => {
     return (
-      <>
-        {USE_TLDRAW ? (
-          /* TLDraw Canvas Implementation */
-          <CanvasAdapter
-            useTLDraw={true}
-            editorRef={tldrawEditorRef}
-            nodes={nodesWithSelection}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onChartSelect={handleChartSelect}
-            onNodeClick={(event) => {
-              // TLDraw passes { node } object
-              const node = event.node || event;
-              
-              // For other node types, prevent clicks on interactive elements
-              if (event.target) {
-                const target = event.target;
-                const isInteractiveElement = target.closest('button') || 
-                                           target.closest('[role="button"]') || 
-                                           target.closest('[role="menu"]') || 
-                                           target.closest('[role="menuitem"]') ||
-                                           target.closest('input') ||
-                                           target.closest('select') ||
-                                           target.closest('textarea') ||
-                                           target.closest('.tiptap') ||
-                                           target.closest('[data-radix-collection-item]');
-                
-                if (isInteractiveElement) {
-                  return;
-                }
-              }
-            }}
-            onPaneClick={onPaneClick}
-            fitView
-            style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
-          />
-        ) : (
-          /* React Flow Canvas Implementation (Original) */
-          <CustomReactFlow
-            nodes={nodesWithSelection}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onNodesDelete={onNodesDelete}
-            onEdgesDelete={onEdgesDelete}
-            onPaneClick={onPaneClick}
-            onNodeClick={(event, node) => {
-              // Disable React Flow's built-in node selection for chart nodes
-              // Selection is now handled exclusively through checkboxes
-              if (node.type === 'chart') {
-                event.stopPropagation();
-                return;
-              }
-              
-              // For other node types (textbox, expression, etc.), allow normal interaction
-              // but prevent clicks on interactive elements
-              const target = event.target;
-              const isInteractiveElement = target.closest('button') || 
-                                         target.closest('[role="button"]') || 
-                                         target.closest('[role="menu"]') || 
-                                         target.closest('[role="menuitem"]') ||
-                                         target.closest('input') ||
-                                         target.closest('select') ||
-                                         target.closest('textarea') ||
-                                         target.closest('.tiptap') ||
-                                         target.closest('[data-radix-collection-item]');
-              
-              if (isInteractiveElement) {
-                event.stopPropagation();
-        return;
-      }
-            }}
-            fitView
-            style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
-            zoomOnScroll={false}
-            zoomOnPinch={true}
-            panOnScroll={true}
-            panOnScrollMode="free"
-            preventScrolling={false}
-            // Enable viewport culling for better performance with many charts
-            onlyRenderVisibleElements={true}
-            defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-            maxZoom={3}
-            minZoom={0.1}
-            snapToGrid={false}
-            // snapGrid={[16, 16]}  // Disable snapping for now
-            deleteKeyCode="Delete"
-            multiSelectionKeyCode="Meta"
-            selectionKeyCode="Shift"
-          >
-            <MiniMap 
-              nodeColor={getMinimapNodeColor}
-              nodeStrokeWidth={3}
-              style={{ 
-                backgroundColor: '#f8fafc',
-                width: 200,
-                height: 150,
-              }}
-              position="bottom-right"
-            />
-            <Controls 
-                style={{ 
-                position: 'absolute', 
-                bottom: '10px', 
-                right: '230px',
-                left: 'auto',
-                transition: 'right 300ms ease'
-              }} 
-              className="modern-controls"
-            />
-            <Background gap={16} />
-          </CustomReactFlow>
-        )}
-      </>
+      <TLDrawCanvas
+        editorRef={tldrawEditorRef}
+        nodes={nodesWithSelection}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onChartSelect={handleChartSelect}
+        onNodeClick={(event) => {
+          // TLDraw passes { node } object
+          const node = event.node || event;
+          
+          // For other node types, prevent clicks on interactive elements
+          if (event.target) {
+            const target = event.target;
+            const isInteractiveElement = target.closest('button') || 
+                                       target.closest('[role="button"]') || 
+                                       target.closest('[role="menu"]') || 
+                                       target.closest('[role="menuitem"]') ||
+                                       target.closest('input') ||
+                                       target.closest('select') ||
+                                       target.closest('textarea') ||
+                                       target.closest('.tiptap') ||
+                                       target.closest('[data-radix-collection-item]');
+            
+            if (isInteractiveElement) {
+              return;
+            }
+          }
+        }}
+        onPaneClick={onPaneClick}
+        fitView
+        style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
+      />
     );
   };
 
@@ -6357,15 +5868,10 @@ function ReactFlowWrapper() {
 
 /**
  * App Component (Main Entry Point)
- * Root component that wraps ReactFlowWrapper with ReactFlowProvider context.
- * Provides React Flow context to all child components for canvas interactions.
+ * Root component for the D.Fuse application.
  * 
  * @returns {JSX.Element} The complete D.Fuse application
  */
 export default function App() {
-  return (
-    <ReactFlowProvider>
-      <ReactFlowWrapper />
-    </ReactFlowProvider>
-  );
+  return <AppWrapper />;
 }

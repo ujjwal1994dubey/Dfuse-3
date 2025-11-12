@@ -36,15 +36,12 @@ export function getStackedBarChartOption(data, payload) {
   
   return {
     tooltip: {
-      trigger: 'axis',
+      trigger: 'item',
       axisPointer: { type: 'shadow' },
       formatter: (params) => {
-        const dim1Index = params[0].dataIndex;
-        let tooltip = `${uniqueDim1Values[dim1Index]}<br/>`;
-        params.forEach(param => {
-          tooltip += `${dim2}: ${uniqueDim2Values[param.seriesIndex]}<br/>${measure}: ${param.value}<br/>`;
-        });
-        return tooltip;
+        const dim1Value = uniqueDim1Values[params.dataIndex];
+        const dim2Value = uniqueDim2Values[params.seriesIndex];
+        return `${dim1Value}<br/>${dim2}: ${dim2Value}<br/>${measure}: ${params.value}`;
       }
     },
     legend: {

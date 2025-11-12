@@ -58,19 +58,9 @@ function convertSingleNodeToShape(node) {
  * Convert chart node to shape
  */
 function convertChartNodeToShape(node, baseShape) {
-  // Handle both Plotly (figure) and ECharts (chartData/chartLayout) data structures
-  let chartData = null;
-  let chartLayout = null;
-  
-  if (node.data?.chartData && node.data?.chartLayout) {
-    // ECharts structure (already separated)
-    chartData = node.data.chartData;
-    chartLayout = node.data.chartLayout;
-  } else if (node.data?.figure) {
-    // Plotly structure (needs extraction)
-    chartData = node.data.figure.data;
-    chartLayout = node.data.figure.layout;
-  }
+  // Handle ECharts data structure
+  const chartData = node.data?.chartData || null;
+  const chartLayout = node.data?.chartLayout || null;
   
   return {
     ...baseShape,
