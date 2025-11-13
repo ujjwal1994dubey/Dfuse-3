@@ -1,12 +1,8 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import EChartsWrapper from './charts/EChartsWrapper';
 import TLDrawCanvas from './components/canvas/TLDrawCanvas';
-import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Underline from '@tiptap/extension-underline';
 import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui';
 import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, CirclePlus } from 'lucide-react';
-import { marked } from 'marked';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
 
@@ -17,50 +13,6 @@ const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 // Log configuration on app start
 console.log('🎨 Canvas: TLDraw + ECharts (v3.0)');
-
-/**
- * Chart Figure Cache - Performance Optimization
- * Cache computed chart figures to prevent unnecessary re-computation
- */
-const chartFigureCache = new Map();
-const CACHE_MAX_SIZE = 100; // Prevent memory leaks
-
-function getCachedFigure(cacheKey, computeFn) {
-  if (chartFigureCache.has(cacheKey)) {
-    return chartFigureCache.get(cacheKey);
-  }
-  
-  const figure = computeFn();
-  
-  // Simple LRU eviction if cache gets too large
-  if (chartFigureCache.size >= CACHE_MAX_SIZE) {
-    const firstKey = chartFigureCache.keys().next().value;
-    chartFigureCache.delete(firstKey);
-  }
-  
-  chartFigureCache.set(cacheKey, figure);
-  return figure;
-}
-
-function clearChartCache() {
-  chartFigureCache.clear();
-}
-
-/**
- * Debounce utility for performance optimization
- * Prevents excessive function calls during rapid user interactions
- */
-function debounce(func, wait) {
-  let timeout;
-  return function executedFunction(...args) {
-    const later = () => {
-      clearTimeout(timeout);
-      func(...args);
-    };
-    clearTimeout(timeout);
-    timeout = setTimeout(later, wait);
-  };
-}
 
 /**
  * Throttle utility for performance optimization
@@ -210,6 +162,7 @@ function isNodeVisible(node, viewport, buffer = 200) {
 /**
  * Default Chart Colors
  * Simple, clean color scheme for consistent chart styling
+ * NOTE: Currently only used once - consider inlining or removing if not needed for future features
  */
 const DEFAULT_COLORS = {
   categorical: ['#2563EB', '#3B82F6', '#60A5FA', '#93C5FD', '#DBEAFE', '#EFF6FF'],

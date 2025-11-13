@@ -58,6 +58,17 @@ export const ECHARTS_TYPES = {
             return `${fullLabels[dataIndex]}<br/>${yKey}: ${params[0].value}`;
           }
         },
+        dataZoom: [
+          {
+            type: 'inside',
+            xAxisIndex: 0,
+            start: 0,
+            end: 100,
+            zoomOnMouseWheel: true,
+            moveOnMouseMove: true,
+            moveOnMouseWheel: false
+          }
+        ],
         grid: {
           left: '80px',
           right: '30px',
@@ -124,6 +135,7 @@ export const ECHARTS_TYPES = {
           }
         },
         legend: {
+          type: pieData.length > 10 ? 'scroll' : 'plain',
           orient: 'vertical',
           right: 10,
           top: 'center',
@@ -175,6 +187,17 @@ export const ECHARTS_TYPES = {
             return `${fullLabels[dataIndex]}<br/>${yKey}: ${params[0].value}`;
           }
         },
+        dataZoom: [
+          {
+            type: 'inside',
+            xAxisIndex: 0,
+            start: 0,
+            end: 100,
+            zoomOnMouseWheel: true,
+            moveOnMouseMove: true,
+            moveOnMouseWheel: false
+          }
+        ],
         grid: {
           left: '80px',
           right: '30px',
@@ -241,6 +264,20 @@ export const ECHARTS_TYPES = {
             return `<b>${params.data.name}</b><br/>${xKey}: ${params.value[0]}<br/>${yKey}: ${params.value[1]}`;
           }
         },
+        dataZoom: [
+          {
+            type: 'inside',
+            xAxisIndex: 0,
+            zoomOnMouseWheel: true,
+            moveOnMouseMove: true
+          },
+          {
+            type: 'inside',
+            yAxisIndex: 0,
+            zoomOnMouseWheel: true,
+            moveOnMouseMove: true
+          }
+        ],
         grid: {
           left: '80px',
           right: '30px',
@@ -321,10 +358,22 @@ export const ECHARTS_TYPES = {
           }
         },
         legend: {
+          type: measureKeys.length > 10 ? 'scroll' : 'plain',
           data: measureKeys.map(m => truncateText(m)),
           bottom: 10,
           textStyle: { fontSize: 11, color: '#6B7280' }
         },
+        dataZoom: [
+          {
+            type: 'inside',
+            xAxisIndex: 0,
+            start: 0,
+            end: 100,
+            zoomOnMouseWheel: true,
+            moveOnMouseMove: true,
+            moveOnMouseWheel: false
+          }
+        ],
         grid: {
           left: '80px',
           right: '30px',
@@ -392,10 +441,22 @@ export const ECHARTS_TYPES = {
           }
         },
         legend: {
+          type: 'plain',
           data: [m1, m2],
           bottom: 10,
           textStyle: { fontSize: 11, color: '#6B7280' }
         },
+        dataZoom: [
+          {
+            type: 'inside',
+            xAxisIndex: 0,
+            start: 0,
+            end: 100,
+            zoomOnMouseWheel: true,
+            moveOnMouseMove: true,
+            moveOnMouseWheel: false
+          }
+        ],
         grid: {
           left: '80px',
           right: '80px',

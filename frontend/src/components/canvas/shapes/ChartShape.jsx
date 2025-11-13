@@ -89,7 +89,7 @@ export class ChartShape extends BaseBoxShapeUtil {
             overflow: 'hidden'
           }}
         >
-          {/* Chart Header */}
+          {/* Chart Header - Allows TLDraw selection and dragging */}
           <div style={{
             padding: '12px 16px',
             borderBottom: '1px solid #e5e7eb',
@@ -97,7 +97,8 @@ export class ChartShape extends BaseBoxShapeUtil {
             justifyContent: 'space-between',
             alignItems: 'center',
             backgroundColor: '#fafafa',
-            flexShrink: 0
+            flexShrink: 0,
+            cursor: 'move'
           }}>
             <h3 style={{
               fontSize: '14px',
@@ -113,13 +114,21 @@ export class ChartShape extends BaseBoxShapeUtil {
             </h3>
           </div>
 
-          {/* Chart Content */}
-          <div style={{
-            flex: 1,
-            padding: '16px',
-            overflow: 'hidden',
-            minHeight: 0
-          }}>
+          {/* Chart Content - Stops propagation for ECharts interactions */}
+          <div 
+            onPointerDown={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onMouseMove={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            style={{
+              flex: 1,
+              padding: '16px',
+              overflow: 'hidden',
+              minHeight: 0
+            }}
+          >
             {chartData && chartLayout ? (
               <EChartsWrapper
                 data={chartData}

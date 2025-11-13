@@ -54,6 +54,7 @@ const EChartsWrapper = React.memo(({
 }) => {
   const chartRef = useRef(null);
   const initCallbackFired = useRef(false);
+  const zrenderListenersAttached = useRef(false);
   
   // Use ECharts option directly
   const echartsOption = useMemo(() => {
@@ -72,6 +73,42 @@ const EChartsWrapper = React.memo(({
     // Apply data sampling for performance (only if many data points)
     return sampleEChartsData(layout, 1000);
   }, [layout]);
+  
+  // Handle ZRender event isolation to prevent canvas interference
+  useEffect(() => {
+    if (chartRef.current && echartsOption && !zrenderListenersAttached.current) {
+      try {
+        const echartInstance = chartRef.current.getEchartsInstance();
+        const zr = echartInstance.getZr();
+        
+        // Stop mousewheel events from bubbling to TLDraw canvas
+        zr.on('mousewheel', (e) => {
+          if (e.event) {
+            e.event.stopPropagation();
+          }
+        });
+        
+        // Stop click events from bubbling to TLDraw canvas
+        zr.on('click', (e) => {
+          if (e.event) {
+            e.event.stopPropagation();
+          }
+        });
+        
+        // Stop mousemove events from bubbling to TLDraw canvas
+        zr.on('mousemove', (e) => {
+          if (e.event) {
+            e.event.stopPropagation();
+          }
+        });
+        
+        zrenderListenersAttached.current = true;
+        console.log('📊 EChartsWrapper: ZRender event isolation attached');
+      } catch (error) {
+        console.error('EChartsWrapper: Error attaching ZRender listeners:', error);
+      }
+    }
+  }, [echartsOption]);
   
   // Handle initialization callback
   useEffect(() => {
