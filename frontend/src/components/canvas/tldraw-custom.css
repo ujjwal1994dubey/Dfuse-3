@@ -66,3 +66,12 @@
   }
 }
 
+/* Custom font size for sticky notes (Chart AI Insights) */
+.tl-note__body {
+  font-size: 12px !important;
+}
+
+.tl-note__body textarea {
+  font-size: 12px !important;
+}
+

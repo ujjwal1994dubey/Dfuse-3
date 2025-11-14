@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react'
 import EChartsWrapper from './charts/EChartsWrapper';
 import TLDrawCanvas from './components/canvas/TLDrawCanvas';
 import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui';
-import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, CirclePlus } from 'lucide-react';
+import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus } from 'lucide-react';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
 
@@ -1048,7 +1048,11 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
     }
   }, []);
   
-  const canChangeAgg = Array.isArray(dimensions) && dimensions.length >= 1 && Array.isArray(measures) && measures.length >= 1 && (agg || 'sum') !== 'count' && !isFused;
+  // Allow aggregation changes for non-fused charts and simple fused charts (1D+1M, 2D+1M, 1D+2M)
+  const canChangeAgg = Array.isArray(dimensions) && dimensions.length >= 1 && Array.isArray(measures) && measures.length >= 1 && (agg || 'sum') !== 'count' && (
+    !isFused || // Allow all non-fused charts
+    (isFused && dimensions.length <= 2 && measures.length <= 2 && (dimensions.length + measures.length >= 2) && (dimensions.length + measures.length <= 3)) // Allow 1D+1M, 2D+1M, 1D+2M fused charts
+  );
   
   return (
     <div 
@@ -1867,6 +1871,67 @@ function ChartActionsPanel({
     }
   };
   
+  const handleAddToCanvas = async () => {
+    if (!tldrawEditorRef?.current || !aiResult || !aiQuery.trim()) return;
+    
+    try {
+      // Get the selected chart shape to position textbox relative to it
+      let chartShape = null;
+      if (selectedChart?.id) {
+        chartShape = tldrawEditorRef.current.getShape(selectedChart.id);
+        
+        if (!chartShape) {
+          const allShapes = tldrawEditorRef.current.getCurrentPageShapes();
+          chartShape = allShapes.find(shape => 
+            shape.id === selectedChart.id || 
+            shape.id.includes(selectedChart.id) ||
+            (shape.type === 'chart' && shape.props?.title === selectedChart.data?.title)
+          );
+        }
+      }
+      
+      // Calculate position (below the chart if found, otherwise center of viewport)
+      let textboxX, textboxY;
+      if (chartShape) {
+        textboxX = chartShape.x;
+        textboxY = chartShape.y + (chartShape.props?.h || 400) + 50;
+      } else {
+        const viewport = tldrawEditorRef.current.getViewportPageBounds();
+        textboxX = viewport.x + viewport.w / 2 - 200;
+        textboxY = viewport.y + viewport.h / 2 - 100;
+      }
+      
+      // Create textbox content
+      const textContent = `Query: ${aiQuery}\n\nAnswer:\n${aiResult.answer}`;
+      
+      // Define textbox dimensions
+      const textboxWidth = 400;
+      const textboxHeight = 250;
+      
+      // Create textbox
+      const { createShapeId } = await import('@tldraw/tldraw');
+      const textboxId = createShapeId();
+      
+      tldrawEditorRef.current.createShape({
+        id: textboxId,
+        type: 'textbox',
+        x: textboxX,
+        y: textboxY,
+        props: {
+          w: textboxWidth,
+          h: textboxHeight,
+          text: textContent,
+          fontSize: 12
+        }
+      });
+      
+      console.log('✅ AI result added to canvas as textbox');
+    } catch (error) {
+      console.error('Failed to add to canvas:', error);
+      alert(`Failed to add to canvas: ${error.message}`);
+    }
+  };
+  
   const handleGenerateInsights = async () => {
     if (insightsLoading || !selectedChart) return;
     
@@ -1940,27 +2005,31 @@ function ChartActionsPanel({
       const stickyY = chartShape.y;
       
       // Prepare insights text (prefer generic_insights, fallback to insight)
-      const insightsText = result.generic_insights || result.insight || 'No insights generated';
+      const insightsContent = result.generic_insights || result.insight || 'No insights generated';
+      const insightsText = `AI Generated\n\n${insightsContent}`;
       
-      // Create native TLDraw sticky note
+      // Create TLDraw textbox for insights
       const { createShapeId } = await import('@tldraw/tldraw');
-      const stickyNoteId = createShapeId();
+      const textboxId = createShapeId();
+      
+      // Define textbox dimensions
+      const textboxWidth = 300;
+      const textboxHeight = 200;
       
       tldrawEditorRef.current.createShape({
-        id: stickyNoteId,
-        type: 'note',
+        id: textboxId,
+        type: 'textbox',
         x: stickyX,
         y: stickyY,
         props: {
+          w: textboxWidth,
+          h: textboxHeight,
           text: insightsText,
-          color: 'yellow',
-          size: 's',
-          font: 'sans',
-          align: 'start'
+          fontSize: 12
         }
       });
       
-      console.log('✅ Chart insights generated and displayed on canvas');
+      console.log('✅ Chart insights generated and displayed in textbox');
       
     } catch (error) {
       console.error('Generate insights failed:', error);
@@ -2217,6 +2286,18 @@ function ChartActionsPanel({
                     </p>
                   </div>
                   
+                  {/* Add to Canvas Button */}
+                  {aiResult.success && (
+                    <Button
+                      onClick={handleAddToCanvas}
+                      variant="ghost"
+                      className="w-full text-teal-700 hover:text-teal-800 hover:bg-teal-50 border border-teal-200"
+                    >
+                      <ArrowRight size={16} className="mr-2" />
+                      Add to Canvas
+                    </Button>
+                  )}
+                  
                   {/* View Python Code Toggle Button */}
                   {aiResult.success && aiResult.code_steps && aiResult.code_steps.length > 0 && (
                     <details className="mt-3">
@@ -2322,6 +2403,7 @@ function AppWrapper() {
   
   // Chart suggestion state
   const [goalText, setGoalText] = useState('');
+  const [numCharts, setNumCharts] = useState(2);  // Number of charts to generate (default: 2, min: 1, max: 5)
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [suggestionsError, setSuggestionsError] = useState(null);
@@ -2387,28 +2469,34 @@ function AppWrapper() {
           }
           
           if (chartShape) {
-            // Create sticky note to the right of chart
+            // Create textbox to the right of chart
             const stickyX = chartShape.x + (chartShape.props?.w || 800) + 50;
             const stickyY = chartShape.y;
             
             const { createShapeId } = await import('@tldraw/tldraw');
-            const stickyId = createShapeId();
+            const textboxId = createShapeId();
+            
+            // Define textbox dimensions
+            const textboxWidth = 300;
+            const textboxHeight = 200;
+            
+            // Add "AI Generated" header to insights
+            const insightsText = `AI Generated\n\n${node.data.preloadedInsights.contextInsights}`;
             
             editor.createShape({
-              id: stickyId,
-              type: 'note',
+              id: textboxId,
+              type: 'textbox',
               x: stickyX,
               y: stickyY,
               props: {
-                text: node.data.preloadedInsights.contextInsights,
-                color: 'yellow',
-                size: 's',
-                font: 'sans',
-                align: 'start'
+                w: textboxWidth,
+                h: textboxHeight,
+                text: insightsText,
+                fontSize: 12
               }
             });
             
-            console.log(`📝 Created sticky note for chart ${node.id}`);
+            console.log(`📝 Created textbox for chart ${node.id}`);
             createdStickyNotes.current.add(node.id);
           } else {
             console.warn(`⚠️ Could not find chart shape for node ${node.id}`);
@@ -3070,15 +3158,32 @@ function AppWrapper() {
         chartType: node.data.chartType
       });
       
-      // Validation for fused charts - only support simple 2D+1M or 1D+2M configurations
+      // Validation for fused charts - support 1D+1M, 2D+1M, or 1D+2M configurations
       if (node.data.isFused) {
         const totalVars = dims.length + meas.length;
-        if (totalVars !== 3 || dims.length > 2 || meas.length > 2) {
-          console.warn('⚠️ Aggregation only supported for 2D+1M or 1D+2M fused charts');
-          alert('Aggregation changes are only supported for simple fused charts (2 dimensions + 1 measure OR 1 dimension + 2 measures)');
+        // Allow 2 variables (1D+1M) or 3 variables (2D+1M or 1D+2M)
+        if ((totalVars !== 2 && totalVars !== 3) || dims.length > 2 || meas.length > 2) {
+          console.warn('⚠️ Aggregation only supported for 1D+1M, 2D+1M, or 1D+2M fused charts');
+          alert('Aggregation changes are only supported for simple fused charts (1D+1M, 2D+1M, or 1D+2M)');
           return currentNodes;
         }
-        console.log('✅ Fused chart validation passed for aggregation change');
+        console.log('✅ Fused chart validation passed for aggregation change (1D+1M, 2D+1M, or 1D+2M)');
+      }
+      
+      // Block aggregation changes for count charts and histograms
+      const isCountChart = meas.length === 1 && meas[0] === 'count';
+      const isHistogram = node.data.isHistogram || (dims.length === 1 && dims[0] === 'bin');
+      
+      if (isCountChart && !isHistogram) {
+        console.warn('⚠️ Cannot change aggregation for count charts');
+        alert('Aggregation changes are not supported for count charts. Counts cannot be meaningfully averaged or summed.');
+        return currentNodes;
+      }
+      
+      if (isHistogram) {
+        console.warn('⚠️ Cannot change aggregation for histogram charts');
+        alert('Aggregation changes are not supported for histograms. Bins are fixed and aggregation does not apply.');
+        return currentNodes;
       }
       
       if (!currentDatasetId || dims.length === 0 || meas.length === 0) {
@@ -4067,7 +4172,8 @@ function AppWrapper() {
           dataset_id: datasetId,
           goal: goalText.trim(),
           api_key: apiKey,
-          model: selectedModel
+          model: selectedModel,
+          num_charts: numCharts
         }),
       });
 
@@ -4165,7 +4271,16 @@ function AppWrapper() {
         
         const chart = await res.json();
         id = chart.chart_id;
-        const figure = figureFromPayload(chart);
+        
+        // Determine default chart type for this combination
+        const defaultChartType = getEChartsDefaultType(
+          (dimensions || []).length, 
+          (measures || []).length
+        );
+        const chartTypeId = defaultChartType.id;
+        
+        // Pass chartType to figureFromPayload for consistent rendering
+        const figure = figureFromPayload(chart, chartTypeId);
         
         setNodes(nds => nds.concat({ 
           id, 
@@ -4176,6 +4291,7 @@ function AppWrapper() {
           data: { 
             title: chart.title, 
             figure,
+            chartType: chartTypeId,  // Add chartType for Chart Actions panel
             selected: false,
             onSelect: handleChartSelect,
             onShowTable: handleShowTable,
@@ -4195,8 +4311,10 @@ function AppWrapper() {
       }
       
       else if (method === 'single_measure') {
-        // Single measure: Use histogram logic (same as Case 2 in createVisualization)
+        // Single measure: Use histogram with frontend binning
         const measure = measures[0];
+        
+        // Fetch raw histogram values
         const res = await fetch(`${API}/histogram`, {
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' },
@@ -4210,37 +4328,66 @@ function AppWrapper() {
         
         const { values, stats } = await res.json();
         
-        // Register server-side chart for fusion compatibility
-        try {
-          const body = { 
-            dataset_id: datasetId, 
-            dimensions: [], 
-            measures: [measure], 
-            agg: 'sum', 
-            title: title || `Histogram: ${measure}` 
-          };
-          const reg = await fetch(`${API}/charts`, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify(body) 
-          });
-          if (reg.ok) {
-            const chart = await reg.json();
-            id = chart.chart_id;
+        // Helper function to format bin labels nicely
+        const formatBinValue = (value) => {
+          // For large numbers (>1000), round to nearest integer
+          if (Math.abs(value) >= 1000) {
+            return Math.round(value).toString();
           }
-        } catch {}
-        
-        const figure = {
-          data: [{ type: 'histogram', x: values, marker: { color: '#7c3aed' }, opacity: 0.85 }],
-          layout: { 
-            xaxis: { title: { text: measure } }, 
-            yaxis: { title: { text: 'Count' } }, 
-            margin: { t: 20, b: 60, l: 60, r: 30 }, 
-            plot_bgcolor: 'white', 
-            paper_bgcolor: 'white',
-            showlegend: false
+          // For medium numbers (>10), round to 1 decimal if needed
+          if (Math.abs(value) >= 10) {
+            return Number.isInteger(value) ? value.toString() : value.toFixed(1);
           }
+          // For small numbers, use at most 2 decimals
+          return Number.isInteger(value) ? value.toString() : value.toFixed(2);
         };
+        
+        // Create bins in frontend using Sturges' rule
+        const numBins = Math.min(50, Math.max(10, Math.ceil(Math.log2(values.length) + 1)));
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const rawBinWidth = (max - min) / numBins;
+        
+        // Create bin labels and counts with cleaner boundaries
+        const tableData = [];
+        for (let i = 0; i < numBins; i++) {
+          const binStart = min + i * rawBinWidth;
+          const binEnd = min + (i + 1) * rawBinWidth;
+          const binLabel = `${formatBinValue(binStart)}-${formatBinValue(binEnd)}`;
+          const count = values.filter(v => v >= binStart && (i === numBins - 1 ? v <= binEnd : v < binEnd)).length;
+          tableData.push({ bin: binLabel, count });
+        }
+        
+        // Register as 1D+1M chart with synthetic bin dimension
+        const body = { 
+          dataset_id: datasetId, 
+          dimensions: ['bin'], 
+          measures: ['count'], 
+          agg: 'sum',
+          title: title || `Distribution of ${measure}`,
+          table: tableData,  // Pass the binned table data
+          originalMeasure: measure  // Store the real measure for semantic merging
+        };
+        const reg = await fetch(`${API}/charts`, { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify(body) 
+        });
+        
+        if (!reg.ok) {
+          console.error('Failed to register AI histogram:', reg.statusText);
+          return;
+        }
+        
+        const chart = await reg.json();
+        id = chart.chart_id;
+        
+        // Determine default chart type for 1D+1M
+        const defaultChartType = getEChartsDefaultType(1, 1);
+        const chartTypeId = defaultChartType.id;
+        
+        // Convert to ECharts format using figureFromPayload
+        const figure = figureFromPayload(chart, chartTypeId);
         
         setNodes(nds => nds.concat({ 
           id, 
@@ -4249,18 +4396,22 @@ function AppWrapper() {
           draggable: true,
           selectable: false, // Disable React Flow selection - use checkbox instead
           data: { 
-            title: title || `Histogram: ${measure}`, 
+            title: chart.title, 
             figure, 
+            chartType: chartTypeId,  // Add chartType for Chart Actions panel
             selected: false, 
             onSelect: handleChartSelect, 
             onShowTable: handleShowTable, 
             onAIExplore: handleAIExplore,
-            stats, 
+            stats,  // Keep stats for reference
             agg: 'sum', 
-            dimensions: [], 
-            measures: [measure], 
+            dimensions: ['bin'],  // Synthetic dimension
+            measures: ['count'],  // Synthetic measure
             datasetId: datasetId,
+            table: chart.table || tableData,
             onAggChange: updateChartAgg,
+            isHistogram: true,  // Mark as histogram for special handling
+            originalMeasure: measure,  // Store the real measure for semantic merging
             ai_generated: true,
             ai_method: method,
             ai_reasoning: suggestion.reasoning,
@@ -4270,12 +4421,20 @@ function AppWrapper() {
       }
       
       else if (method === 'single_dimension') {
-        // Single dimension: Use dimension counts logic (same as Case 3 in createVisualization)
+        // Single dimension: Use /charts endpoint with count measure for ECharts compatibility
         const dimension = dimensions[0];
-        const res = await fetch(`${API}/dimension_counts`, {
+        const body = { 
+          dataset_id: datasetId, 
+          dimensions: [dimension], 
+          measures: ['count'],  // Synthetic count measure for ECharts
+          agg: 'count', 
+          title: title || `Counts of ${dimension}` 
+        };
+        
+        const res = await fetch(`${API}/charts`, { 
           method: 'POST', 
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dataset_id: datasetId, dimension })
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify(body) 
         });
         
         if (!res.ok) {
@@ -4283,50 +4442,15 @@ function AppWrapper() {
           return;
         }
         
-        const { labels, counts } = await res.json();
+        const chart = await res.json();
+        id = chart.chart_id;
         
-        // Create table data for chart type switching
-        const tableData = labels.map((label, i) => ({
-          [dimension]: label,
-          count: counts[i]
-        }));
+        // Determine default chart type for 1D+1M
+        const defaultChartType = getEChartsDefaultType(1, 1);
+        const chartTypeId = defaultChartType.id;
         
-        // Register server-side chart for fusion compatibility
-        try {
-          const body = { 
-            dataset_id: datasetId, 
-            dimensions: [dimension], 
-            measures: [], 
-            agg: 'count', 
-            title: title || `Counts of ${dimension}` 
-          };
-          const reg = await fetch(`${API}/charts`, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify(body) 
-          });
-          if (reg.ok) {
-            const chart = await reg.json();
-            id = chart.chart_id;
-          }
-        } catch {}
-        
-        const figure = {
-          data: [{ 
-            type: 'bar', 
-            x: labels, 
-            y: counts, 
-            marker: { color: '#7c3aed' } 
-          }],
-          layout: { 
-            xaxis: { title: { text: dimension } }, 
-            yaxis: { title: { text: 'Count' } }, 
-            margin: { t: 20, b: 60, l: 60, r: 30 }, 
-            plot_bgcolor: 'white', 
-            paper_bgcolor: 'white',
-            showlegend: false
-          }
-        };
+        // Convert to ECharts format using figureFromPayload
+        const figure = figureFromPayload(chart, chartTypeId);
         
         setNodes(nds => nds.concat({ 
           id, 
@@ -4335,18 +4459,19 @@ function AppWrapper() {
           draggable: true,
           selectable: false, // Disable React Flow selection - use checkbox instead
           data: { 
-            title: title || `Counts of ${dimension}`, 
+            title: chart.title, 
             figure, 
+            chartType: chartTypeId,  // Add chartType for Chart Actions panel
             selected: false, 
             onSelect: handleChartSelect, 
             onShowTable: handleShowTable, 
             onAIExplore: handleAIExplore,
             agg: 'count', 
             dimensions: [dimension], 
-            measures: [], 
+            measures: ['count'],  // Store count as measure
             datasetId: datasetId, 
             onAggChange: updateChartAgg,
-            table: tableData,
+            table: chart.table || [],
             ai_generated: true,
             ai_method: method,
             ai_reasoning: suggestion.reasoning,
@@ -4355,10 +4480,10 @@ function AppWrapper() {
         }));
       }
       
-      // Auto-generate insights for first 4 AI-generated charts
-      if (aiGeneratedChartCount < 4 && apiKey && apiKey.trim()) {
+      // Auto-generate insights for AI-generated charts (up to user-requested count)
+      if (aiGeneratedChartCount < numCharts && apiKey && apiKey.trim()) {
         try {
-          console.log(`🎯 Auto-generating insights for chart ${aiGeneratedChartCount + 1}/4`);
+          console.log(`🎯 Auto-generating insights for chart ${aiGeneratedChartCount + 1}/${numCharts}`);
           
           const insightsResponse = await fetch(`${API}/chart-insights`, {
             method: 'POST',
@@ -4448,7 +4573,13 @@ function AppWrapper() {
         if (!res.ok) return alert('Create chart failed');
         const chart = await res.json();
         id = chart.chart_id;
-        const figure = figureFromPayload(chart);
+        
+        // Determine default chart type for 1 dimension + 1 measure
+        const defaultChartType = getEChartsDefaultType(1, 1);
+        const chartTypeId = defaultChartType.id;
+        
+        // Pass chartType to figureFromPayload for consistent rendering
+        const figure = figureFromPayload(chart, chartTypeId);
         
         setNodes(nds => nds.concat({ 
           id, 
@@ -4459,6 +4590,7 @@ function AppWrapper() {
           data: { 
             title: chart.title, 
             figure,
+            chartType: chartTypeId,  // Add chartType for Chart Actions panel
             selected: false,
             onSelect: handleChartSelect,
             onShowTable: handleShowTable,
@@ -4473,8 +4605,9 @@ function AppWrapper() {
         }));
       }
       
-      // Case 2: Single Measure (Histogram)
+      // Case 2: Single Measure (Histogram with Frontend Binning)
       else if (selectedMeasure && !selectedDimension) {
+        // Fetch raw histogram values
         const res = await fetch(`${API}/histogram`, {
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' },
@@ -4484,38 +4617,62 @@ function AppWrapper() {
         if (!res.ok) throw new Error(await res.text());
         const { values, stats } = await res.json();
         
-        // Register server-side chart for fusion
-        try {
-          const body = { 
-            dataset_id: datasetId, 
-            dimensions: [], 
-            measures: [selectedMeasure], 
-            agg: 'sum', 
-            title: `Histogram: ${selectedMeasure}` 
-          };
-          const reg = await fetch(`${API}/charts`, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify(body) 
-          });
-          if (reg.ok) {
-            const chart = await reg.json();
-            id = chart.chart_id;
+        // Helper function to format bin labels nicely
+        const formatBinValue = (value) => {
+          // For large numbers (>1000), round to nearest integer
+          if (Math.abs(value) >= 1000) {
+            return Math.round(value).toString();
           }
-        } catch {}
-        
-        const figure = {
-          data: [{ type: 'histogram', x: values, marker: { color: '#7c3aed' }, opacity: 0.85 }],
-          layout: { 
-            xaxis: { title: { text: selectedMeasure } }, 
-            yaxis: { title: { text: 'Count' } }, 
-            margin: { t: 20, b: 60, l: 60, r: 30 }, 
-            plot_bgcolor: 'white', 
-            paper_bgcolor: 'white',
-            showlegend: false,
-            legend: undefined
+          // For medium numbers (>10), round to 1 decimal if needed
+          if (Math.abs(value) >= 10) {
+            return Number.isInteger(value) ? value.toString() : value.toFixed(1);
           }
+          // For small numbers, use at most 2 decimals
+          return Number.isInteger(value) ? value.toString() : value.toFixed(2);
         };
+        
+        // Create bins in frontend using Sturges' rule
+        const numBins = Math.min(50, Math.max(10, Math.ceil(Math.log2(values.length) + 1)));
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const rawBinWidth = (max - min) / numBins;
+        
+        // Create bin labels and counts with cleaner boundaries
+        const tableData = [];
+        for (let i = 0; i < numBins; i++) {
+          const binStart = min + i * rawBinWidth;
+          const binEnd = min + (i + 1) * rawBinWidth;
+          const binLabel = `${formatBinValue(binStart)}-${formatBinValue(binEnd)}`;
+          const count = values.filter(v => v >= binStart && (i === numBins - 1 ? v <= binEnd : v < binEnd)).length;
+          tableData.push({ bin: binLabel, count });
+        }
+        
+        // Register as 1D+1M chart with synthetic bin dimension
+        const body = { 
+          dataset_id: datasetId, 
+          dimensions: ['bin'], 
+          measures: ['count'], 
+          agg: 'sum',
+          title: `Distribution of ${selectedMeasure}`,
+          table: tableData,  // Pass the binned table data
+          originalMeasure: selectedMeasure  // Store the real measure for semantic merging
+        };
+        const reg = await fetch(`${API}/charts`, { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify(body) 
+        });
+        
+        if (!reg.ok) throw new Error(await reg.text());
+        const chart = await reg.json();
+        id = chart.chart_id;
+        
+        // Determine default chart type for 1D+1M
+        const defaultChartType = getEChartsDefaultType(1, 1);
+        const chartTypeId = defaultChartType.id;
+        
+        // Convert to ECharts format using figureFromPayload
+        const figure = figureFromPayload(chart, chartTypeId);
         
         setNodes(nds => nds.concat({ 
           id, 
@@ -4524,71 +4681,53 @@ function AppWrapper() {
           draggable: true,
           selectable: false, // Disable React Flow selection - use checkbox instead
           data: { 
-            title: `Histogram: ${selectedMeasure}`, 
+            title: chart.title, 
             figure, 
+            chartType: chartTypeId,  // Add chartType for Chart Actions panel
             selected: false, 
             onSelect: handleChartSelect, 
             onShowTable: handleShowTable, 
             onAIExplore: handleAIExplore,
-            stats, 
+            stats,  // Keep stats for reference
             agg: 'sum', 
-            dimensions: [], 
-            measures: [selectedMeasure], 
-            datasetId: datasetId, // Store dataset ID for aggregation updates
-            onAggChange: updateChartAgg 
+            dimensions: ['bin'],  // Synthetic dimension
+            measures: ['count'],  // Synthetic measure
+            datasetId: datasetId,
+            table: chart.table || tableData,
+            onAggChange: updateChartAgg,
+            isHistogram: true,  // Mark as histogram for special handling
+            originalMeasure: selectedMeasure  // Store the real measure for semantic merging
           } 
         }));
       }
       
-      // Case 3: Single Dimension (Bar Chart)
+      // Case 3: Single Dimension (Bar Chart with Count)
       else if (selectedDimension && !selectedMeasure) {
-        const res = await fetch(`${API}/dimension_counts`, {
+        // Use /charts endpoint with count measure for ECharts compatibility
+        const body = { 
+          dataset_id: datasetId, 
+          dimensions: [selectedDimension], 
+          measures: ['count'],  // Synthetic count measure for ECharts
+          agg: 'count',
+          title: `Counts of ${selectedDimension}` 
+          };
+        
+        const res = await fetch(`${API}/charts`, { 
           method: 'POST', 
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dataset_id: datasetId, dimension: selectedDimension })
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify(body) 
         });
         
         if (!res.ok) throw new Error(await res.text());
-        const { labels, counts } = await res.json();
+        const chart = await res.json();
+        id = chart.chart_id;
         
-        // Create table data for chart type switching
-        const tableData = labels.map((label, i) => ({
-          [selectedDimension]: label,
-          count: counts[i]
-        }));
+        // Determine default chart type for 1D+1M
+        const defaultChartType = getEChartsDefaultType(1, 1);
+        const chartTypeId = defaultChartType.id;
         
-        // Register server-side chart for fusion
-        try {
-          const body = { 
-            dataset_id: datasetId, 
-            dimensions: [selectedDimension], 
-            measures: [], 
-            agg: 'count', 
-            title: `Counts of ${selectedDimension}` 
-          };
-          const reg = await fetch(`${API}/charts`, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify(body) 
-          });
-          if (reg.ok) {
-            const chart = await reg.json();
-            id = chart.chart_id;
-          }
-        } catch {}
-        
-        const figure = {
-          data: [{ type: 'bar', x: labels, y: counts, marker: { color: '#0ea5e9' } }],
-          layout: { 
-            xaxis: { title: { text: selectedDimension } }, 
-            yaxis: { title: { text: 'Count' } }, 
-            margin: { t: 20, b: 80, l: 60, r: 30 }, 
-            plot_bgcolor: 'white', 
-            paper_bgcolor: 'white',
-            showlegend: false,
-            legend: undefined
-          }
-        };
+        // Convert to ECharts format using figureFromPayload
+        const figure = figureFromPayload(chart, chartTypeId);
         
         setNodes(nds => nds.concat({ 
           id, 
@@ -4597,16 +4736,17 @@ function AppWrapper() {
           draggable: true,
           selectable: false, // Disable React Flow selection - use checkbox instead
           data: { 
-            title: `Bar: ${selectedDimension} vs Count`, 
+            title: chart.title, 
             figure, 
+            chartType: chartTypeId,  // Add chartType for Chart Actions panel
             selected: false, 
             onSelect: handleChartSelect, 
             onShowTable: handleShowTable, 
             onAIExplore: handleAIExplore,
             agg: 'count', 
             dimensions: [selectedDimension], 
-            measures: ['count'], 
-            table: tableData,  // Add table data for chart type switching
+            measures: ['count'],  // Store count as measure 
+            table: chart.table || [],  // Add table data for chart type switching
             datasetId: datasetId, // Store dataset ID for aggregation updates
             onAggChange: updateChartAgg 
           } 
@@ -5453,6 +5593,36 @@ function AppWrapper() {
                     className="w-full min-h-[80px] p-3 text-sm border border-gray-300 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     maxLength={500}
                   />
+                  
+                  {/* Number of Charts Counter */}
+                  <div className="flex items-center justify-between mt-3">
+                    <span className="text-sm" style={{ color: 'var(--color-text)' }}>
+                      Number of charts
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setNumCharts(Math.max(1, numCharts - 1))}
+                        disabled={numCharts <= 1}
+                        className="h-8 w-8 p-0"
+                      >
+                        <Minus size={14} />
+                      </Button>
+                      <span className="text-sm font-medium w-8 text-center">
+                        {numCharts}
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setNumCharts(Math.min(5, numCharts + 1))}
+                        disabled={numCharts >= 5}
+                        className="h-8 w-8 p-0"
+                      >
+                        <Plus size={14} />
+                      </Button>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="space-y-2">

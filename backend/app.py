@@ -23,12 +23,7 @@ app = FastAPI(title="Chart Fusion Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Local development
-        "https://*.onrender.com",  # All Render domains
-        "https://dfuse-frontend.onrender.com",  # Your specific frontend URL
-        "https://dfuse-backend.onrender.com"   # Allow backend-to-backend if needed
-    ],
+    allow_origins=["*"],  # Allow all origins for development
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,6 +57,8 @@ class ChartCreate(BaseModel):
     measures: List[str] = []
     agg: str = "sum"  # future: support more
     title: Optional[str] = None
+    table: Optional[List[Dict[str, Any]]] = None  # Pre-computed table for synthetic dimensions
+    originalMeasure: Optional[str] = None  # Original measure for histograms (before binning)
 
 class FuseRequest(BaseModel):
     chart1_id: str
@@ -125,6 +122,7 @@ class ChartSuggestionRequest(BaseModel):
     goal: str
     api_key: Optional[str] = None
     model: str = "gemini-2.0-flash"
+    num_charts: Optional[int] = 4  # Default 4 for backward compatibility, min 1, max 5
 
 class ChartSuggestion(BaseModel):
     title: str
@@ -394,6 +392,32 @@ def _categorize_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
     
     return {"dimensions": dimensions, "measures": measures}
 
+def _clean_dataframe_for_json(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Clean DataFrame for JSON Serialization
+    Replaces NaN, Infinity, and -Infinity values with JSON-compliant alternatives.
+    
+    Args:
+        df: DataFrame to clean
+    
+    Returns:
+        Cleaned DataFrame with:
+            - NaN replaced with None (serializes as null in JSON)
+            - Inf replaced with None
+            - -Inf replaced with None
+    
+    Note: This prevents "Out of range float values are not JSON compliant" errors
+    """
+    import numpy as np
+    
+    # Create a copy to avoid modifying the original
+    df_clean = df.copy()
+    
+    # Replace NaN, Inf, -Inf with None (which becomes null in JSON)
+    df_clean = df_clean.replace([np.nan, np.inf, -np.inf], None)
+    
+    return df_clean
+
 def _agg(df: pd.DataFrame, dimensions: List[str], measures: List[str], agg: str = "sum") -> pd.DataFrame:
     """
     Aggregation Helper
@@ -465,11 +489,43 @@ def _same_measure_diff_dims(spec1, spec2):
     Used to create comparison or stacked visualizations.
     
     Example: Both charts show "Revenue" but one groups by "Region", other by "Product"
+    
+    NOTE: Excludes histogram cases - they should be handled by histogram-specific fusion logic
     """
+    # Don't match histogram cases - they need special semantic merging
+    if _is_measure_histogram(spec1) or _is_measure_histogram(spec2):
+        return False
+    
     common_measures = set(spec1["measures"]).intersection(set(spec2["measures"]))
     return (len(common_measures) == 1) and (spec1["dimensions"] != spec2["dimensions"]) and (len(spec1["dimensions"]) > 0 or len(spec2["dimensions"]) > 0)
 
 
+def _is_measure_histogram(chart: Dict[str, Any]) -> bool:
+    """
+    Detects if a chart is a histogram (measure distribution).
+    Supports both old format (0D + 1M) and new binned format (1D with 'bin' + 1M with 'count').
+    """
+    dims = chart.get("dimensions", [])
+    meas = chart.get("measures", [])
+    
+    # Original format: 0D + 1M (not count)
+    if len(dims) == 0 and len(meas) == 1 and meas[0] != "count":
+        return True
+    
+    # New binned format: 1D + 1M where dimension is 'bin'
+    if len(dims) == 1 and dims[0] == "bin" and len(meas) == 1 and meas[0] == "count":
+        return True
+    
+    return False
+
+
+def _is_dimension_count(chart: Dict[str, Any]) -> bool:
+    """
+    Detects if a chart is a dimension count (1D + 0M or 1D + count).
+    """
+    dims = chart.get("dimensions", [])
+    meas = chart.get("measures", [])
+    return len(dims) == 1 and (len(meas) == 0 or (len(meas) == 1 and meas[0] == "count"))
 
 
 # -----------------------
@@ -852,21 +908,38 @@ async def create_chart(spec: ChartCreate):
     Stores chart metadata and aggregated table data in memory.
     
     Args:
-        spec: ChartCreate model with dataset_id, dimensions, measures, agg, title
+        spec: ChartCreate model with dataset_id, dimensions, measures, agg, title, table (optional)
     
     Returns:
         Chart object with chart_id, metadata, and aggregated table data
     
     Process:
         1. Validates dataset exists
-        2. Aggregates data using _agg helper
-        3. Generates auto-title if not provided
-        4. Stores chart in CHARTS registry
+        2. If pre-computed table provided (for synthetic dimensions), use it
+        3. Otherwise, aggregates data using _agg helper
+        4. Generates auto-title if not provided
+        5. Stores chart in CHARTS registry
     """
     if spec.dataset_id not in DATASETS:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    df = DATASETS[spec.dataset_id]
-    table = _agg(df, spec.dimensions, spec.measures, spec.agg)
+    
+    # Debug logging
+    print(f"📊 /charts endpoint received: dimensions={spec.dimensions}, measures={spec.measures}, agg={spec.agg}, table_provided={spec.table is not None}")
+    if spec.table is not None:
+        print(f"   Table has {len(spec.table)} rows")
+    
+    # Use pre-computed table if provided (for synthetic dimensions like 'bin')
+    if spec.table is not None:
+        table_records = spec.table
+    else:
+        # Aggregate from dataset
+        df = DATASETS[spec.dataset_id]
+        table = _agg(df, spec.dimensions, spec.measures, spec.agg)
+        
+        # Clean NaN/Inf values before JSON serialization
+        table_clean = _clean_dataframe_for_json(table)
+        table_records = table_clean.to_dict(orient="records")
+    
     chart_id = str(uuid.uuid4())
     
     # Generate descriptive title if none provided
@@ -879,7 +952,8 @@ async def create_chart(spec: ChartCreate):
         "measures": (spec.measures if spec.measures else (["count"] if spec.agg == "count" else [])),
         "agg": spec.agg,
         "title": spec.title or auto_title,
-        "table": table.to_dict(orient="records")
+        "table": table_records,
+        "originalMeasure": spec.originalMeasure  # Store original measure for histograms
     }
     return CHARTS[chart_id]
 
@@ -1038,17 +1112,8 @@ async def fuse(req: FuseRequest):
         raise HTTPException(status_code=400, detail="Charts must come from the same dataset for fusion in this demo")
     df = DATASETS[ds_id]
 
-    # Helper detectors for 1-variable charts
-    def _is_measure_histogram(chart: Dict[str, Any]) -> bool:
-        # measure-only: one measure, no dimensions, and not a synthetic 'count'
-        return len(chart.get("dimensions", [])) == 0 and len(chart.get("measures", [])) == 1 and chart["measures"][0] != "count"
-
-    def _is_dimension_count(chart: Dict[str, Any]) -> bool:
-        # dimension-only count: one dimension and either no measures or a single 'count' measure
-        dims = chart.get("dimensions", [])
-        meas = chart.get("measures", [])
-        return len(dims) == 1 and (len(meas) == 0 or (len(meas) == 1 and meas[0] == "count"))
-
+    # Note: Helper functions _is_measure_histogram, _is_dimension_count moved to module level
+    
     def _pick_agg(*charts: Dict[str, Any]) -> str:
         for ch in charts:
             val = ch.get("agg") if isinstance(ch, dict) else None
@@ -1119,26 +1184,53 @@ async def fuse(req: FuseRequest):
             dims_out = list({*c1["dimensions"], *c2["dimensions"]})
             measures_out = [common_measure]
 
-    # Case C: 1-variable charts
+    # Case C: 1-variable charts (histogram + dimension count)
     elif (_is_measure_histogram(c1) and _is_dimension_count(c2)) or (_is_measure_histogram(c2) and _is_dimension_count(c1)):
         # Measure-only + Dimension-count -> build measure by dimension
         measure_chart = c1 if _is_measure_histogram(c1) else c2
         dimension_chart = c2 if _is_dimension_count(c2) else c1
-        measure = measure_chart["measures"][0]
+        
+        # ✨ SEMANTIC MERGING: Use original measure from histogram metadata
+        # Histograms are binned representations of a real measure (e.g., Population2023)
+        # We want to merge using the REAL measure, not the synthetic 'count' or 'bin'
+        if "originalMeasure" in measure_chart and measure_chart["originalMeasure"]:
+            measure = measure_chart["originalMeasure"]
+            print(f"🔍 Using originalMeasure '{measure}' from histogram for semantic merge")
+        else:
+            # Fallback for backward compatibility with old histograms
+            measure = measure_chart["measures"][0]
+            print(f"⚠️ No originalMeasure found, using synthetic measure '{measure}'")
+        
         dim = dimension_chart["dimensions"][0]
+        
+        # For real measures, use appropriate aggregation (sum/avg/etc)
+        # For synthetic counts, aggregation doesn't make sense but we default to sum
         agg = _pick_agg(measure_chart, dimension_chart)
+        
+        print(f"📊 Semantic merge: dim='{dim}', measure='{measure}', agg='{agg}'")
+        print(f"📊 Dataset columns: {list(df.columns)}")
+        print(f"📊 Checking: '{dim}' in columns = {dim in df.columns}, '{measure}' in columns = {measure in df.columns}")
+        
+        # Validate columns exist
+        if dim not in df.columns:
+            raise HTTPException(status_code=400, detail=f"❌ Dimension column not found: '{dim}'. Available columns: {list(df.columns)}")
+        if measure not in df.columns:
+            raise HTTPException(status_code=400, detail=f"❌ Measure column not found: '{measure}'. Available columns: {list(df.columns)}")
+        
         fused_table = _agg(df, [dim], [measure], agg).copy()
         strategy = {
-            "type": "measure-by-dimension",
-            "suggestion": "bar | line | heatmap"
+            "type": "histogram-dimension-semantic-merge",
+            "suggestion": "bar | line | grouped-bar"
         }
-        title = f"Distribution of {measure} by {dim}"
+        title = f"{measure} by {dim}"
         dims_out = [dim]
         measures_out = [measure]
 
-    # Optional generic 1-variable cases
+    # Optional generic 1-variable cases: histogram vs histogram
     elif _is_measure_histogram(c1) and _is_measure_histogram(c2):
-        m1, m2 = c1["measures"][0], c2["measures"][0]
+        # Use originalMeasure if available for both histograms
+        m1 = c1.get("originalMeasure", c1["measures"][0])
+        m2 = c2.get("originalMeasure", c2["measures"][0])
         fused_table = df[[m1, m2]].dropna().copy()
         strategy = {"type": "measure-vs-measure", "suggestion": "scatter | dual-histogram"}
         title = f"{m1} vs {m2}"
@@ -1186,8 +1278,9 @@ async def fuse(req: FuseRequest):
         # Already a list of records (new stacked case)
         table_data = fused_table
     else:
-        # DataFrame - convert to records
-        table_data = fused_table.to_dict(orient="records")
+        # DataFrame - clean NaN/Inf values before converting to records
+        fused_table_clean = _clean_dataframe_for_json(fused_table)
+        table_data = fused_table_clean.to_dict(orient="records")
     
     fused_payload = {
         "chart_id": chart_id,
@@ -2175,9 +2268,13 @@ async def suggest_charts(request: ChartSuggestionRequest):
         df = DATASETS[request.dataset_id]
         metadata = DATASET_METADATA[request.dataset_id]
         
+        # Validate and clamp num_charts to acceptable range (1-5)
+        num_charts = max(1, min(5, request.num_charts or 4))
+        
         print(f"🎯 Starting chart suggestions for dataset: {request.dataset_id}")
         print(f"   User goal: '{request.goal}'")
         print(f"   Dataset shape: {df.shape}")
+        print(f"   Requested charts: {num_charts}")
         print(f"   API Key provided: {'Yes' if request.api_key else 'No'}")
         
         if not request.api_key:
@@ -2231,7 +2328,8 @@ VARIABLE COMBINATION OPTIONS:
 
 INSTRUCTIONS:
 1. Focus on variable selection that directly addresses the user's goal
-2. Suggest 2-4 DISTINCT variable combinations with different analytical perspectives
+2. Suggest exactly {num_charts} DISTINCT variable combinations with different analytical perspectives
+   - If the goal doesn't support this many distinct perspectives, suggest the maximum possible with clear reasoning
 3. Choose method based on what insights are needed:
    - Compare categories → dimension_measure
    - Show detailed breakdown → two_dimensions_one_measure  
@@ -2326,12 +2424,12 @@ FOCUS: Recommend the optimal variables that best answer the user's question, not
                     importance_score=min(max(suggestion_data.get("importance_score", 5), 1), 10)
                 ))
                 
-                # Limit to max 4 distinct suggestions
-                if len(validated_suggestions) >= 4:
+                # Limit to user-requested number of suggestions
+                if len(validated_suggestions) >= num_charts:
                     break
             
             print(f"✅ Variable suggestions generated successfully!")
-            print(f"   Suggestions: {len(validated_suggestions)} variable combinations")
+            print(f"   Requested: {num_charts}, Generated: {len(validated_suggestions)} variable combinations")
             print(f"   Token usage: {token_usage.get('totalTokens', 0)} tokens")
             
             return ChartSuggestionResponse(
