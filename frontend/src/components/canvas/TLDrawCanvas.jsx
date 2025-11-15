@@ -1,10 +1,11 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useMemo } from 'react';
 import { Tldraw, createShapeId } from '@tldraw/tldraw';
 import '@tldraw/tldraw/tldraw.css';
 import { ChartShape } from './shapes/ChartShape';
 import { TextBoxShape } from './shapes/TextShape';
 import { TableShape } from './shapes/TableShape';
 import { convertEdgesToArrows, convertArrowsToEdges } from './util/stateConverter';
+import ChartContextualToolbar from './ChartContextualToolbar';
 import './tldraw-custom.css';
 
 /**
@@ -21,7 +22,11 @@ const TLDrawCanvas = ({
   onPaneClick,
   onSelectionChange,
   onChartSelect,
-  initialViewport
+  initialViewport,
+  onAIQueryShortcut,
+  onChartInsightShortcut,
+  onShowTableShortcut,
+  apiKeyConfigured
 }) => {
   const editorRef = useRef(null);
   const initialImportDone = useRef(false);
@@ -30,6 +35,33 @@ const TLDrawCanvas = ({
 
   // Custom shape utilities
   const shapeUtils = [ChartShape, TextBoxShape, TableShape];
+  
+  // TLDraw components configuration - memoized to prevent unnecessary re-renders
+  const components = useMemo(() => {
+    // Contextual toolbar component
+    const ContextualToolbarComponent = (props) => {
+      console.log('🔧 ContextualToolbarComponent rendering with callbacks:', {
+        hasAIQuery: !!onAIQueryShortcut,
+        hasInsights: !!onChartInsightShortcut,
+        hasShowTable: !!onShowTableShortcut,
+        apiKeyConfigured
+      });
+      
+      return (
+        <ChartContextualToolbar
+          {...props}
+          onAIQueryShortcut={onAIQueryShortcut}
+          onChartInsightShortcut={onChartInsightShortcut}
+          onShowTableShortcut={onShowTableShortcut}
+          apiKeyConfigured={apiKeyConfigured}
+        />
+      );
+    };
+    
+    return {
+      InFrontOfTheCanvas: ContextualToolbarComponent
+    };
+  }, [onAIQueryShortcut, onChartInsightShortcut, onShowTableShortcut, apiKeyConfigured]);
 
   // Watch for new nodes being added AND existing nodes being updated
   useEffect(() => {
@@ -202,6 +234,7 @@ const TLDrawCanvas = ({
     >
       <Tldraw
         shapeUtils={shapeUtils}
+        components={components}
         onMount={handleMount}
         autoFocus
       />

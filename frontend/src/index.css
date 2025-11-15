@@ -866,3 +866,35 @@ details summary span:first-child {
 details[open] summary span:first-child {
   transform: rotate(90deg);
 }
+
+/* Highlight Flash Animation for Toolbar Scroll-to Feature */
+@keyframes highlightFlash {
+  0% {
+    background-color: rgba(255, 235, 59, 0.3);
+  }
+  50% {
+    background-color: rgba(255, 235, 59, 0.6);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.highlight-flash {
+  animation: highlightFlash 1.5s ease-in-out;
+  border-radius: var(--radius);
+}
+
+/* Loading Spinner Animation for Toolbar */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-spin {
+  animation: spin 1s linear infinite;
+}

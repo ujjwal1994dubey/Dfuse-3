@@ -533,6 +533,87 @@ function FilterDimension({ dimension, datasetId, selectedValues, onToggle }) {
 
 
 /**
+ * DimensionFilterForChart Component
+ * Filter panel for chart dimensions using chart's aggregated data.
+ * Fetches unique values from the chart table (not full dataset).
+ * 
+ * @param {string} dimension - Name of the dimension to filter
+ * @param {string} chartId - ID of the chart
+ * @param {Array} selectedValues - Currently selected filter values
+ * @param {Function} onToggle - Callback when filter values are toggled
+ */
+function DimensionFilterForChart({ dimension, chartId, selectedValues, onToggle }) {
+  const [values, setValues] = useState([]);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isExpanded) return;
+    
+    setLoading(true);
+    fetch(`${API}/chart_dimension_values`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chart_id: chartId,
+        dimension: dimension
+      })
+    })
+    .then(res => res.json())
+    .then(data => {
+      setValues(data.values || []);
+      setLoading(false);
+    })
+    .catch(err => {
+      console.error('Failed to fetch dimension values:', err);
+      setLoading(false);
+    });
+  }, [chartId, dimension, isExpanded]);
+
+  return (
+    <div>
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full flex items-center justify-between p-3 text-left hover:bg-gray-50 transition-colors"
+      >
+        <span className="font-medium text-gray-700">{dimension}</span>
+        <div className="flex items-center space-x-2">
+          {selectedValues.length > 0 && (
+            <Badge variant="primary">{selectedValues.length}</Badge>
+          )}
+          <span className={`transform transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
+            ▼
+          </span>
+        </div>
+      </button>
+      
+      {isExpanded && (
+        <div className="border-t border-gray-200 p-3 max-h-48 overflow-y-auto">
+          {loading ? (
+            <div className="text-sm text-gray-500">Loading...</div>
+          ) : (
+            <div className="space-y-2">
+              {values.map(value => (
+                <label key={value} className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedValues.includes(value)}
+                    onChange={() => onToggle(value)}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700">{value}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/**
  * DataTable Component
  * Generic table component that renders any array of objects as a data table.
  * Used to display raw data, query results, or aggregated data.
@@ -1672,14 +1753,15 @@ function UnifiedSidebar({
   
   return (
     <div 
-      className="fixed z-[1100] flex flex-col items-center py-6 gap-3 transition-all duration-300 rounded-xl"
+      className="fixed z-[1100] flex flex-col items-center py-6 gap-3 transition-all duration-300"
       style={{ 
         left: '12px',
         top: '60px',
         width: 'var(--size-sidebar)', 
         backgroundColor: 'var(--color-surface-elevated)',
         border: '1px solid var(--color-border)',
-        boxShadow: '0 4px 16px rgba(0, 0, 0, 0.15)'
+        borderRadius: '8px',
+        boxShadow: 'var(--shadow-lg)'
       }}
     >
       {/* Logo */}
@@ -1804,16 +1886,25 @@ function ChartActionsPanel({
   onChartTypeChange,
   onAggChange,
   onShowTable,
-  tldrawEditorRef
+  tldrawEditorRef,
+  onChartUpdate,
+  scrollToAI,
+  setScrollToAI
 }) {
   // AI state
   const [aiQuery, setAiQuery] = useState('');
+  const aiQuerySectionRef = useRef(null);
+  const aiQueryTextareaRef = useRef(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResult, setAiResult] = useState(null);
   
   // Local state for buttons
   const [showTableClicked, setShowTableClicked] = useState(false);
   const [insightsLoading, setInsightsLoading] = useState(false);
+  
+  // Filter state
+  const [dimensionFilters, setDimensionFilters] = useState({});
+  const [filterApplying, setFilterApplying] = useState(false);
   
   // Update local state when selected chart changes
   useEffect(() => {
@@ -1822,8 +1913,37 @@ function ChartActionsPanel({
       setAiResult(null);
       setShowTableClicked(false);
       setInsightsLoading(false);
+      // Initialize filters from chart data
+      setDimensionFilters(selectedChart.data?.filters || {});
     }
   }, [selectedChart?.id]);
+  
+  // Handle scroll to AI section when triggered from toolbar
+  useEffect(() => {
+    if (scrollToAI && aiQuerySectionRef.current) {
+      // Delay to ensure panel is fully mounted and rendered
+      setTimeout(() => {
+        aiQuerySectionRef.current?.scrollIntoView({ 
+          behavior: 'smooth', 
+          block: 'center' 
+        });
+        
+        // Add highlight flash animation
+        aiQuerySectionRef.current?.classList.add('highlight-flash');
+        
+        // Focus the textarea after scroll
+        setTimeout(() => {
+          aiQueryTextareaRef.current?.focus();
+        }, 400);
+        
+        // Remove animation class after animation completes
+        setTimeout(() => {
+          aiQuerySectionRef.current?.classList.remove('highlight-flash');
+          setScrollToAI?.(false); // Reset the scroll trigger
+        }, 1500);
+      }, 100);
+    }
+  }, [scrollToAI, setScrollToAI]);
   
   const handleAIExplore = async () => {
     if (!aiQuery.trim() || aiLoading || !selectedChart) return;
@@ -2039,6 +2159,152 @@ function ChartActionsPanel({
     }
   };
   
+  // Filter handling functions
+  const handleFilterToggle = useCallback((dimension, value) => {
+    setDimensionFilters(prev => {
+      const currentValues = prev[dimension] || [];
+      const newValues = currentValues.includes(value)
+        ? currentValues.filter(v => v !== value)
+        : [...currentValues, value];
+      
+      return {
+        ...prev,
+        [dimension]: newValues
+      };
+    });
+  }, []);
+  
+  const handleApplyFilters = useCallback(async () => {
+    if (!selectedChart) return;
+    
+    setFilterApplying(true);
+    
+    try {
+      const body = {
+        dataset_id: selectedChart.data.datasetId,
+        dimensions: selectedChart.data.dimensions,
+        measures: selectedChart.data.measures,
+        agg: selectedChart.data.agg,
+        filters: dimensionFilters
+      };
+      
+      console.log('🔍 Applying filters to chart:', body);
+      
+      const res = await fetch(`${API}/charts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Filter application failed: ${errorText}`);
+      }
+      
+      const chart = await res.json();
+      
+      console.log('✅ Filtered chart data received:', {
+        tableLength: chart.table?.length,
+        filters: chart.filters
+      });
+      
+      // Regenerate chart visualization with filtered data
+      const chartType = selectedChart.data.chartType || 'bar';
+      const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
+      
+      if (chartConfig) {
+        const option = chartConfig.createOption(chart.table, {
+          dimensions: chart.dimensions,
+          measures: chart.measures
+        });
+        
+        // Update chart with filtered data
+        if (onChartUpdate) {
+          onChartUpdate(selectedChart.id, {
+            chartData: option.series,
+            chartLayout: option,
+            table: chart.table,
+            filters: dimensionFilters
+          });
+        }
+      }
+      
+      console.log('✅ Chart updated with filtered data');
+      
+    } catch (error) {
+      console.error('Filter application failed:', error);
+      alert(`Failed to apply filters: ${error.message}`);
+    } finally {
+      setFilterApplying(false);
+    }
+  }, [selectedChart, dimensionFilters, onChartUpdate]);
+  
+  const handleClearFilters = useCallback(async () => {
+    if (!selectedChart) return;
+    
+    // Clear the filters state
+    setDimensionFilters({});
+    
+    // Re-fetch chart without filters
+    setFilterApplying(true);
+    
+    try {
+      const body = {
+        dataset_id: selectedChart.data.datasetId,
+        dimensions: selectedChart.data.dimensions,
+        measures: selectedChart.data.measures,
+        agg: selectedChart.data.agg,
+        filters: {} // Empty filters = no filtering
+      };
+      
+      console.log('🧹 Clearing filters, fetching unfiltered chart data');
+      
+      const res = await fetch(`${API}/charts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Clear filters failed: ${errorText}`);
+      }
+      
+      const chart = await res.json();
+      
+      console.log('✅ Unfiltered chart data received');
+      
+      // Regenerate chart visualization with unfiltered data
+      const chartType = selectedChart.data.chartType || 'bar';
+      const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
+      
+      if (chartConfig) {
+        const option = chartConfig.createOption(chart.table, {
+          dimensions: chart.dimensions,
+          measures: chart.measures
+        });
+        
+        // Update chart with unfiltered data
+        if (onChartUpdate) {
+          onChartUpdate(selectedChart.id, {
+            chartData: option.series,
+            chartLayout: option,
+            table: chart.table,
+            filters: {} // Clear filters
+          });
+        }
+      }
+      
+      console.log('✅ Chart restored to unfiltered state');
+      
+    } catch (error) {
+      console.error('Clear filters failed:', error);
+      alert(`Failed to clear filters: ${error.message}`);
+    } finally {
+      setFilterApplying(false);
+    }
+  }, [selectedChart, onChartUpdate]);
+  
   // Get chart type info
   const dims = selectedChart?.data?.dimensions?.filter(d => d !== 'count').length || 0;
   const meas = selectedChart?.data?.measures?.length || 0;
@@ -2151,6 +2417,60 @@ function ChartActionsPanel({
               </div>
             )}
             
+            {/* Chart Filter Section */}
+            {selectedChart?.data?.dimensions?.length > 0 && (
+              <div>
+                <label 
+                  className="block text-sm font-medium mb-3"
+                  style={{ color: 'var(--color-text)' }}
+                >
+                  Chart Filter
+                </label>
+                
+                {/* Select Product Dropdown-style label */}
+                {selectedChart.data.dimensions.length > 0 && (
+                  <div className="text-xs text-gray-600 mb-2">
+                    Select {selectedChart.data.dimensions.join(', ')}
+                  </div>
+                )}
+                
+                {/* Dimension Filters */}
+                <div className="space-y-2 border rounded-lg" style={{ borderColor: 'var(--color-border)' }}>
+                  {selectedChart.data.dimensions.map(dimension => (
+                    <DimensionFilterForChart
+                      key={dimension}
+                      dimension={dimension}
+                      chartId={selectedChart.id}
+                      selectedValues={dimensionFilters[dimension] || []}
+                      onToggle={(value) => handleFilterToggle(dimension, value)}
+                    />
+                  ))}
+                </div>
+                
+                {/* Apply Filters Button */}
+                <Button
+                  onClick={handleApplyFilters}
+                  disabled={filterApplying}
+                  className="w-full mt-3 bg-blue-600 hover:bg-blue-700 text-white"
+                  size="md"
+                >
+                  {filterApplying ? 'Applying...' : 'Apply Filters'}
+                </Button>
+                
+                {/* Active Filters Badge */}
+                {Object.keys(dimensionFilters).some(d => dimensionFilters[d]?.length > 0) && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <Badge variant="secondary">
+                      {Object.values(dimensionFilters).flat().length} filters active
+                    </Badge>
+                    <Button variant="ghost" size="sm" onClick={handleClearFilters} disabled={filterApplying}>
+                      {filterApplying ? 'Clearing...' : 'Clear All'}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+            
             {/* Divider */}
             <div 
               className="my-4"
@@ -2215,7 +2535,7 @@ function ChartActionsPanel({
             />
             
             {/* AI Query Section */}
-            <div className="space-y-4">
+            <div ref={aiQuerySectionRef} className="space-y-4">
               <div>
                 <label 
                   className="block text-sm font-medium mb-3"
@@ -2224,6 +2544,7 @@ function ChartActionsPanel({
                   Ask AI Query
                 </label>
                 <textarea
+                  ref={aiQueryTextareaRef}
                   value={aiQuery}
                   onChange={(e) => setAiQuery(e.target.value)}
                   onKeyDown={(e) => {
@@ -2527,6 +2848,7 @@ function AppWrapper() {
   const [variablesPanelOpen, setVariablesPanelOpen] = useState(false);
   const [chartActionsPanelOpen, setChartActionsPanelOpen] = useState(false);
   const [selectedChartForActions, setSelectedChartForActions] = useState(null);
+  const [scrollToAI, setScrollToAI] = useState(false);
   const [instructionsPanelOpen, setInstructionsPanelOpen] = useState(() => {
     // Show instructions panel by default for first-time users
     const hasSeenInstructions = localStorage.getItem('dfuse_instructions_seen');
@@ -2963,33 +3285,54 @@ function AppWrapper() {
 
   const handleShowTable = useCallback(async (chartId) => {
     try {
-      console.log('Showing table for chart:', chartId);
-      
-      // Call the backend to get table data
-      const res = await fetch(`${API}/chart-table`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chart_id: chartId })
-      });
-      
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(errorText);
-      }
-      
-      const tableData = await res.json();
-      console.log('Table data received:', tableData);
+      console.log('📊 handleShowTable called with chartId:', chartId);
+      console.log('📊 Current nodes:', nodes.map(n => ({ id: n.id, type: n.type })));
       
       // Use setNodes with functional update to get current nodes
       setNodes(currentNodes => {
+        console.log('📊 Inside setNodes, currentNodes:', currentNodes.map(n => ({ id: n.id, type: n.type })));
+        
         // Find the chart node to position the table next to it
         const chartNode = currentNodes.find(n => n.id === chartId);
+        
         if (!chartNode) {
-          console.error('Chart node not found in current nodes:', chartId);
-          console.error('Available nodes:', currentNodes.map(n => ({ id: n.id, type: n.type })));
+          console.error('❌ Chart node not found in current nodes:', chartId);
+          console.error('❌ Available node IDs:', currentNodes.map(n => n.id));
+          console.error('❌ Looking for exact match:', chartId);
+          console.error('❌ Available nodes detail:', currentNodes.map(n => ({ 
+            id: n.id, 
+            type: n.type,
+            matches: n.id === chartId,
+            idType: typeof n.id,
+            chartIdType: typeof chartId
+          })));
           alert('Chart node not found');
           return currentNodes;
         }
+        
+        // Use the chart's current table data (already filtered and aggregated)
+        const chartTable = chartNode.data.table || [];
+        
+        if (chartTable.length === 0) {
+          console.warn('No table data available for chart:', chartId);
+          alert('No table data available for this chart');
+          return currentNodes;
+        }
+        
+        // Extract headers from the first row of the table
+        const headers = Object.keys(chartTable[0]);
+        
+        // Convert table data to rows format
+        const rows = chartTable.map(row => 
+          headers.map(header => row[header])
+        );
+        
+        console.log('Using chart table data:', {
+          headers,
+          rowCount: rows.length,
+          hasFilters: Object.keys(chartNode.data.filters || {}).length > 0,
+          aggregation: chartNode.data.agg
+        });
         
         // Calculate position for table node (to the right of chart with offset)
         const tablePosition = {
@@ -3005,10 +3348,10 @@ function AppWrapper() {
           type: 'table',
           position: tablePosition,
           data: {
-            title: `${tableData.title} - Data Table`,
-            headers: tableData.headers,
-            rows: tableData.rows,
-            totalRows: tableData.total_rows,
+            title: `${chartNode.data.title} - Data Table`,
+            headers: headers,
+            rows: rows,
+            totalRows: rows.length,
             sourceChartId: chartId
           },
           draggable: true,
@@ -3026,6 +3369,145 @@ function AppWrapper() {
       alert('Failed to show table: ' + error.message);
     }
   }, []);
+
+  /**
+   * Handle AI Query Shortcut from Contextual Toolbar
+   * Opens the chart actions panel and scrolls to the AI query section
+   */
+  const handleAIQueryShortcut = useCallback((chartId) => {
+    console.log('🎯 AI Query shortcut triggered for chart:', chartId);
+    console.log('🎯 Current nodes:', nodes.map(n => ({ id: n.id, type: n.type })));
+    
+    // Find the chart node
+    const chartNode = nodes.find(n => n.id === chartId);
+    if (!chartNode) {
+      console.error('❌ Chart node not found:', chartId);
+      console.error('❌ Available node IDs:', nodes.map(n => n.id));
+      return;
+    }
+    
+    // Set the selected chart for actions
+    setSelectedChartForActions(chartNode);
+    
+    // Close all other panels first (just like the sidebar toggle buttons do)
+    setUploadPanelOpen(false);
+    setVariablesPanelOpen(false);
+    setMergePanelOpen(false);
+    setInstructionsPanelOpen(false);
+    setSettingsPanelOpen(false);
+    
+    // Open the chart actions panel
+    setChartActionsPanelOpen(true);
+    
+    // Trigger scroll to AI section after a short delay to ensure panel is mounted
+    setTimeout(() => {
+      setScrollToAI(true);
+    }, 300);
+  }, [nodes]);
+
+  /**
+   * Handle Chart Insight Shortcut from Contextual Toolbar
+   * Generates chart insights without opening the panel
+   */
+  const handleChartInsightShortcut = useCallback(async (chartId) => {
+    console.log('💡 Chart Insight shortcut triggered for chart:', chartId);
+    console.log('💡 Current nodes:', nodes.map(n => ({ id: n.id, type: n.type })));
+    
+    // Validate API key
+    if (!apiKey?.trim()) {
+      alert('⚠️ Please configure your Gemini API key in Settings first.');
+      setSettingsPanelOpen(true);
+      return;
+    }
+    
+    // Validate TLDraw editor reference
+    if (!tldrawEditorRef?.current) {
+      alert('⚠️ Canvas editor not ready. Please try again.');
+      return;
+    }
+    
+    try {
+      // Find the chart node
+      const chartNode = nodes.find(n => n.id === chartId);
+      if (!chartNode) {
+        console.error('❌ Chart node not found:', chartId);
+        console.error('❌ Available node IDs:', nodes.map(n => n.id));
+        return;
+      }
+      
+      // Call chart insights API
+      const response = await fetch(`${API}/chart-insights`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chart_id: chartId,
+          api_key: apiKey,
+          model: selectedModel || 'gemini-2.0-flash',
+          user_context: chartNode.data?.user_goal || null
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText);
+      }
+      
+      const result = await response.json();
+      
+      // Track token usage
+      if (result.token_usage) {
+        updateTokenUsage(result.token_usage);
+      }
+      
+      // Get the chart shape from TLDraw to calculate position
+      let chartShape = tldrawEditorRef.current.getShape(chartId);
+      
+      if (!chartShape) {
+        // If direct lookup fails, search through all shapes
+        const allShapes = tldrawEditorRef.current.getCurrentPageShapes();
+        chartShape = allShapes.find(shape => 
+          shape.id === chartId || 
+          shape.id.includes(chartId) ||
+          (shape.type === 'chart' && shape.props?.title === chartNode.data?.title)
+        );
+      }
+      
+      if (!chartShape) {
+        throw new Error('Chart shape not found in canvas.');
+      }
+      
+      // Calculate position for textbox (to the right of chart)
+      const textboxX = chartShape.x + chartShape.props.w + 50;
+      const textboxY = chartShape.y;
+      
+      // Prepare insights text
+      const insightsContent = result.generic_insights || result.insight || 'No insights generated';
+      const insightsText = `AI Generated\n\n${insightsContent}`;
+      
+      // Create TLDraw textbox for insights
+      const { createShapeId } = await import('@tldraw/tldraw');
+      const textboxId = createShapeId();
+      
+      tldrawEditorRef.current.createShape({
+        id: textboxId,
+        type: 'textbox',
+        x: textboxX,
+        y: textboxY,
+        props: {
+          w: 300,
+          h: 200,
+          text: insightsText,
+          fontSize: 12
+        }
+      });
+      
+      console.log('✅ Chart insights generated from toolbar shortcut');
+      
+    } catch (error) {
+      console.error('Generate insights from toolbar failed:', error);
+      alert(`Failed to generate insights: ${error.message}`);
+    }
+  }, [nodes, apiKey, selectedModel, tldrawEditorRef, updateTokenUsage]);
 
   const mergeSelectedCharts = useCallback(async () => {
     if (selectedCharts.length !== 2) {
@@ -3110,7 +3592,8 @@ function AppWrapper() {
           agg: fused.agg || 'sum',
           datasetId: fused.dataset_id, // Store dataset ID for aggregation updates
           table: fused.table || [], // Add table data for chart type switching
-          chartType: defaultChartType.id
+          chartType: defaultChartType.id,
+          filters: fused.filters || {} // Store filters for persistence
         } 
       }));
       
@@ -3127,6 +3610,28 @@ function AppWrapper() {
       alert('Merge failed: ' + e.message);
     }
   }, [selectedCharts, nodes, handleChartSelect, getViewportCenter, deselectAllCharts]);
+
+  // Update chart data (for filters and other updates)
+  const handleChartUpdate = useCallback((chartId, updates) => {
+    console.log('📊 Chart update requested:', { chartId, updates });
+    
+    setNodes(nds => nds.map(n => {
+      if (n.id === chartId) {
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            ...updates,
+            figure: {
+              data: updates.chartData,
+              layout: updates.chartLayout
+            }
+          }
+        };
+      }
+      return n;
+    }));
+  }, []);
 
   // Update aggregation on an existing chart node
   const updateChartAgg = useCallback(async (nodeId, newAgg) => {
@@ -3206,7 +3711,8 @@ function AppWrapper() {
             dataset_id: currentDatasetId, 
             dimensions: dims, 
             measures: meas, 
-            agg: newAgg 
+            agg: newAgg,
+            filters: node.data.filters || {} // Maintain filters during aggregation change
           };
           
           console.log('📡 Making aggregation API call:', { 
@@ -3271,7 +3777,8 @@ function AppWrapper() {
                 table: chart.table || [],
                 title: title,
                 dimensions: chart.dimensions,
-                measures: chart.measures
+                measures: chart.measures,
+                filters: chart.filters || node.data.filters || {} // Preserve filters
               };
             } catch (error) {
               console.error('❌ Error generating ECharts option:', error);
@@ -3284,7 +3791,8 @@ function AppWrapper() {
               table: chart.table || [],
               title: title,
               dimensions: chart.dimensions,
-              measures: chart.measures
+              measures: chart.measures,
+              filters: chart.filters || node.data.filters || {} // Preserve filters
             };
           }
           
@@ -3910,7 +4418,8 @@ function AppWrapper() {
           measures: aiResult.measures || [],
           agg: chart.agg || 'sum',
           datasetId: nodeDatasetId,
-          table: chart.table || []
+          table: chart.table || [],
+          filters: chart.filters || {} // Store filters for persistence
         }
       }));
       
@@ -4305,7 +4814,8 @@ function AppWrapper() {
             ai_generated: true,
             ai_method: method,
             ai_reasoning: suggestion.reasoning,
-            user_goal: goalText  // Store original user query for AI-assisted merging
+            user_goal: goalText,  // Store original user query for AI-assisted merging
+            filters: chart.filters || {} // Store filters for persistence
           } 
         }));
       }
@@ -4415,7 +4925,8 @@ function AppWrapper() {
             ai_generated: true,
             ai_method: method,
             ai_reasoning: suggestion.reasoning,
-            user_goal: goalText  // Store original user query for AI-assisted merging
+            user_goal: goalText,  // Store original user query for AI-assisted merging
+            filters: chart.filters || {} // Store filters for persistence
           } 
         }));
       }
@@ -4475,7 +4986,8 @@ function AppWrapper() {
             ai_generated: true,
             ai_method: method,
             ai_reasoning: suggestion.reasoning,
-            user_goal: goalText  // Store original user query for AI-assisted merging
+            user_goal: goalText,  // Store original user query for AI-assisted merging
+            filters: chart.filters || {} // Store filters for persistence
           } 
         }));
       }
@@ -4600,7 +5112,8 @@ function AppWrapper() {
             dimensions: [selectedDimension],
             measures: [selectedMeasure],
             datasetId: datasetId, // Store dataset ID for aggregation updates
-            table: chart.table || [] // Add table data for chart type switching
+            table: chart.table || [], // Add table data for chart type switching
+            filters: chart.filters || {} // Store filters for persistence
           } 
         }));
       }
@@ -4858,6 +5371,10 @@ function AppWrapper() {
           }
         }}
         onPaneClick={onPaneClick}
+        onAIQueryShortcut={handleAIQueryShortcut}
+        onChartInsightShortcut={handleChartInsightShortcut}
+        onShowTableShortcut={handleShowTable}
+        apiKeyConfigured={!!(apiKey && apiKey.trim())}
         fitView
         style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
       />
@@ -5727,6 +6244,9 @@ function AppWrapper() {
           onAggChange={updateChartAgg}
           onShowTable={handleShowTable}
           tldrawEditorRef={tldrawEditorRef}
+          onChartUpdate={handleChartUpdate}
+          scrollToAI={scrollToAI}
+          setScrollToAI={setScrollToAI}
         />
       )}
 

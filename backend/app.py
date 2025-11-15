@@ -59,6 +59,7 @@ class ChartCreate(BaseModel):
     title: Optional[str] = None
     table: Optional[List[Dict[str, Any]]] = None  # Pre-computed table for synthetic dimensions
     originalMeasure: Optional[str] = None  # Original measure for histograms (before binning)
+    filters: Optional[Dict[str, List[str]]] = None  # Dimension filters for chart-level filtering
 
 class FuseRequest(BaseModel):
     chart1_id: str
@@ -469,6 +470,44 @@ def _agg(df: pd.DataFrame, dimensions: List[str], measures: List[str], agg: str 
     else:
         grouped = df[measures].agg(pandas_agg).to_frame().T
     return grouped
+
+
+def _apply_filters(df: pd.DataFrame, filters: Dict[str, List[str]]) -> pd.DataFrame:
+    """
+    Apply dimension filters to DataFrame before aggregation.
+    Filters use AND logic between dimensions, OR logic within dimension.
+    
+    Args:
+        df: Source DataFrame
+        filters: Dict mapping dimension names to lists of allowed values
+    
+    Returns:
+        Filtered DataFrame containing only rows matching all filter criteria
+    
+    Example:
+        filters = {"Product": ["A", "B"], "Region": ["North"]}
+        Returns rows where Product in ["A", "B"] AND Region in ["North"]
+    """
+    if not filters:
+        return df
+    
+    filtered_df = df.copy()
+    
+    for dimension, allowed_values in filters.items():
+        # Skip empty filters
+        if not allowed_values or len(allowed_values) == 0:
+            continue
+        
+        # Validate dimension exists
+        if dimension not in filtered_df.columns:
+            print(f"⚠️ Filter dimension '{dimension}' not found in dataset, skipping")
+            continue
+        
+        # Apply filter: keep rows where dimension value is in allowed_values
+        # This implements OR logic within the dimension
+        filtered_df = filtered_df[filtered_df[dimension].isin(allowed_values)]
+    
+    return filtered_df
 
 
 def _same_dim_diff_measures(spec1, spec2):
@@ -924,7 +963,7 @@ async def create_chart(spec: ChartCreate):
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     # Debug logging
-    print(f"📊 /charts endpoint received: dimensions={spec.dimensions}, measures={spec.measures}, agg={spec.agg}, table_provided={spec.table is not None}")
+    print(f"📊 /charts endpoint received: dimensions={spec.dimensions}, measures={spec.measures}, agg={spec.agg}, table_provided={spec.table is not None}, filters={spec.filters}")
     if spec.table is not None:
         print(f"   Table has {len(spec.table)} rows")
     
@@ -934,6 +973,14 @@ async def create_chart(spec: ChartCreate):
     else:
         # Aggregate from dataset
         df = DATASETS[spec.dataset_id]
+        
+        # Apply filters before aggregation (Filter Early, Aggregate Later)
+        if spec.filters:
+            print(f"🔍 Applying filters: {spec.filters}")
+            original_rows = len(df)
+            df = _apply_filters(df, spec.filters)
+            print(f"   Filtered from {original_rows} to {len(df)} rows")
+        
         table = _agg(df, spec.dimensions, spec.measures, spec.agg)
         
         # Clean NaN/Inf values before JSON serialization
@@ -953,7 +1000,8 @@ async def create_chart(spec: ChartCreate):
         "agg": spec.agg,
         "title": spec.title or auto_title,
         "table": table_records,
-        "originalMeasure": spec.originalMeasure  # Store original measure for histograms
+        "originalMeasure": spec.originalMeasure,  # Store original measure for histograms
+        "filters": spec.filters or {}  # Store filters for persistence and reapplication
     }
     return CHARTS[chart_id]
 
@@ -1555,6 +1603,57 @@ async def dimension_counts(req: DimensionCountRequest):
     labels = [str(k) for k in vc.index.tolist()]
     counts = [int(v) for v in vc.tolist()]
     return {"dimension": req.dimension, "labels": labels, "counts": counts, "total": int(series.shape[0])}
+
+
+@app.post("/chart_dimension_values")
+async def chart_dimension_values(req: dict):
+    """
+    Chart Dimension Values Endpoint
+    Get unique dimension values from a chart's aggregated data.
+    Used to populate filter dropdowns with values from current chart.
+    
+    Args:
+        chart_id: ID of the chart
+        dimension: Name of dimension to get values for
+    
+    Returns:
+        List of unique values for the dimension from the chart's table
+    
+    Example:
+        Request: {"chart_id": "abc123", "dimension": "Product"}
+        Response: {"dimension": "Product", "values": ["Product A", "Product B", "Product C"]}
+    """
+    chart_id = req.get("chart_id")
+    dimension = req.get("dimension")
+    
+    if not chart_id:
+        raise HTTPException(status_code=400, detail="chart_id is required")
+    if not dimension:
+        raise HTTPException(status_code=400, detail="dimension is required")
+    
+    if chart_id not in CHARTS:
+        raise HTTPException(status_code=404, detail="Chart not found")
+    
+    chart = CHARTS[chart_id]
+    table = chart.get("table", [])
+    
+    if not table:
+        return {"dimension": dimension, "values": []}
+    
+    # Extract unique values for dimension from chart table
+    values = list(set(row.get(dimension) for row in table if dimension in row))
+    # Remove None values
+    values = [v for v in values if v is not None]
+    # Sort alphabetically for better UX
+    try:
+        values.sort()
+    except TypeError:
+        # If values are not comparable (mixed types), convert to strings and sort
+        values = sorted([str(v) for v in values])
+    
+    print(f"📊 Chart dimension values: chart_id={chart_id}, dimension={dimension}, values={values}")
+    
+    return {"dimension": dimension, "values": values}
 
 
 @app.post("/expression/validate")
