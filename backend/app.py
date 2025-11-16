@@ -25,9 +25,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",  # Local development
-        "https://*.onrender.com",  # All Render domains
-        "https://dfusenew-frontend.onrender.com",  # Your specific frontend URL
-        "https://dfusenew-backend.onrender.com"   # Allow backend-to-backend if needed
+        "https://dfusenew.onrender.com",  # Your actual frontend URL
+        "https://dfusenew-backend.onrender.com"   # Backend URL
     ],
     allow_credentials=True,
     allow_methods=["*"],
