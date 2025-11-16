@@ -4672,7 +4672,8 @@ function AppWrapper() {
     setSuggestions([]);
 
     try {
-      const response = await fetch('http://localhost:8000/suggest-charts', {
+      const response = await fetch(`${API}/suggest-charts`, {
+      //const response = await fetch('http://localhost:8000/suggest-charts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
