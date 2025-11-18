@@ -5,6 +5,7 @@ import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, D
 import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus } from 'lucide-react';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
+import { AgentChatPanel } from './agentic_layer';
 
 // Backend API endpoint URL
 //const API = 'http://localhost:8000';
@@ -1628,6 +1629,8 @@ function UnifiedSidebar({
   setInstructionsPanelOpen,
   settingsPanelOpen,
   setSettingsPanelOpen,
+  agentPanelOpen,
+  setAgentPanelOpen,
   activeTool,
   onToolChange,
   // Action handlers
@@ -1741,6 +1744,24 @@ function UnifiedSidebar({
           setChartActionsPanelOpen(false);
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
+          setAgentPanelOpen(false);
+        }
+      }
+    },
+    {
+      id: 'agent',
+      icon: Sparkles,
+      label: 'AI Agent',
+      active: agentPanelOpen,
+      onClick: () => {
+        setAgentPanelOpen(!agentPanelOpen);
+        if (!agentPanelOpen) {
+          setUploadPanelOpen(false);
+          setVariablesPanelOpen(false);
+          setChartActionsPanelOpen(false);
+          setMergePanelOpen(false);
+          setInstructionsPanelOpen(false);
+          setSettingsPanelOpen(false);
         }
       }
     }
@@ -2855,6 +2876,8 @@ function AppWrapper() {
     return !hasSeenInstructions;
   });
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+  const [agentMessages, setAgentMessages] = useState([]); // Persist agent conversation
   
   const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_api_key') || '');
   const [selectedModel, setSelectedModel] = useState(localStorage.getItem('gemini_model') || 'gemini-2.0-flash');
@@ -5572,6 +5595,8 @@ function AppWrapper() {
         setInstructionsPanelOpen={setInstructionsPanelOpen}
         settingsPanelOpen={settingsPanelOpen}
         setSettingsPanelOpen={setSettingsPanelOpen}
+        agentPanelOpen={agentPanelOpen}
+        setAgentPanelOpen={setAgentPanelOpen}
         activeTool={activeTool}
         onToolChange={handleToolChange}
         onMergeCharts={mergeSelectedCharts}
@@ -5587,7 +5612,7 @@ function AppWrapper() {
           left: 'calc(var(--size-sidebar) + 14px)',
           top: '60px',
           bottom: '100px',
-          pointerEvents: (uploadPanelOpen || variablesPanelOpen || chartActionsPanelOpen || mergePanelOpen || instructionsPanelOpen || settingsPanelOpen) ? 'auto' : 'none'
+          pointerEvents: (uploadPanelOpen || variablesPanelOpen || chartActionsPanelOpen || mergePanelOpen || instructionsPanelOpen || settingsPanelOpen || agentPanelOpen) ? 'auto' : 'none'
         }}
       >
       {/* Single Panel Container - Only one panel can be open at a time */}
@@ -5989,6 +6014,43 @@ function AppWrapper() {
                 </div>
               )}
             </div>
+          </SlidingPanel>
+        )}
+
+        {/* Agent Panel */}
+        {agentPanelOpen && (
+          <SlidingPanel
+            isOpen={agentPanelOpen}
+            title="AI Agent"
+            onClose={() => setAgentPanelOpen(false)}
+            size="md"
+          >
+            <AgentChatPanel
+              isOpen={agentPanelOpen}
+              onClose={() => setAgentPanelOpen(false)}
+              datasetId={datasetId}
+              apiKey={apiKey}
+              messages={agentMessages}
+              setMessages={setAgentMessages}
+              onTokenUsage={(usage) => {
+                setTokenUsage(prev => ({
+                  inputTokens: prev.inputTokens + (usage.inputTokens || 0),
+                  outputTokens: prev.outputTokens + (usage.outputTokens || 0),
+                  totalTokens: prev.totalTokens + (usage.totalTokens || 0),
+                  estimatedCost: prev.estimatedCost + (usage.estimatedCost || 0)
+                }));
+              }}
+              canvasContext={{
+                editor: tldrawEditorRef.current,
+                nodes,
+                setNodes,
+                getViewportCenter,
+                API,
+                datasetId,
+                apiKey,
+                figureFromPayload
+              }}
+            />
           </SlidingPanel>
         )}
 

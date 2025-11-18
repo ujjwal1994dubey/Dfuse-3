@@ -750,3 +750,225 @@ Use the actual data provided above."""
                 "query": user_query,
                 "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
             }
+    
+    def generate_agent_actions(
+        self,
+        query: str,
+        canvas_state: Dict[str, Any],
+        dataset_id: str,
+        dataset_metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate Agent Actions
+        Uses Gemini to generate structured actions based on user query and canvas state.
+        Leverages dataset metadata for enhanced semantic understanding.
+        
+        Args:
+            query: Natural language query from user
+            canvas_state: Current canvas state (charts, tables, textboxes)
+            dataset_id: ID of the dataset
+            dataset_metadata: Enhanced dataset context (summary, column descriptions)
+        
+        Returns:
+            Dict containing:
+                - actions: List of action objects
+                - reasoning: Overall reasoning
+                - token_usage: Token metrics
+        """
+        try:
+            print(f"🤖 Generating agent actions for query: '{query}'")
+            
+            # Get dataset
+            from app import DATASETS
+            if dataset_id not in DATASETS:
+                raise ValueError(f"Dataset {dataset_id} not found")
+            
+            dataset = DATASETS[dataset_id]
+            print(f"📊 Dataset: {dataset.shape[0]} rows, {dataset.shape[1]} columns")
+            
+            # Build enhanced context from metadata
+            enhanced_context = ""
+            if dataset_metadata and dataset_metadata.get('success'):
+                dataset_summary = dataset_metadata.get('dataset_summary', '')
+                columns_info = dataset_metadata.get('columns', [])
+                
+                if dataset_summary and dataset_summary.strip():
+                    enhanced_context += f"\n📊 DATASET PURPOSE:\n{dataset_summary.strip()}\n"
+                
+                if columns_info and len(columns_info) > 0:
+                    enhanced_context += "\n📋 COLUMN MEANINGS:\n"
+                    for col_info in columns_info:
+                        col_name = col_info.get('name')
+                        col_desc = col_info.get('description', 'No description')
+                        col_type = col_info.get('type', 'unknown')
+                        if col_desc and col_desc.strip():
+                            enhanced_context += f"- {col_name} ({col_type}): {col_desc}\n"
+                
+                print(f"✨ Using enhanced context: {len(enhanced_context)} chars")
+            
+            # Build canvas state summary
+            canvas_summary = self._summarize_canvas_state(canvas_state)
+            
+            # Build agent prompt
+            prompt = f"""You are an AI data analysis agent that creates visualizations and insights.
+
+{enhanced_context}
+
+CURRENT CANVAS STATE:
+{canvas_summary}
+
+DATASET STRUCTURE:
+- Columns: {list(dataset.columns)}
+- Rows: {len(dataset)}
+- Available dimensions: {[col for col in dataset.columns if dataset[col].dtype == 'object']}
+- Available measures: {[col for col in dataset.columns if dataset[col].dtype in ['int64', 'float64']]}
+
+Sample data (first 3 rows):
+{dataset.head(3).to_string(index=False)}
+
+USER QUERY: "{query}"
+
+Based on the canvas state and dataset, generate 1-3 actions to help the user.
+Consider what's already on the canvas and what would complement it.
+
+Output ONLY valid JSON in this EXACT format (no markdown, no extra text):
+{{
+  "actions": [
+    {{
+      "type": "create_chart",
+      "dimensions": ["column_name"],
+      "measures": ["column_name"],
+      "position": "center",
+      "reasoning": "Why this chart helps answer the query"
+    }}
+  ],
+  "reasoning": "Overall strategy for answering the user's query"
+}}
+
+Valid action types:
+
+1. create_chart: Create a new visualization
+   - dimensions (array of strings): Column names to use as dimensions
+   - measures (array of strings): Column names to use as measures
+   - position (string): "center", "right_of_chart", "below_chart"
+   - referenceChartId (optional string): Chart ID for relative positioning
+   - reasoning (string): Why this chart helps
+
+2. create_insight: Add a text note or explanation
+   - text (string): The insight text to display
+   - position (string): "center", "right_of_chart", "below_chart"
+   - referenceChartId (optional string): Chart ID for relative positioning
+   - reasoning (string): Why this insight is relevant
+
+3. generate_chart_insights: Generate AI-powered insights for an existing chart
+   - chartId (string): ID of existing chart from canvas state
+   - position (string): "right_of_chart", "below_chart", "center"
+   - userContext (optional string): Additional context
+   - reasoning (string): Why generate insights
+
+4. ai_query: Answer a free-form question about the data (works with or without charts)
+   - query (string): The question to answer
+   - chartId (optional string): If provided, analyzes specific chart's data as context
+   - position (string): "center", "right_of_chart", "below_chart"
+   - reasoning (string): Why this query helps
+   Note: chartId is optional - queries work on entire dataset if no chart specified
+
+5. show_table: Display the underlying data table for a chart
+   - chartId (string): ID of existing chart from canvas state
+   - reasoning (string): Why show the data table
+
+Valid positions: "center", "right_of_chart", "below_chart"
+If using "right_of_chart" or "below_chart", include referenceChartId with an existing chart ID from canvas state.
+
+Action selection guidelines:
+- User asks "why" or "explain" (about a chart) → use generate_chart_insights
+- User asks "what is", "how many", "calculate", "average" → use ai_query (no chart needed)
+- User asks "show data" or "see values" → use show_table (requires existing chart)
+- User asks "create" or "visualize" → use create_chart
+
+Important notes:
+- ai_query works WITHOUT any charts on canvas - perfect for quick data questions
+- generate_chart_insights and show_table REQUIRE an existing chart (specify chartId)"""
+
+            print("📝 Sending prompt to Gemini...")
+            response, token_usage = self.run_gemini_with_usage(prompt)
+            
+            print("🔍 Parsing response...")
+            actions_data = self._parse_agent_response(response)
+            
+            # Add token usage
+            actions_data["token_usage"] = token_usage
+            
+            print(f"✅ Successfully generated {len(actions_data.get('actions', []))} actions")
+            return actions_data
+            
+        except Exception as e:
+            print(f"❌ Agent action generation failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "actions": [],
+                "reasoning": f"Failed to generate actions: {str(e)}",
+                "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+            }
+    
+    def _summarize_canvas_state(self, canvas_state: Dict[str, Any]) -> str:
+        """Summarize canvas state for prompt"""
+        charts = canvas_state.get('charts', [])
+        tables = canvas_state.get('tables', [])
+        textBoxes = canvas_state.get('textBoxes', [])
+        
+        summary = []
+        
+        if len(charts) > 0:
+            summary.append(f"\nExisting Charts ({len(charts)}):")
+            for chart in charts:
+                dims = ', '.join(chart.get('dimensions', []))
+                meas = ', '.join(chart.get('measures', []))
+                chart_type = chart.get('chartType', 'bar')
+                chart_id = chart.get('id', 'unknown')
+                summary.append(f"  - Chart '{chart_id}': {chart_type} chart showing {meas} by {dims}")
+        else:
+            summary.append("\nExisting Charts: None (empty canvas)")
+        
+        if len(textBoxes) > 0:
+            summary.append(f"\nExisting Insights ({len(textBoxes)}):")
+            for textbox in textBoxes[:3]:  # Limit to 3 for brevity
+                text_preview = textbox.get('text', '')[:50]
+                summary.append(f"  - \"{text_preview}...\"")
+        
+        if len(tables) > 0:
+            summary.append(f"\nExisting Tables: {len(tables)}")
+        
+        return '\n'.join(summary)
+    
+    def _parse_agent_response(self, response: str) -> Dict[str, Any]:
+        """Parse Gemini response to extract action JSON"""
+        try:
+            # Try to extract JSON from markdown code blocks
+            if "```json" in response:
+                json_str = response.split("```json")[1].split("```")[0].strip()
+            elif "```" in response:
+                json_str = response.split("```")[1].strip()
+            else:
+                json_str = response.strip()
+            
+            # Parse JSON
+            parsed = json.loads(json_str)
+            
+            # Validate structure
+            if "actions" not in parsed:
+                raise ValueError("Response missing 'actions' field")
+            if "reasoning" not in parsed:
+                parsed["reasoning"] = "No reasoning provided"
+            
+            return parsed
+            
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON parsing failed: {e}")
+            print(f"Response text: {response[:500]}...")
+            # Return empty actions on parse failure
+            return {
+                "actions": [],
+                "reasoning": f"Failed to parse agent response: {str(e)}"
+            }

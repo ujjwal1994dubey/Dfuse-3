@@ -97,7 +97,8 @@ class ExpressionValidateRequest(BaseModel):
     expression: str
 
 class AIExploreRequest(BaseModel):
-    chart_id: str
+    chart_id: Optional[str] = None  # Optional - for chart-specific context
+    dataset_id: Optional[str] = None  # Optional - for dataset-level queries
     user_query: str
     api_key: Optional[str] = None
     model: str = "gemini-2.0-flash"
@@ -151,6 +152,13 @@ class ChartSuggestionResponse(BaseModel):
     suggestions: List[VariableSuggestion]
     token_usage: Dict[str, int]
     error: Optional[str] = None
+
+class AgentQueryRequest(BaseModel):
+    user_query: str
+    canvas_state: Dict[str, Any]
+    dataset_id: str
+    api_key: Optional[str] = None
+    model: str = "gemini-2.0-flash"
 
 # -----------------------
 # Helpers
@@ -1776,12 +1784,23 @@ async def ai_explore_data(request: AIExploreRequest):
     Returns:
         success, answer, code_steps, reasoning_steps, tabular_data, token_usage
     """
-    if request.chart_id not in CHARTS:
-        raise HTTPException(status_code=404, detail="Chart not found")
+    # Get dataset_id from either chart context or direct dataset_id
+    dataset_id = None
+    chart_context = None
     
-    # Get chart context
-    chart = CHARTS[request.chart_id]
-    dataset_id = chart["dataset_id"]
+    if request.chart_id:
+        # Chart-specific query: use chart context
+        if request.chart_id not in CHARTS:
+            raise HTTPException(status_code=404, detail="Chart not found")
+        chart_context = CHARTS[request.chart_id]
+        dataset_id = chart_context["dataset_id"]
+        print(f"🎯 Using chart context: {request.chart_id}")
+    elif request.dataset_id:
+        # Dataset-level query: use dataset directly
+        dataset_id = request.dataset_id
+        print(f"📊 Using dataset context: {dataset_id[:8]}...")
+    else:
+        raise HTTPException(status_code=400, detail="Either chart_id or dataset_id must be provided")
     
     if dataset_id not in DATASETS:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -2794,4 +2813,77 @@ Provide ONLY the bullet points, no headers or additional text."""
     print(f"📋 Cached chart insights for {request.chart_id}")
     
     return insights_result
+
+
+@app.post("/agent-query")
+async def agent_query(request: AgentQueryRequest):
+    """
+    Agent Query Endpoint
+    Processes natural language queries and generates actions for the agentic layer.
+    Uses canvas state and dataset metadata for enhanced context understanding.
+    
+    Request:
+        - user_query: Natural language query from user
+        - canvas_state: Current canvas state (charts, tables, insights)
+        - dataset_id: ID of the active dataset
+        - api_key: Gemini API key
+        - model: Gemini model to use
+    
+    Returns:
+        - success: bool
+        - actions: List of actions to execute (create_chart, create_insight)
+        - reasoning: Agent's reasoning for the actions
+        - token_usage: Token consumption metrics
+    """
+    try:
+        print(f"🤖 Agent query received: '{request.user_query}'")
+        print(f"   Dataset ID: {request.dataset_id}")
+        print(f"   Canvas state: {len(request.canvas_state.get('charts', []))} charts, {len(request.canvas_state.get('textBoxes', []))} insights")
+        
+        # Validate dataset exists
+        if request.dataset_id not in DATASETS:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        # Validate API key
+        if not request.api_key:
+            raise HTTPException(status_code=400, detail="API key is required")
+        
+        # Get dataset metadata for enhanced context
+        dataset_metadata = DATASET_METADATA.get(request.dataset_id, {})
+        if dataset_metadata and dataset_metadata.get('success'):
+            print(f"📋 Using enhanced dataset context for agent")
+            print(f"   Dataset summary: {len(dataset_metadata.get('dataset_summary', ''))} chars")
+            print(f"   Column descriptions: {len(dataset_metadata.get('columns', []))} columns")
+        else:
+            print("⚠️ No dataset metadata available - using basic context")
+            dataset_metadata = None
+        
+        # Initialize Gemini formulator
+        formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
+        
+        # Generate agent actions
+        result = formulator.generate_agent_actions(
+            query=request.user_query,
+            canvas_state=request.canvas_state,
+            dataset_id=request.dataset_id,
+            dataset_metadata=dataset_metadata
+        )
+        
+        print(f"✅ Agent generated {len(result.get('actions', []))} actions")
+        print(f"   Token usage: {result.get('token_usage', {})}")
+        
+        return {
+            "success": True,
+            "actions": result.get("actions", []),
+            "reasoning": result.get("reasoning", ""),
+            "token_usage": result.get("token_usage", {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0})
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Agent query failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Agent query failed: {str(e)}")
 
