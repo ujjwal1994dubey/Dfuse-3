@@ -703,6 +703,97 @@ export const ECHARTS_TYPES = {
         }]
       };
     }
+  },
+
+  MULTI_SERIES_BAR: {
+    id: 'multi_series_bar',
+    label: 'Multi-Series Bar',
+    icon: BarChart,
+    isSupported: (dims, measures) => dims === 1 && measures >= 2 && measures <= 5,
+    createOption: (data, payload) => {
+      const xKey = payload.dimensions[0];
+      const measureKeys = payload.measures;
+      
+      const categories = data.map(r => truncateText(r[xKey]));
+      const fullLabels = data.map(r => String(r[xKey]));
+      
+      // Create series for each measure
+      const series = measureKeys.map((measure, idx) => ({
+        name: measure,
+        type: 'bar',
+        data: data.map(r => r[measure] || 0),
+        animationDelay: idx * 100,
+        itemStyle: {
+          color: DEFAULT_ECHARTS_COLORS.categorical[idx % DEFAULT_ECHARTS_COLORS.categorical.length]
+        }
+      }));
+      
+      return {
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'shadow' },
+          formatter: (params) => {
+            const dataIndex = params[0].dataIndex;
+            let tooltip = `<strong>${fullLabels[dataIndex]}</strong><br/>`;
+            params.forEach(param => {
+              tooltip += `${param.marker} ${param.seriesName}: ${param.value.toLocaleString()}<br/>`;
+            });
+            return tooltip;
+          }
+        },
+        legend: {
+          data: measureKeys,
+          top: 5,
+          textStyle: { fontSize: 11, color: '#4B5563' }
+        },
+        dataZoom: [
+          {
+            type: 'inside',
+            xAxisIndex: 0,
+            start: 0,
+            end: 100,
+            zoomOnMouseWheel: true,
+            moveOnMouseMove: true
+          }
+        ],
+        grid: {
+          left: '80px',
+          right: '30px',
+          top: '50px',
+          bottom: '80px',
+          containLabel: false
+        },
+        xAxis: {
+          type: 'category',
+          data: categories,
+          axisLabel: {
+            rotate: 45,
+            fontSize: 11,
+            color: '#4B5563'
+          },
+          axisLine: { lineStyle: { color: '#E5E7EB' } },
+          name: xKey,
+          nameLocation: 'middle',
+          nameGap: 60,
+          nameTextStyle: { fontSize: 12, color: '#4B5563' }
+        },
+        yAxis: {
+          type: 'value',
+          axisLabel: { 
+            fontSize: 11, 
+            color: '#4B5563',
+            formatter: (value) => value.toLocaleString()
+          },
+          axisLine: { lineStyle: { color: '#E5E7EB' } },
+          splitLine: { lineStyle: { color: '#E5E7EB' } },
+          name: 'Value',
+          nameLocation: 'middle',
+          nameGap: 50,
+          nameTextStyle: { fontSize: 12, color: '#4B5563' }
+        },
+        series: series
+      };
+    }
   }
 };
 
@@ -720,6 +811,13 @@ export const getEChartsSupportedTypes = (dims, measures) => {
  */
 export const getEChartsDefaultType = (dims, measures) => {
   const supported = getEChartsSupportedTypes(dims, measures);
+  
+  // Prefer multi_series_bar for 3+ measures
+  if (measures >= 3) {
+    const multiSeries = supported.find(t => t.id === 'multi_series_bar');
+    if (multiSeries) return multiSeries;
+  }
+  
   return supported.length > 0 ? supported[0] : ECHARTS_TYPES.BAR;
 };
 
@@ -742,10 +840,12 @@ export const canConvertChartType = (fromType, toType, dims, measures) => {
  * Group 1 (1D + 1M): bar ↔ pie ↔ line
  * Group 2 (1D + 2M): scatter ↔ grouped_bar ↔ dual_axis
  * Group 3 (2D + 1M): stacked_bar ↔ bubble
+ * Group 4 (1D + 3-5M): multi_series_bar ↔ grouped_bar ↔ dual_axis (when 2M only)
  */
 export const COMPATIBILITY_GROUPS = {
   'GROUP_1': ['bar', 'pie', 'line'],
   'GROUP_2': ['scatter', 'grouped_bar', 'dual_axis'],
-  'GROUP_3': ['stacked_bar', 'bubble']
+  'GROUP_3': ['stacked_bar', 'bubble'],
+  'GROUP_4': ['multi_series_bar', 'grouped_bar', 'dual_axis']
 };
 

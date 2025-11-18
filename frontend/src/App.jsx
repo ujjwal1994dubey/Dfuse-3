@@ -2877,7 +2877,8 @@ function AppWrapper() {
   });
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
-  const [agentMessages, setAgentMessages] = useState([]); // Persist agent conversation
+  const [canvasMessages, setCanvasMessages] = useState([]); // Canvas mode conversation
+  const [askMessages, setAskMessages] = useState([]); // Ask mode conversation
   
   const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_api_key') || '');
   const [selectedModel, setSelectedModel] = useState(localStorage.getItem('gemini_model') || 'gemini-2.0-flash');
@@ -6030,8 +6031,10 @@ function AppWrapper() {
               onClose={() => setAgentPanelOpen(false)}
               datasetId={datasetId}
               apiKey={apiKey}
-              messages={agentMessages}
-              setMessages={setAgentMessages}
+              canvasMessages={canvasMessages}
+              setCanvasMessages={setCanvasMessages}
+              askMessages={askMessages}
+              setAskMessages={setAskMessages}
               onTokenUsage={(usage) => {
                 setTokenUsage(prev => ({
                   inputTokens: prev.inputTokens + (usage.inputTokens || 0),

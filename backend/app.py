@@ -159,6 +159,7 @@ class AgentQueryRequest(BaseModel):
     dataset_id: str
     api_key: Optional[str] = None
     model: str = "gemini-2.0-flash"
+    mode: str = "canvas"  # 'canvas' or 'ask'
 
 # -----------------------
 # Helpers
@@ -2861,12 +2862,13 @@ async def agent_query(request: AgentQueryRequest):
         # Initialize Gemini formulator
         formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
         
-        # Generate agent actions
+        # Generate agent actions with mode
         result = formulator.generate_agent_actions(
             query=request.user_query,
             canvas_state=request.canvas_state,
             dataset_id=request.dataset_id,
-            dataset_metadata=dataset_metadata
+            dataset_metadata=dataset_metadata,
+            mode=request.mode
         )
         
         print(f"✅ Agent generated {len(result.get('actions', []))} actions")

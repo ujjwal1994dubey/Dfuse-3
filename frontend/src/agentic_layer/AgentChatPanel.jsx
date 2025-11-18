@@ -1,6 +1,8 @@
 /**
  * Agent Chat Panel Component
- * Main UI for the agentic layer - conversational interface for creating charts and insights
+ * Main UI for the agentic layer - two-mode conversational interface
+ * Canvas Mode: Create charts, insights, and tables on canvas
+ * Ask Mode: Get analytical answers from data
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -8,34 +10,41 @@ import { getCanvasSnapshot } from './canvasSnapshot';
 import { executeActions } from './actionExecutor';
 import { validateActionsSafe } from './validation';
 import { ACTION_TYPES } from './types';
-import { Send, Sparkles, Loader2, AlertCircle, CheckCircle, Trash2 } from 'lucide-react';
+import { Send, Loader2, AlertCircle, Trash2 } from 'lucide-react';
 
 export function AgentChatPanel({
   isOpen,
   onClose,
   datasetId,
   apiKey,
-  messages,
-  setMessages,
+  canvasMessages,
+  setCanvasMessages,
+  askMessages,
+  setAskMessages,
   onTokenUsage,
   canvasContext
 }) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [mode, setMode] = useState('canvas'); // 'canvas' or 'ask'
   const messagesEndRef = useRef(null);
+
+  // Get current messages based on mode
+  const currentMessages = mode === 'canvas' ? canvasMessages : askMessages;
+  const setCurrentMessages = mode === 'canvas' ? setCanvasMessages : setAskMessages;
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [currentMessages]);
 
-  // Clear conversation handler
+  // Clear conversation handler for current mode only
   const handleClearConversation = () => {
-    if (messages.length > 0) {
-      const confirmed = window.confirm('Clear all conversation history? This cannot be undone.');
+    if (currentMessages.length > 0) {
+      const confirmed = window.confirm(`Clear all ${mode === 'canvas' ? 'Canvas' : 'Ask'} mode conversation? This cannot be undone.`);
       if (confirmed) {
-        setMessages([]);
+        setCurrentMessages([]);
         setError(null);
       }
     }
@@ -60,11 +69,12 @@ export function AgentChatPanel({
     setInput('');
     setError(null);
 
-    // Add user message to chat
-    setMessages(prev => [...prev, {
+    // Add user message to current mode's chat
+    setCurrentMessages(prev => [...prev, {
       type: 'user',
       content: userMessage,
-      timestamp: new Date()
+      timestamp: new Date(),
+      mode
     }]);
 
     setLoading(true);
@@ -76,10 +86,10 @@ export function AgentChatPanel({
         canvasContext.nodes
       );
 
-      console.log('🤖 Sending query to agent:', userMessage);
+      console.log(`🤖 [${mode.toUpperCase()} MODE] Sending query:`, userMessage);
       console.log('📸 Canvas state:', canvasState);
 
-      // Call agent API
+      // Call agent API with mode
       const response = await fetch(`${canvasContext.API}/agent-query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -88,7 +98,8 @@ export function AgentChatPanel({
           canvas_state: canvasState,
           dataset_id: datasetId,
           api_key: apiKey,
-          model: 'gemini-2.0-flash'
+          model: 'gemini-2.0-flash',
+          mode: mode // Send current mode to backend
         })
       });
 
@@ -103,7 +114,6 @@ export function AgentChatPanel({
       // Track token usage
       if (data.token_usage && onTokenUsage) {
         const usage = data.token_usage;
-        // Calculate estimated cost (Gemini 2.0 Flash pricing: $0.075 per 1M input, $0.30 per 1M output)
         const inputCost = (usage.inputTokens / 1000000) * 0.075;
         const outputCost = (usage.outputTokens / 1000000) * 0.30;
         const estimatedCost = inputCost + outputCost;
@@ -128,49 +138,75 @@ export function AgentChatPanel({
 
       // Execute actions immediately
       console.log('⚡ Executing actions:', validated.actions);
-      const results = await executeActions(validated.actions, canvasContext);
+      const results = await executeActions(validated.actions, {
+        ...canvasContext,
+        currentQuery: userMessage,
+        mode
+      });
 
-      // Generate response message
-      const successCount = results.filter(r => r.success).length;
-      const failCount = results.filter(r => !r.success).length;
+      console.log('📦 Action results:', results);
 
-      let responseContent = '';
-      if (successCount > 0) {
-        responseContent = `✅ Created ${successCount} ${successCount === 1 ? 'item' : 'items'}:\n\n`;
-        results.filter(r => r.success).forEach(r => {
-          responseContent += `• ${r.message}\n`;
-        });
+      // Handle Ask Mode differently - show actual AI response
+      if (mode === 'ask' && results.length > 0 && results[0].success && results[0].result?.mode === 'ask') {
+        console.log('✨ Ask Mode response detected, showing AI answer');
+        const aiResult = results[0].result;
+        
+        // Add agent response with AI answer data
+        setCurrentMessages(prev => [...prev, {
+          type: 'ai_answer',
+          query: aiResult.query,
+          answer: aiResult.answer,
+          python_code: aiResult.python_code,
+          code_steps: aiResult.code_steps,
+          timestamp: new Date(),
+          mode,
+          canvasContext // Pass context for "Add to Canvas"
+        }]);
+      } else {
+        // Canvas Mode or other actions - show regular message
+        const successCount = results.filter(r => r.success).length;
+        const failCount = results.filter(r => !r.success).length;
+
+        let responseContent = '';
+        if (successCount > 0) {
+          responseContent = `✅ Created ${successCount} ${successCount === 1 ? 'item' : 'items'}:\n\n`;
+          results.filter(r => r.success).forEach(r => {
+            responseContent += `• ${r.message}\n`;
+          });
+        }
+
+        if (failCount > 0) {
+          responseContent += `\n❌ ${failCount} ${failCount === 1 ? 'action' : 'actions'} failed:\n`;
+          results.filter(r => !r.success).forEach(r => {
+            responseContent += `• ${r.message}\n`;
+          });
+        }
+
+        if (validated.reasoning) {
+          responseContent += `\n💡 ${validated.reasoning}`;
+        }
+
+        // Add agent response to current mode's chat
+        setCurrentMessages(prev => [...prev, {
+          type: 'agent',
+          content: responseContent,
+          timestamp: new Date(),
+          mode,
+          actions: validated.actions,
+          results
+        }]);
       }
-
-      if (failCount > 0) {
-        responseContent += `\n❌ ${failCount} ${failCount === 1 ? 'action' : 'actions'} failed:\n`;
-        results.filter(r => !r.success).forEach(r => {
-          responseContent += `• ${r.message}\n`;
-        });
-      }
-
-      if (validated.reasoning) {
-        responseContent += `\n💡 ${validated.reasoning}`;
-      }
-
-      // Add agent response to chat
-      setMessages(prev => [...prev, {
-        type: 'agent',
-        content: responseContent,
-        timestamp: new Date(),
-        actions: validated.actions,
-        results
-      }]);
 
     } catch (err) {
       console.error('❌ Agent query failed:', err);
       setError(err.message);
       
-      // Add error message to chat
-      setMessages(prev => [...prev, {
+      // Add error message to current mode's chat
+      setCurrentMessages(prev => [...prev, {
         type: 'error',
         content: `❌ Error: ${err.message}`,
-        timestamp: new Date()
+        timestamp: new Date(),
+        mode
       }]);
     } finally {
       setLoading(false);
@@ -179,115 +215,226 @@ export function AgentChatPanel({
 
   return (
     <div className="flex flex-col h-full bg-white">
-      {/* Header */}
+      {/* Header with Mode Toggle */}
       <div className="p-4 border-b border-gray-200">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-5 h-5 text-purple-600" />
-            <h3 className="font-semibold text-gray-900">AI Agent</h3>
+          {/* Mode Toggle - Left Side */}
+          <div className="flex items-center gap-2 border border-gray-300 rounded-lg p-1">
+            <button
+              onClick={() => setMode('canvas')}
+              className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                mode === 'canvas'
+                  ? 'bg-purple-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              Canvas
+            </button>
+            <button
+              onClick={() => setMode('ask')}
+              className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                mode === 'ask'
+                  ? 'bg-blue-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              Ask
+            </button>
           </div>
-          {messages.length > 0 && (
+          
+          {/* Clear Button - Right Side */}
+          {currentMessages.length > 0 && (
             <button
               onClick={handleClearConversation}
               className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-              title="Clear conversation"
+              title={`Clear ${mode === 'canvas' ? 'Canvas' : 'Ask'} conversation`}
             >
               <Trash2 className="w-4 h-4" />
             </button>
           )}
         </div>
-        <p className="text-sm text-gray-600 mt-1">
-          Ask me to create charts and insights
-        </p>
       </div>
 
-      {/* Messages */}
+      {/* Messages - Mode Scoped */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.length === 0 && (
+        {currentMessages.length === 0 && (
           <div className="text-center text-gray-500 py-12">
-            <Sparkles className="w-12 h-12 mx-auto mb-3 text-gray-400" />
-            <p className="text-base font-semibold mb-4">AI Agent Ready! 🤖</p>
-            <div className="text-sm text-left max-w-md mx-auto space-y-2">
-              <p className="font-semibold">Try asking me to:</p>
-              <ul className="list-disc pl-5 space-y-1 text-gray-600">
-                <li>"Show revenue by product category"</li>
-                <li>"What are the top 5 regions by profit?"</li>
-                <li>"Generate insights for this chart"</li>
-                <li>"Show me the data table"</li>
-                <li>"Why is this trend happening?"</li>
-              </ul>
-            </div>
+            {mode === 'canvas' ? (
+              <>
+                <p className="text-2xl mb-2">📊</p>
+                <p className="text-base font-semibold mb-2">Canvas Mode</p>
+                <p className="text-sm">Create charts, insights, and tables</p>
+                <div className="mt-6 text-left max-w-md mx-auto space-y-2 text-xs">
+                  <p className="font-medium text-gray-700">Try asking:</p>
+                  <p className="text-gray-600">• "Show me revenue by region"</p>
+                  <p className="text-gray-600">• "Compare top products"</p>
+                  <p className="text-gray-600">• "Create a chart for capacity by sprint"</p>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-2xl mb-2">💬</p>
+                <p className="text-base font-semibold mb-2">Ask Mode</p>
+                <p className="text-sm">Get analytical answers from your data</p>
+                <div className="mt-6 text-left max-w-md mx-auto space-y-2 text-xs">
+                  <p className="font-medium text-gray-700">Try asking:</p>
+                  <p className="text-gray-600">• "Which two sprints performed best?"</p>
+                  <p className="text-gray-600">• "What is the average capacity?"</p>
+                  <p className="text-gray-600">• "Find products with profit &gt; $1000"</p>
+                </div>
+              </>
+            )}
           </div>
         )}
-
-        {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
+        
+        {currentMessages.map((message, index) => (
+          <MessageBubble key={index} message={message} />
         ))}
-
+        
         {loading && (
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 rounded-full bg-purple-100 flex items-center justify-center flex-shrink-0">
-              <Loader2 className="w-4 h-4 text-purple-600 animate-spin" />
-            </div>
-            <div className="flex-1 bg-gray-100 rounded-lg p-3">
-              <p className="text-sm text-gray-600">Thinking...</p>
+          <div className="flex items-center gap-2 text-gray-500">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span className="text-sm">
+              {mode === 'canvas' ? 'Creating on canvas...' : 'Analyzing data...'}
+            </span>
+          </div>
+        )}
+        
+        {error && (
+          <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+            <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-red-900">Error</p>
+              <p className="text-sm text-red-700 mt-1">{error}</p>
             </div>
           </div>
         )}
-
+        
         <div ref={messagesEndRef} />
       </div>
 
       {/* Input */}
       <div className="p-4 border-t border-gray-200">
-        {error && (
-          <div className="mb-3 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
-            <p className="text-sm text-red-800">{error}</p>
-          </div>
-        )}
-
         <form onSubmit={handleSubmit} className="flex gap-2">
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask the agent to create charts..."
-            disabled={loading || !datasetId || !apiKey}
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed text-sm"
+            placeholder={
+              mode === 'canvas' 
+                ? "Ask me to create charts..." 
+                : "Ask a question about your data..."
+            }
+            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+            disabled={loading}
           />
           <button
             type="submit"
-            disabled={loading || !input.trim() || !datasetId || !apiKey}
-            className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
+            disabled={loading || !input.trim()}
+            className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
           >
-            {loading ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Send className="w-4 h-4" />
-            )}
+            <Send className="w-5 h-5" />
           </button>
         </form>
-
-        {!datasetId && (
-          <p className="text-xs text-gray-500 mt-2">
-            ⚠️ Please upload a dataset first
-          </p>
-        )}
-        {!apiKey && (
-          <p className="text-xs text-gray-500 mt-2">
-            ⚠️ Please configure your API key in settings
-          </p>
-        )}
       </div>
     </div>
   );
 }
 
 function MessageBubble({ message }) {
+  const [showCode, setShowCode] = useState(false);
   const isUser = message.type === 'user';
   const isError = message.type === 'error';
+  const isAIAnswer = message.type === 'ai_answer';
 
+  // Handle Add to Canvas for AI answers
+  const handleAddToCanvas = () => {
+    if (!message.canvasContext || !message.answer) return;
+    
+    const { setNodes, getViewportCenter } = message.canvasContext;
+    const position = getViewportCenter();
+    const insightId = `ai-answer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    setNodes(nodes => nodes.concat({
+      id: insightId,
+      type: 'textbox',
+      position,
+      draggable: true,
+      selectable: false,
+      data: {
+        text: `❓ ${message.query}\n\n💬 ${message.answer}`,
+        width: 350,
+        height: 250,
+        fontSize: 14,
+        isNew: false,
+        aiGenerated: true,
+        createdBy: 'agent',
+        createdAt: new Date().toISOString()
+      }
+    }));
+    
+    console.log('✅ Added AI answer to canvas:', insightId);
+  };
+
+  // Special rendering for AI Answer
+  if (isAIAnswer) {
+    return (
+      <div className="flex items-start gap-3">
+        {/* Avatar */}
+        <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-purple-100">
+          <span className="text-xs font-medium text-purple-700">AI</span>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1">
+          {/* Query */}
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-2">
+            <p className="text-sm font-medium text-blue-900">❓ {message.query}</p>
+          </div>
+
+          {/* Answer */}
+          <div className="bg-cyan-50 border border-cyan-200 rounded-lg p-4">
+            <p className="text-xs font-medium text-cyan-700 mb-2">💬 Based on your real dataset, here are the results:</p>
+            <p className="text-sm text-cyan-900 whitespace-pre-wrap">{message.answer}</p>
+          </div>
+
+          {/* Actions */}
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              onClick={handleAddToCanvas}
+              className="px-4 py-2 bg-white border border-cyan-300 text-cyan-700 rounded-lg hover:bg-cyan-50 text-sm font-medium transition-colors flex items-center gap-2"
+            >
+              → Add to Canvas
+            </button>
+            
+            {message.python_code && (
+              <button
+                onClick={() => setShowCode(!showCode)}
+                className="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-sm font-medium transition-colors"
+              >
+                {showCode ? '▼' : '▶'} View Python Code
+              </button>
+            )}
+          </div>
+
+          {/* Python Code (Collapsible) */}
+          {showCode && message.python_code && (
+            <div className="mt-3 bg-gray-900 rounded-lg p-4">
+              <pre className="text-xs text-green-400 font-mono whitespace-pre-wrap overflow-x-auto">
+                {message.python_code}
+              </pre>
+            </div>
+          )}
+
+          <p className="text-xs text-gray-500 mt-2">
+            {message.timestamp.toLocaleTimeString()}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Regular message rendering
   return (
     <div className={`flex items-start gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
       {/* Avatar */}
@@ -295,11 +442,11 @@ function MessageBubble({ message }) {
         isUser ? 'bg-blue-100' : isError ? 'bg-red-100' : 'bg-purple-100'
       }`}>
         {isUser ? (
-          <span className="text-sm font-medium text-blue-700">You</span>
+          <span className="text-xs font-medium text-blue-700">You</span>
         ) : isError ? (
           <AlertCircle className="w-4 h-4 text-red-600" />
         ) : (
-          <Sparkles className="w-4 h-4 text-purple-600" />
+          <span className="text-xs font-medium text-purple-700">AI</span>
         )}
       </div>
 
@@ -321,4 +468,3 @@ function MessageBubble({ message }) {
     </div>
   );
 }
-

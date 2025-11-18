@@ -9,7 +9,7 @@ import { getEChartsDefaultType } from '../charts/echartsRegistry';
 /**
  * Execute multiple actions in sequence
  * @param {Array} actions - Array of validated actions to execute
- * @param {Object} context - Execution context with API, datasetId, setNodes, etc.
+ * @param {Object} context - Execution context with API, datasetId, setNodes, currentQuery, etc.
  * @returns {Promise<Array>} Array of execution results
  */
 export async function executeActions(actions, context) {
@@ -117,7 +117,12 @@ async function createChartAction(action, context) {
       selected: false,
       filters: chart.filters || {},
       width: AGENT_CONFIG.DEFAULT_CHART_WIDTH,
-      height: AGENT_CONFIG.DEFAULT_CHART_HEIGHT
+      height: AGENT_CONFIG.DEFAULT_CHART_HEIGHT,
+      // Provenance metadata
+      createdBy: 'agent',
+      createdByQuery: context.currentQuery || null,
+      creationReasoning: action.reasoning || null,
+      createdAt: new Date().toISOString()
     }
   }));
   
@@ -152,7 +157,12 @@ function createInsightAction(action, context) {
       width: 220,
       height: 220,
       fontSize: 14,
-      isNew: false
+      isNew: false,
+      // Provenance metadata
+      createdBy: 'agent',
+      createdByQuery: context.currentQuery || null,
+      relatedChartId: action.referenceChartId || null,
+      createdAt: new Date().toISOString()
     }
   }));
   
@@ -272,7 +282,12 @@ async function generateChartInsightsAction(action, context) {
       fontSize: 14,
       isNew: false,
       aiGenerated: true,
-      sourceChartId: action.chartId
+      sourceChartId: action.chartId,
+      // Provenance metadata
+      createdBy: 'agent',
+      createdByQuery: context.currentQuery || null,
+      relatedChartId: action.chartId,
+      createdAt: new Date().toISOString()
     }
   }));
   
@@ -289,7 +304,7 @@ async function generateChartInsightsAction(action, context) {
  * Answer free-form AI query about data
  */
 async function aiQueryAction(action, context) {
-  const { API, apiKey, datasetId, setNodes, nodes, editor } = context;
+  const { API, apiKey, datasetId, setNodes, nodes, editor, mode } = context;
   
   if (!apiKey) {
     throw new Error('API key is required for AI queries');
@@ -345,38 +360,62 @@ async function aiQueryAction(action, context) {
   
   const result = await response.json();
   
-  // Create text box with answer
-  const position = calculatePosition(
-    action.position, 
-    { ...action, referenceChartId: action.chartId }, 
-    context
-  );
-  const insightId = `ai-answer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  
-  setNodes(nodes => nodes.concat({
-    id: insightId,
-    type: 'textbox',
-    position,
-    draggable: true,
-    selectable: false,
-    data: {
-      text: `❓ ${action.query}\n\n💬 ${result.answer}`,
-      width: 350,
-      height: 250,
-      fontSize: 14,
-      isNew: false,
-      aiGenerated: true
-    }
-  }));
-  
-  console.log(`✅ AI query answered:`, action.query, 'at position', position);
-  
-  return {
-    insightId,
-    query: action.query,
-    answer: result.answer,
-    position
-  };
+  // In Ask Mode, return the result without creating canvas elements
+  // In Canvas Mode, create a textbox on the canvas
+  if (mode === 'ask') {
+    console.log(`✅ AI Query answered (Ask Mode - no canvas element created)`);
+    
+    return {
+      query: action.query,
+      answer: result.answer,
+      code_steps: result.code_steps || [],
+      python_code: result.code_steps ? result.code_steps.join('\n') : '',
+      reasoning_steps: result.reasoning_steps || [],
+      tabular_data: result.tabular_data || [],
+      has_table: result.has_table || false,
+      chartIdContext: chartIdToUse,
+      mode: 'ask'
+    };
+  } else {
+    // Canvas Mode: Create text box with answer
+    const position = calculatePosition(
+      action.position, 
+      { ...action, referenceChartId: action.chartId }, 
+      context
+    );
+    const insightId = `ai-answer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    setNodes(nodes => nodes.concat({
+      id: insightId,
+      type: 'textbox',
+      position,
+      draggable: true,
+      selectable: false,
+      data: {
+        text: `❓ ${action.query}\n\n💬 ${result.answer}`,
+        width: 350,
+        height: 250,
+        fontSize: 14,
+        isNew: false,
+        aiGenerated: true,
+        // Provenance metadata
+        createdBy: 'agent',
+        createdByQuery: context.currentQuery || null,
+        relatedChartId: chartIdToUse || null,
+        createdAt: new Date().toISOString()
+      }
+    }));
+    
+    console.log(`✅ AI query answered:`, action.query, 'at position', position);
+    
+    return {
+      insightId,
+      query: action.query,
+      answer: result.answer,
+      position,
+      mode: 'canvas'
+    };
+  }
 }
 
 /**
