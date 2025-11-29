@@ -6,6 +6,7 @@ import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresE
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
 import { AgentChatPanel } from './agentic_layer';
+import { GlobalFilterProvider, useGlobalFilter } from './contexts/GlobalFilterContext';
 
 // Backend API endpoint URL
 //const API = 'http://localhost:8000';
@@ -1927,6 +1928,9 @@ function ChartActionsPanel({
   const [dimensionFilters, setDimensionFilters] = useState({});
   const [filterApplying, setFilterApplying] = useState(false);
   
+  // Global filter context for click-through filtering
+  const { setGlobalFilter, clearGlobalFilter } = useGlobalFilter();
+  
   // Update local state when selected chart changes
   useEffect(() => {
     if (selectedChart) {
@@ -2263,8 +2267,9 @@ function ChartActionsPanel({
   const handleClearFilters = useCallback(async () => {
     if (!selectedChart) return;
     
-    // Clear the filters state
+    // Clear both chart-level filters AND global filters
     setDimensionFilters({});
+    clearGlobalFilter(); // Also clear global filter
     
     // Re-fetch chart without filters
     setFilterApplying(true);
@@ -2325,6 +2330,38 @@ function ChartActionsPanel({
       setFilterApplying(false);
     }
   }, [selectedChart, onChartUpdate]);
+  
+  // Apply filters globally to all charts on canvas (click-through filtering)
+  const handleApplyGlobalFilter = useCallback(() => {
+    if (!selectedChart || !dimensionFilters || Object.keys(dimensionFilters).length === 0) {
+      alert('Please select at least one filter value first');
+      return;
+    }
+    
+    // Multi-value support: send all selected values for the dimension
+    // Get first dimension with selected values
+    const dimensions = Object.keys(dimensionFilters);
+    const firstDimension = dimensions[0];
+    const selectedValues = dimensionFilters[firstDimension];
+    
+    if (!selectedValues || selectedValues.length === 0) {
+      alert('Please select at least one filter value first');
+      return;
+    }
+    
+    console.log('🌍 Applying global filter:', {
+      dimension: firstDimension,
+      values: selectedValues,  // Send ALL selected values
+      count: selectedValues.length,
+      sourceChart: selectedChart.id
+    });
+    
+    // Use GlobalFilterContext to set the filter with multiple values
+    // This will trigger the useEffect in AppWrapper that updates all charts
+    setGlobalFilter(firstDimension, selectedValues, selectedChart.id);
+    
+    console.log('✅ Global filter set - all charts will update automatically');
+  }, [selectedChart, dimensionFilters, setGlobalFilter]);
   
   // Get chart type info
   const dims = selectedChart?.data?.dimensions?.filter(d => d !== 'count').length || 0;
@@ -2468,15 +2505,28 @@ function ChartActionsPanel({
                   ))}
                 </div>
                 
-                {/* Apply Filters Button */}
-                <Button
-                  onClick={handleApplyFilters}
-                  disabled={filterApplying}
-                  className="w-full mt-3 bg-blue-600 hover:bg-blue-700 text-white"
-                  size="md"
-                >
-                  {filterApplying ? 'Applying...' : 'Apply Filters'}
-                </Button>
+                {/* Filter Action Buttons */}
+                <div className="space-y-2 mt-3">
+                  {/* Apply as Chart Filter */}
+                  <Button
+                    onClick={handleApplyFilters}
+                    disabled={filterApplying}
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                    size="md"
+                  >
+                    {filterApplying ? 'Applying...' : 'Apply as Chart Filter'}
+                  </Button>
+                  
+                  {/* Apply as Global Filter */}
+                  <Button
+                    onClick={handleApplyGlobalFilter}
+                    disabled={filterApplying || Object.keys(dimensionFilters).length === 0}
+                    className="w-full bg-green-600 hover:bg-green-700 text-white"
+                    size="md"
+                  >
+                    Apply as Global Filter
+                  </Button>
+                </div>
                 
                 {/* Active Filters Badge */}
                 {Object.keys(dimensionFilters).some(d => dimensionFilters[d]?.length > 0) && (
@@ -2717,6 +2767,71 @@ const getMinimapNodeColor = (node) => {
 };
 
 /**
+ * ClearFiltersButton Component
+ * Floating button that appears when a global filter is active
+ * Allows users to clear all click-through filters at once
+ */
+function ClearFiltersButton() {
+  const { globalFilter, clearGlobalFilter, isFilterActive } = useGlobalFilter();
+  
+  if (!isFilterActive()) return null;
+  
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: '20px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        zIndex: 1200,
+        pointerEvents: 'all'
+      }}
+    >
+      <button
+        onClick={() => {
+          clearGlobalFilter();
+          console.log('🧹 All filters cleared');
+        }}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          padding: '10px 20px',
+          backgroundColor: '#10B981',
+          color: 'white',
+          border: 'none',
+          borderRadius: '8px',
+          fontSize: '14px',
+          fontWeight: '600',
+          cursor: 'pointer',
+          boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)',
+          transition: 'all 0.2s ease'
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.backgroundColor = '#059669';
+          e.currentTarget.style.transform = 'translateY(-1px)';
+          e.currentTarget.style.boxShadow = '0 6px 16px rgba(16, 185, 129, 0.4)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.backgroundColor = '#10B981';
+          e.currentTarget.style.transform = 'translateY(0)';
+          e.currentTarget.style.boxShadow = '0 4px 12px rgba(16, 185, 129, 0.3)';
+        }}
+      >
+        <X size={16} />
+        <span>
+          Clear Filter: {globalFilter.activeDimension} = {
+            globalFilter.activeValues?.length === 1 
+              ? globalFilter.activeValues[0]
+              : `${globalFilter.activeValues?.length || 0} values`
+          }
+        </span>
+      </button>
+    </div>
+  );
+}
+
+/**
  * Main Application Component
  * Manages all state and orchestrates the data flow.
  * Handles:
@@ -2731,6 +2846,9 @@ const getMinimapNodeColor = (node) => {
  * the application state. It renders the layout with sidebars, panels, canvas, and report.
  */
 function AppWrapper() {
+  // Global filter context for click-through filtering
+  const { globalFilter, setGlobalFilter, shouldChartApplyFilter, getFilterForAPI } = useGlobalFilter();
+  
   const [datasetId, setDatasetId] = useState(null);
   const [csvFileName, setCsvFileName] = useState('');
   const [availableDimensions, setAvailableDimensions] = useState([]);
@@ -2927,6 +3045,176 @@ function AppWrapper() {
     // Remove cache clearing to avoid potential interference with active charts
   }, []);
 
+  // Track the previous global filter dimension to know what to clear
+  const prevGlobalFilterRef = useRef(null);
+
+  // Global filter subscription - Apply click-through filters to all charts
+  useEffect(() => {
+    const hasActiveFilter = globalFilter.activeDimension && 
+                           globalFilter.activeValues && 
+                           globalFilter.activeValues.length > 0;
+    
+    if (hasActiveFilter) {
+      // Filter is active - apply to all matching charts
+      console.log('🔍 Global filter active, updating charts:', {
+        dimension: globalFilter.activeDimension,
+        values: globalFilter.activeValues,
+        count: globalFilter.activeValues.length,
+        sourceChart: globalFilter.sourceChartId
+      });
+      
+      // Remember this filter for cleanup later
+      prevGlobalFilterRef.current = globalFilter.activeDimension;
+      
+      // Find all chart nodes that should be filtered
+      const chartsToUpdate = nodes.filter(node => {
+        if (node.type !== 'chart') return false;
+        
+        // Check if this chart has the matching dimension
+        const chartDimensions = node.data?.dimensions || [];
+        return shouldChartApplyFilter(chartDimensions);
+      });
+      
+      console.log(`📊 Found ${chartsToUpdate.length} charts to filter`);
+      
+      // Update each chart with filtered data
+      chartsToUpdate.forEach(async (chartNode) => {
+        try {
+          const filterObj = getFilterForAPI();
+          
+          console.log(`🔍 Applying global filter to chart ${chartNode.id}:`, filterObj);
+          
+          // Call backend to get filtered data
+          const res = await fetch(`${API}/charts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              dataset_id: chartNode.data.datasetId,
+              dimensions: chartNode.data.dimensions,
+              measures: chartNode.data.measures,
+              agg: chartNode.data.agg || 'sum',
+              filters: filterObj
+            })
+          });
+          
+          if (!res.ok) {
+            console.error(`Failed to apply filter to chart ${chartNode.id}`);
+            return;
+          }
+          
+          const chart = await res.json();
+          
+          // Regenerate chart visualization with filtered data
+          const chartType = chartNode.data.chartType || 'bar';
+          const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
+          
+          if (chartConfig) {
+            const option = chartConfig.createOption(chart.table, {
+              dimensions: chart.dimensions,
+              measures: chart.measures
+            });
+            
+            // Update the node with filtered data
+            // Mark it with globalFilterActive flag to distinguish from local filters
+            setNodes(nds => nds.map(n => {
+              if (n.id === chartNode.id) {
+                return {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    chartData: option.series,
+                    chartLayout: option,
+                    table: chart.table,
+                    filters: filterObj,
+                    globalFilterActive: true // Mark as globally filtered
+                  }
+                };
+              }
+              return n;
+            }));
+            
+            console.log(`✅ Chart ${chartNode.id} globally filtered successfully`);
+          }
+        } catch (error) {
+          console.error(`Failed to filter chart ${chartNode.id}:`, error);
+        }
+      });
+    } else if (prevGlobalFilterRef.current !== null) {
+      // Filter was cleared - only reset charts that were globally filtered
+      console.log('🧹 Global filter cleared, resetting globally filtered charts');
+      
+      const globallyFilteredCharts = nodes.filter(node => 
+        node.type === 'chart' && 
+        node.data?.globalFilterActive === true
+      );
+      
+      console.log(`📊 Found ${globallyFilteredCharts.length} globally filtered charts to reset`);
+      
+      // Reset each globally filtered chart
+      globallyFilteredCharts.forEach(async (chartNode) => {
+        try {
+          console.log(`🔄 Resetting chart ${chartNode.id} from global filter`);
+          
+          // Call backend to get unfiltered data
+          const res = await fetch(`${API}/charts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              dataset_id: chartNode.data.datasetId,
+              dimensions: chartNode.data.dimensions,
+              measures: chartNode.data.measures,
+              agg: chartNode.data.agg || 'sum',
+              filters: {} // Empty filters = unfiltered
+            })
+          });
+          
+          if (!res.ok) {
+            console.error(`Failed to reset chart ${chartNode.id}`);
+            return;
+          }
+          
+          const chart = await res.json();
+          
+          // Regenerate chart visualization with unfiltered data
+          const chartType = chartNode.data.chartType || 'bar';
+          const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
+          
+          if (chartConfig) {
+            const option = chartConfig.createOption(chart.table, {
+              dimensions: chart.dimensions,
+              measures: chart.measures
+            });
+            
+            // Update the node with unfiltered data
+            setNodes(nds => nds.map(n => {
+              if (n.id === chartNode.id) {
+                return {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    chartData: option.series,
+                    chartLayout: option,
+                    table: chart.table,
+                    filters: {}, // Clear filters
+                    globalFilterActive: false // Remove global filter flag
+                  }
+                };
+              }
+              return n;
+            }));
+            
+            console.log(`✅ Chart ${chartNode.id} reset from global filter`);
+          }
+        } catch (error) {
+          console.error(`Failed to reset chart ${chartNode.id}:`, error);
+        }
+      });
+      
+      // Clear the previous filter reference
+      prevGlobalFilterRef.current = null;
+    }
+  }, [globalFilter, nodes, shouldChartApplyFilter, getFilterForAPI]);
+  
   // Sync selected chart with Chart Actions Panel (for single selection only)
   useEffect(() => {
     // Get all chart nodes that match the selected IDs in selectedCharts
@@ -3258,6 +3546,21 @@ function AppWrapper() {
   // Tool change handler
   const handleToolChange = useCallback((toolId) => {
     setActiveTool(toolId);
+  }, []);
+
+  // Listen for checkbox-based chart selection
+  useEffect(() => {
+    const handleCheckboxToggle = (e) => {
+      const { shapeId, selected } = e.detail;
+      console.log('📋 Chart checkbox event received:', { shapeId, selected });
+      handleChartSelect(shapeId);
+    };
+    
+    window.addEventListener('chart-checkbox-toggle', handleCheckboxToggle);
+    
+    return () => {
+      window.removeEventListener('chart-checkbox-toggle', handleCheckboxToggle);
+    };
   }, []);
 
   const handleChartSelect = useCallback((chartId) => {
@@ -4226,7 +4529,11 @@ function AppWrapper() {
           text: xValues.map(v => String(v)), // Full text for hover
           hovertemplate: '%{text}<br>%{y}<extra></extra>',
           line: { width: 3 },
-          marker: { size: 8 }
+          marker: { size: 8 },
+          clickable: true,
+          onClick: () => {
+            console.log('Chart clicked:', g);
+          }
         };
       });
       
@@ -5582,6 +5889,9 @@ function AppWrapper() {
         {renderMainCanvas()}
       </div>
       
+      {/* Clear Filters Button - Only show when filter is active */}
+      <ClearFiltersButton />
+      
       {/* Floating Overlay Sidebar */}
       <UnifiedSidebar
         uploadPanelOpen={uploadPanelOpen}
@@ -6578,9 +6888,14 @@ function AppWrapper() {
 /**
  * App Component (Main Entry Point)
  * Root component for the D.Fuse application.
+ * Wraps AppWrapper with GlobalFilterProvider for click-through filtering.
  * 
  * @returns {JSX.Element} The complete D.Fuse application
  */
 export default function App() {
-  return <AppWrapper />;
+  return (
+    <GlobalFilterProvider>
+      <AppWrapper />
+    </GlobalFilterProvider>
+  );
 }

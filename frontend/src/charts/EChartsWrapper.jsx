@@ -54,7 +54,7 @@ const EChartsWrapper = React.memo(({
 }) => {
   const chartRef = useRef(null);
   const initCallbackFired = useRef(false);
-  const zrenderListenersAttached = useRef(false);
+  const wheelListenerAttached = useRef(false);
   
   // Use ECharts option directly
   const echartsOption = useMemo(() => {
@@ -64,48 +64,30 @@ const EChartsWrapper = React.memo(({
       return null;
     }
     
-    console.log('📊 EChartsWrapper: Using ECharts option', {
-      hasSeries: !!layout.series,
-      seriesLength: layout.series?.length,
-      seriesType: layout.series?.[0]?.type
-    });
-    
     // Apply data sampling for performance (only if many data points)
     return sampleEChartsData(layout, 1000);
   }, [layout]);
   
-  // Handle ZRender event isolation to prevent canvas interference
+  // Isolate mousewheel events to prevent TLDraw canvas zoom when scrolling charts
   useEffect(() => {
-    if (chartRef.current && echartsOption && !zrenderListenersAttached.current) {
+    if (chartRef.current && echartsOption && !wheelListenerAttached.current) {
       try {
         const echartInstance = chartRef.current.getEchartsInstance();
-        const zr = echartInstance.getZr();
+        if (!echartInstance) return;
         
-        // Stop mousewheel events from bubbling to TLDraw canvas
+        const zr = echartInstance.getZr();
+        if (!zr) return;
+        
+        // Stop mousewheel from bubbling to TLDraw (keep this for pan/zoom isolation)
         zr.on('mousewheel', (e) => {
           if (e.event) {
             e.event.stopPropagation();
           }
         });
         
-        // Stop click events from bubbling to TLDraw canvas
-        zr.on('click', (e) => {
-          if (e.event) {
-            e.event.stopPropagation();
-          }
-        });
-        
-        // Stop mousemove events from bubbling to TLDraw canvas
-        zr.on('mousemove', (e) => {
-          if (e.event) {
-            e.event.stopPropagation();
-          }
-        });
-        
-        zrenderListenersAttached.current = true;
-        console.log('📊 EChartsWrapper: ZRender event isolation attached');
+        wheelListenerAttached.current = true;
       } catch (error) {
-        console.error('EChartsWrapper: Error attaching ZRender listeners:', error);
+        console.error('❌ Error attaching mousewheel listener:', error);
       }
     }
   }, [echartsOption]);

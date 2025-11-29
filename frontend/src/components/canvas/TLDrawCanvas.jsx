@@ -32,6 +32,7 @@ const TLDrawCanvas = ({
   const initialImportDone = useRef(false);
   const previousNodeIdsRef = useRef(new Set());
   const previousNodesDataRef = useRef(new Map()); // Track node data to detect changes
+  const previouslySelectedChartsRef = useRef(new Set()); // Track selected charts
 
   // Custom shape utilities
   const shapeUtils = [ChartShape, TextBoxShape, TableShape];
@@ -134,8 +135,8 @@ const TLDrawCanvas = ({
       previousNodeIdsRef.current = new Set(nodes.map(n => n.id));
     }
 
-    // Track previous selection for detecting changes
-    let previouslySelectedCharts = new Set();
+    // Track previous selection for detecting changes (DISABLED - using checkbox selection)
+    // let previouslySelectedCharts = new Set();
 
     // Listen to shape changes AND selection changes via store
     const unsubscribe = editor.store.listen((entry) => {
@@ -158,8 +159,7 @@ const TLDrawCanvas = ({
         }
       }
       
-      // ALWAYS check for selection changes (even if source is not 'user')
-      // This handles both user clicks and programmatic selection changes
+      // Handle chart selection changes (restored - normal TLDraw selection)
       const currentSelection = editor.getSelectedShapes();
       const currentlySelectedCharts = new Set(
         currentSelection
@@ -167,7 +167,8 @@ const TLDrawCanvas = ({
           .map(s => s.id)
       );
       
-      // Check if chart selection changed
+      const previouslySelectedCharts = previouslySelectedChartsRef.current;
+      
       const selectionChanged = 
         currentlySelectedCharts.size !== previouslySelectedCharts.size ||
         ![...currentlySelectedCharts].every(id => previouslySelectedCharts.has(id));
@@ -178,24 +179,20 @@ const TLDrawCanvas = ({
           current: Array.from(currentlySelectedCharts)
         });
         
-        // Call handleChartSelect for each newly selected or deselected chart
         const added = [...currentlySelectedCharts].filter(id => !previouslySelectedCharts.has(id));
         const removed = [...previouslySelectedCharts].filter(id => !currentlySelectedCharts.has(id));
         
-        // Handle newly selected charts
-        // IMPORTANT: shape.id in TLDraw format, pass as-is (useEffect will handle lookup)
         added.forEach(chartId => {
           console.log('✅ Selecting chart:', chartId);
           onChartSelect(chartId);
         });
         
-        // Handle deselected charts (toggle them off)
         removed.forEach(chartId => {
           console.log('❌ Deselecting chart:', chartId);
           onChartSelect(chartId);
         });
         
-        previouslySelectedCharts = currentlySelectedCharts;
+        previouslySelectedChartsRef.current = currentlySelectedCharts;
       }
       
       // Handle onSelectionChange callback

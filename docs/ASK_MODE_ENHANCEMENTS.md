@@ -305,6 +305,128 @@ const handleAddToCanvas = () => {
 - `frontend/src/agentic_layer/AgentChatPanel.jsx`
 - `docs/AGENTIC_TWO_MODE_SYSTEM.md`
 
-**Version**: 1.1
-**Last Updated**: 2024-11-18
+**Version**: 1.2
+**Last Updated**: 2024-11-19
+
+---
+
+## Version 1.2 Updates (2024-11-19)
+
+### UI Improvements
+
+1. **Removed Query Repetition**
+   - No longer shows the blue box with "❓ What are the key..." above the answer
+   - User already sees their question in the chat history above
+   - Cleaner, more focused display
+
+2. **Removed Intro Line**
+   - No longer shows "💬 Based on your real dataset, here are the results:"
+   - Direct answer presentation
+   - Reduces visual clutter
+
+3. **Embedded Table Display**
+   - When AI returns tabular data (e.g., summary statistics), it now renders as a proper HTML table
+   - Table is embedded directly in the cyan answer box
+   - Features:
+     - Column headers with cyan background
+     - Bordered cells for clear data separation
+     - Hover effect on rows
+     - Automatically shows first 10 rows with count indicator
+     - Responsive with horizontal scrolling for wide tables
+   - Perfect for queries like:
+     - "Summarize the dataset"
+     - "Show top 10 products by revenue"
+     - "Compare metrics across categories"
+
+### Updated UI Example
+
+**Before v1.2**:
+```
+┌─────────────────────────────────────────────────────┐
+│ ❓ What are the key summary statistics for the      │
+│    entire dataset?                                  │
+└─────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────┐
+│ 💬 Based on your real dataset, here are the results│
+│                                                     │
+│ Summary statistics for numerical columns:          │
+│ [long text output...]                               │
+└─────────────────────────────────────────────────────┘
+```
+
+**After v1.2**:
+```
+┌─────────────────────────────────────────────────────┐
+│ Summary statistics for numerical columns:          │
+│                                                     │
+│ ┌─────────┬───────┬──────┬─────┬─────┐            │
+│ │ Column  │ Count │ Mean │ Std │ Min │            │
+│ ├─────────┼───────┼──────┼─────┼─────┤            │
+│ │ Revenue │ 149   │46961 │30282│ 104 │            │
+│ │ Units   │ 149   │  94  │  59 │   1 │            │
+│ └─────────┴───────┴──────┴─────┴─────┘            │
+│                                                     │
+│ [Showing first 10 of 8 rows]                       │
+└─────────────────────────────────────────────────────┘
+
+[→ Add to Canvas]  [▶ View Python Code]
+```
+
+### Technical Changes
+
+**AgentChatPanel.jsx - Message State**:
+```javascript
+setCurrentMessages(prev => [...prev, {
+  type: 'ai_answer',
+  query: aiResult.query,
+  answer: aiResult.answer,
+  python_code: aiResult.python_code,
+  code_steps: aiResult.code_steps,
+  tabular_data: aiResult.tabular_data || [],  // NEW
+  has_table: aiResult.has_table || false,     // NEW
+  timestamp: new Date(),
+  mode,
+  canvasContext
+}]);
+```
+
+**MessageBubble Component - Table Rendering**:
+```javascript
+if (isAIAnswer) {
+  // Parse tabular data if available
+  const hasTable = message.has_table && message.tabular_data && message.tabular_data.length > 0;
+  let headers = [];
+  let rows = [];
+  
+  if (hasTable) {
+    headers = Object.keys(message.tabular_data[0]);
+    rows = message.tabular_data.map(row => Object.values(row));
+  }
+  
+  return (
+    <div>
+      {/* Answer box */}
+      <div className="bg-cyan-50 border border-cyan-200 rounded-lg p-4">
+        <p>{message.answer}</p>
+        
+        {/* Embedded table */}
+        {hasTable && (
+          <table className="min-w-full border-collapse">
+            {/* headers & rows */}
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+```
+
+### Benefits of v1.2
+
+- **Less Repetition**: No redundant query display
+- **Cleaner UI**: Direct answer without unnecessary intro text
+- **Better Data Display**: Tables are much easier to read than raw text
+- **More Professional**: Structured presentation of statistical data
+- **Maintains Functionality**: All existing features (Add to Canvas, View Code) work perfectly
 

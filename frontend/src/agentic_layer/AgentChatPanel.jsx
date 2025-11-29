@@ -158,6 +158,8 @@ export function AgentChatPanel({
           answer: aiResult.answer,
           python_code: aiResult.python_code,
           code_steps: aiResult.code_steps,
+          tabular_data: aiResult.tabular_data || [],
+          has_table: aiResult.has_table || false,
           timestamp: new Date(),
           mode,
           canvasContext // Pass context for "Add to Canvas"
@@ -378,6 +380,17 @@ function MessageBubble({ message }) {
 
   // Special rendering for AI Answer
   if (isAIAnswer) {
+    // Parse tabular data if available
+    const hasTable = message.has_table && message.tabular_data && message.tabular_data.length > 0;
+    let headers = [];
+    let rows = [];
+    
+    if (hasTable) {
+      // Extract headers and rows from tabular_data
+      headers = Object.keys(message.tabular_data[0]);
+      rows = message.tabular_data.map(row => Object.values(row));
+    }
+
     return (
       <div className="flex items-start gap-3">
         {/* Avatar */}
@@ -387,15 +400,48 @@ function MessageBubble({ message }) {
 
         {/* Content */}
         <div className="flex-1">
-          {/* Query */}
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-2">
-            <p className="text-sm font-medium text-blue-900">❓ {message.query}</p>
-          </div>
-
-          {/* Answer */}
+          {/* Answer Box - No query repetition, no intro line */}
           <div className="bg-cyan-50 border border-cyan-200 rounded-lg p-4">
-            <p className="text-xs font-medium text-cyan-700 mb-2">💬 Based on your real dataset, here are the results:</p>
             <p className="text-sm text-cyan-900 whitespace-pre-wrap">{message.answer}</p>
+            
+            {/* Embedded Table if available */}
+            {hasTable && (
+              <div className="mt-4 overflow-x-auto">
+                <table className="min-w-full border-collapse border border-cyan-300">
+                  <thead>
+                    <tr className="bg-cyan-100">
+                      {headers.map((header, idx) => (
+                        <th
+                          key={idx}
+                          className="border border-cyan-300 px-3 py-2 text-left text-xs font-semibold text-cyan-900"
+                        >
+                          {header}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.slice(0, 10).map((row, rowIdx) => (
+                      <tr key={rowIdx} className="hover:bg-cyan-50">
+                        {row.map((cell, cellIdx) => (
+                          <td
+                            key={cellIdx}
+                            className="border border-cyan-300 px-3 py-2 text-xs text-cyan-800"
+                          >
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {rows.length > 10 && (
+                  <p className="text-xs text-cyan-600 mt-2 italic">
+                    Showing first 10 of {rows.length} rows
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Actions */}
