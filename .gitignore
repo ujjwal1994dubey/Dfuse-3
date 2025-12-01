@@ -13,6 +13,10 @@ dist/
 .env.test.local
 .env.production.local
 
+# GitHub token for local development (DO NOT COMMIT)
+github_token.txt
+backend/github_token.txt
+
 # Python
 __pycache__/
 *.py[cod]

@@ -26,7 +26,8 @@ const TLDrawCanvas = ({
   onAIQueryShortcut,
   onChartInsightShortcut,
   onShowTableShortcut,
-  apiKeyConfigured
+  apiKeyConfigured,
+  onEditorMount
 }) => {
   const editorRef = useRef(null);
   const initialImportDone = useRef(false);
@@ -122,6 +123,11 @@ const TLDrawCanvas = ({
     // Expose editor to parent component via ref if provided
     if (externalEditorRef) {
       externalEditorRef.current = editor;
+    }
+    
+    // Notify parent that editor is ready
+    if (onEditorMount) {
+      onEditorMount();
     }
 
     // Import existing nodes and edges as TLDraw shapes (only once on mount)

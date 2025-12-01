@@ -90,7 +90,8 @@ export class ChartShape extends BaseBoxShapeUtil {
           style={{
             width: w,
             height: h,
-            overflow: 'hidden'
+            overflow: 'hidden',
+            pointerEvents: 'all'  // Enable pointer events for legend interactions and tooltips
           }}
         >
           <div

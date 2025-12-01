@@ -80,16 +80,23 @@ export function GlobalFilterProvider({ children }) {
   /**
    * Check if a specific chart should be filtered based on its dimensions
    * 
-   * @param {Array<string>} chartDimensions - Dimensions of the chart to check
-   * @returns {boolean} True if chart should apply the global filter
+   * UNIVERSAL FILTERING: Apply filter to ALL charts regardless of their dimensions
+   * This matches Tableau/Power BI behavior where filters affect the underlying data
+   * for all visualizations, not just those that display the filtered dimension.
+   * 
+   * Example: Filtering Product = "Bookshelf" will:
+   * - Filter "Revenue by Product" chart to show only Bookshelf
+   * - Filter "Cost by Quarter" chart to show quarters, but only Bookshelf's data
+   * 
+   * @param {Array<string>} chartDimensions - Dimensions of the chart (not used for universal filtering)
+   * @returns {boolean} True if a global filter is active
    */
   const shouldChartApplyFilter = useCallback((chartDimensions) => {
-    if (!isFilterActive()) return false;
-    if (!chartDimensions || chartDimensions.length === 0) return false;
-    
-    // Check if any of the chart's dimensions match the active filter dimension
-    return chartDimensions.includes(globalFilter.activeDimension);
-  }, [globalFilter.activeDimension, isFilterActive]);
+    // Apply filter universally to all charts
+    // Backend handles filtering the underlying data before aggregation
+    // Supports both single and multiple dimension values
+    return isFilterActive();
+  }, [isFilterActive]);
 
   /**
    * Get filter object in format expected by backend API

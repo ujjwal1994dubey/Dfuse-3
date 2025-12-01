@@ -10,6 +10,9 @@ import re
 import ast
 import operator
 import json
+import os
+import requests
+from datetime import datetime, timedelta
 from gemini_llm import GeminiDataFormulator
 
 app = FastAPI(title="Chart Fusion Backend")
@@ -2888,4 +2891,217 @@ async def agent_query(request: AgentQueryRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Agent query failed: {str(e)}")
+
+
+# =============================================================================
+# GitHub Gist API - Dashboard Snapshot Storage
+# =============================================================================
+
+# Get GitHub token from environment or local file
+def load_github_token():
+    """
+    Load GitHub Gist token from environment variable or local file.
+    For local development, create a file named 'github_token.txt' with your token.
+    For production, use the GITHUB_GIST_TOKEN environment variable.
+    """
+    # First, try environment variable (for production on Render)
+    token = os.getenv('GITHUB_GIST_TOKEN', '')
+    
+    if token:
+        print("✅ Using GitHub token from environment variable")
+        return token
+    
+    # If not in environment, try reading from local file (for development)
+    local_token_file = os.path.join(os.path.dirname(__file__), 'github_token.txt')
+    
+    try:
+        if os.path.exists(local_token_file):
+            with open(local_token_file, 'r') as f:
+                token = f.read().strip()
+            if token:
+                print(f"✅ Using GitHub token from local file: {local_token_file}")
+                return token
+    except Exception as e:
+        print(f"⚠️ Failed to read token from local file: {e}")
+    
+    print("⚠️ No GitHub token found. Set GITHUB_GIST_TOKEN env var or create github_token.txt")
+    return ''
+
+GITHUB_GIST_TOKEN = load_github_token()
+GITHUB_API = 'https://api.github.com/gists'
+
+class SnapshotSaveRequest(BaseModel):
+    canvasState: dict
+    metadata: dict
+    expiresIn: int = 7  # Days (stored as metadata, not enforced)
+
+@app.post("/snapshots")
+async def save_snapshot_to_gist(request: SnapshotSaveRequest):
+    """
+    Save dashboard snapshot as a GitHub Gist
+    Returns a shareable URL that can be used to load the dashboard
+    """
+    try:
+        if not GITHUB_GIST_TOKEN:
+            raise HTTPException(
+                status_code=500, 
+                detail="GitHub Gist token not configured. Please set GITHUB_GIST_TOKEN environment variable."
+            )
+        
+        # Prepare snapshot data
+        snapshot_data = {
+            'canvasState': request.canvasState,
+            'metadata': request.metadata,
+            'createdAt': datetime.now().isoformat(),
+            'expiresAt': (datetime.now() + timedelta(days=request.expiresIn)).isoformat()
+        }
+        
+        # Create gist payload
+        gist_title = request.metadata.get('title', 'Untitled Dashboard')
+        chart_count = request.metadata.get('chartCount', 0)
+        
+        gist_payload = {
+            'description': f"DFuse Dashboard - {gist_title} ({chart_count} charts)",
+            'public': False,  # Secret gist (not indexed by search engines)
+            'files': {
+                'dashboard.json': {
+                    'content': json.dumps(snapshot_data, indent=2)
+                }
+            }
+        }
+        
+        # Make request to GitHub API
+        headers = {
+            'Authorization': f'token {GITHUB_GIST_TOKEN}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        
+        print(f"📤 Creating GitHub Gist for dashboard: {gist_title}")
+        response = requests.post(GITHUB_API, json=gist_payload, headers=headers)
+        
+        if response.status_code != 201:
+            error_detail = response.json().get('message', 'Unknown error')
+            print(f"❌ Failed to create gist: {response.status_code} - {error_detail}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to create gist: {error_detail}"
+            )
+        
+        gist_data = response.json()
+        gist_id = gist_data['id']
+        
+        # Generate shareable URL
+        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+        share_url = f"{frontend_url}?snapshot={gist_id}"
+        
+        print(f"✅ Gist created successfully: {gist_id}")
+        print(f"   Share URL: {share_url}")
+        print(f"   Gist URL: {gist_data['html_url']}")
+        
+        return {
+            'success': True,
+            'snapshot_id': gist_id,
+            'share_url': share_url,
+            'gist_url': gist_data['html_url'],  # Direct link to view on GitHub
+            'created_at': snapshot_data['createdAt'],
+            'expires_at': snapshot_data['expiresAt']
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error saving snapshot: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to save snapshot: {str(e)}")
+
+
+@app.get("/snapshots/{gist_id}")
+async def get_snapshot_from_gist(gist_id: str):
+    """
+    Retrieve dashboard snapshot from GitHub Gist
+    Used when loading a shared dashboard via URL
+    """
+    try:
+        if not GITHUB_GIST_TOKEN:
+            raise HTTPException(
+                status_code=500, 
+                detail="GitHub Gist token not configured"
+            )
+        
+        # Make request to GitHub API
+        headers = {
+            'Authorization': f'token {GITHUB_GIST_TOKEN}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        
+        print(f"📥 Fetching gist: {gist_id}")
+        response = requests.get(f'{GITHUB_API}/{gist_id}', headers=headers)
+        
+        if response.status_code == 404:
+            print(f"❌ Gist not found: {gist_id}")
+            raise HTTPException(status_code=404, detail="Snapshot not found")
+        
+        if response.status_code != 200:
+            error_detail = response.json().get('message', 'Unknown error')
+            print(f"❌ Failed to fetch gist: {response.status_code} - {error_detail}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to retrieve snapshot: {error_detail}"
+            )
+        
+        gist_data = response.json()
+        
+        # Extract JSON content from the gist
+        if 'dashboard.json' not in gist_data['files']:
+            raise HTTPException(
+                status_code=500, 
+                detail="Invalid gist format: dashboard.json not found"
+            )
+        
+        file_data = gist_data['files']['dashboard.json']
+        
+        # Check if content is truncated (GitHub truncates large files)
+        if file_data.get('truncated', False):
+            print(f"⚠️ Gist content is truncated, fetching from raw URL...")
+            raw_url = file_data.get('raw_url')
+            if not raw_url:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Gist is truncated but no raw URL available"
+                )
+            
+            # Fetch the full content from raw URL
+            raw_response = requests.get(raw_url)
+            if raw_response.status_code != 200:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to fetch full gist content: {raw_response.status_code}"
+                )
+            file_content = raw_response.text
+            print(f"✅ Fetched full content from raw URL ({len(file_content)} chars)")
+        else:
+            file_content = file_data['content']
+        
+        snapshot_data = json.loads(file_content)
+        
+        print(f"✅ Gist fetched successfully: {gist_id}")
+        print(f"   Charts: {snapshot_data.get('metadata', {}).get('chartCount', 0)}")
+        print(f"   Created: {snapshot_data.get('createdAt', 'Unknown')}")
+        
+        return {
+            'success': True,
+            'canvasState': snapshot_data.get('canvasState', {}),
+            'metadata': snapshot_data.get('metadata', {}),
+            'created_at': snapshot_data.get('createdAt'),
+            'expires_at': snapshot_data.get('expiresAt')
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error fetching snapshot: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to load snapshot: {str(e)}")
 

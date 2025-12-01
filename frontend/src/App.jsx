@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react'
 import EChartsWrapper from './charts/EChartsWrapper';
 import TLDrawCanvas from './components/canvas/TLDrawCanvas';
 import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui';
-import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus } from 'lucide-react';
+import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, FileDown, FileUp, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus } from 'lucide-react';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
 import { AgentChatPanel } from './agentic_layer';
@@ -1638,7 +1638,10 @@ function UnifiedSidebar({
   onMergeCharts,
   selectedChartsCount,
   canMerge,
-  selectedChartForActions
+  selectedChartForActions,
+  // Export/Import functionality
+  tldrawEditorRef,
+  nodes
 }) {
   const toggleButtons = [
     { 
@@ -1715,6 +1718,64 @@ function UnifiedSidebar({
     },
     // Separator indicator
     { id: 'separator-1', isSeparator: true },
+    // Export/Import Dashboard
+    {
+      id: 'export',
+      icon: FileDown,
+      label: 'Export Dashboard',
+      onClick: () => {
+        const { downloadCanvasStateAsJSON } = require('./agentic_layer/canvasSnapshot');
+        downloadCanvasStateAsJSON(tldrawEditorRef.current, nodes);
+      }
+    },
+    {
+      id: 'import',
+      icon: FileUp,
+      label: 'Import Dashboard',
+      onClick: () => {
+        // Trigger hidden file input
+        document.getElementById('import-json-input')?.click();
+      }
+    },
+    {
+      id: 'share',
+      icon: Share2,
+      label: 'Share Dashboard',
+      onClick: async () => {
+        try {
+          const { shareCanvasViaGist } = require('./agentic_layer/canvasSnapshot');
+          const result = await shareCanvasViaGist(tldrawEditorRef.current, nodes, {
+            title: 'My Dashboard',
+            expiresIn: 30 // 30 days
+          });
+          
+          if (result && result.share_url) {
+            // Copy to clipboard
+            navigator.clipboard.writeText(result.share_url).then(() => {
+              alert(
+                `✅ Shareable link created and copied to clipboard!\n\n` +
+                `Link: ${result.share_url}\n\n` +
+                `This link will expire on ${new Date(result.expires_at).toLocaleDateString()}\n\n` +
+                `You can also view it on GitHub:\n${result.gist_url}`
+              );
+            }).catch(() => {
+              // Fallback if clipboard fails
+              alert(
+                `✅ Shareable link created!\n\n` +
+                `Link: ${result.share_url}\n\n` +
+                `This link will expire on ${new Date(result.expires_at).toLocaleDateString()}\n\n` +
+                `You can also view it on GitHub:\n${result.gist_url}\n\n` +
+                `(Please copy the link manually)`
+              );
+            });
+          }
+        } catch (error) {
+          console.error('Failed to share dashboard:', error);
+          alert(`Failed to create shareable link:\n${error.message}`);
+        }
+      }
+    },
+    { id: 'separator-2', isSeparator: true },
     // App control buttons (moved from bottom)
     {
       id: 'instructions',
@@ -1788,7 +1849,11 @@ function UnifiedSidebar({
     >
       {/* Logo */}
       <div className="mb-4">
-        <SquaresExclude size={32} className="text-primary" />
+        <img 
+          src="/logo.svg" 
+          alt="App Logo" 
+          style={{ width: '32px', height: '32px' }}
+        />
       </div>
       
       {/* Toggle Buttons with Inline Separators */}
@@ -2876,6 +2941,49 @@ function AppWrapper() {
   const tldrawEditorRef = useRef(null); // Reference to TLDraw editor for programmatic control
   const isProgrammaticDeselect = useRef(false); // Flag to prevent listener from re-selecting during programmatic clear
   const createdStickyNotes = useRef(new Set()); // Track which charts already have sticky notes
+  const sharedDashboardLoaded = useRef(false); // Track if we've already loaded a shared dashboard
+  const [editorReady, setEditorReady] = useState(false); // Track when editor is mounted
+  
+  // Callback when TLDraw editor is mounted
+  const handleEditorMount = useCallback(() => {
+    console.log('✅ TLDraw editor mounted and ready');
+    setEditorReady(true);
+  }, []);
+  
+  // Auto-load shared dashboard from URL parameter
+  useEffect(() => {
+    // Only run once when component mounts
+    if (sharedDashboardLoaded.current) return;
+    
+    // Check if there's a snapshot parameter in the URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const snapshotId = urlParams.get('snapshot');
+    
+    if (!snapshotId) return;
+    
+    // Wait for editor to be ready
+    if (!editorReady || !tldrawEditorRef.current) {
+      console.log('⏳ Waiting for editor to initialize before loading shared dashboard...');
+      return;
+    }
+    
+    // Load the shared dashboard
+    (async () => {
+      try {
+        console.log(`📥 Loading shared dashboard from URL: ${snapshotId}`);
+        const { loadSharedCanvasState } = require('./agentic_layer/canvasSnapshot');
+        const success = await loadSharedCanvasState(tldrawEditorRef.current, snapshotId);
+        
+        if (success) {
+          sharedDashboardLoaded.current = true;
+          // Clean up URL parameter after loading
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      } catch (error) {
+        console.error('❌ Failed to load shared dashboard:', error);
+      }
+    })();
+  }, [editorReady]); // Re-run when editor becomes ready
   
   // Auto-create sticky notes for charts with preloaded insights
   useEffect(() => {
@@ -5680,6 +5788,7 @@ function AppWrapper() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onChartSelect={handleChartSelect}
+        onEditorMount={handleEditorMount}
         onNodeClick={(event) => {
           // TLDraw passes { node } object
           const node = event.node || event;
@@ -5892,6 +6001,43 @@ function AppWrapper() {
       {/* Clear Filters Button - Only show when filter is active */}
       <ClearFiltersButton />
       
+      {/* Hidden file input for JSON import */}
+      <input
+        id="import-json-input"
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            try {
+              console.log('📄 File read successfully, parsing JSON...');
+              const snapshot = JSON.parse(event.target.result);
+              console.log('✅ JSON parsed successfully:', {
+                hasVersion: !!snapshot.version,
+                hasCanvasState: !!snapshot.canvasState,
+                hasMetadata: !!snapshot.metadata,
+                version: snapshot.version
+              });
+              
+              const { loadCanvasStateFromJSON } = require('./agentic_layer/canvasSnapshot');
+              loadCanvasStateFromJSON(tldrawEditorRef.current, snapshot);
+            } catch (error) {
+              console.error('Failed to parse or load JSON:', error);
+              console.error('Error stack:', error.stack);
+              alert(`Invalid JSON file: ${error.message}\n\nPlease select a valid dashboard JSON file exported from this application.`);
+            }
+          };
+          reader.readAsText(file);
+          
+          // Reset input so same file can be selected again
+          e.target.value = '';
+        }}
+      />
+      
       {/* Floating Overlay Sidebar */}
       <UnifiedSidebar
         uploadPanelOpen={uploadPanelOpen}
@@ -5914,6 +6060,8 @@ function AppWrapper() {
         selectedChartsCount={selectedCharts.length}
         canMerge={selectedCharts.length === 2}
         selectedChartForActions={selectedChartForActions}
+        tldrawEditorRef={tldrawEditorRef}
+        nodes={nodes}
       />
       
       {/* Floating Panels Container - Positioned next to sidebar */}
