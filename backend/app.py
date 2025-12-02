@@ -2991,7 +2991,7 @@ async def save_snapshot_to_gist(request: SnapshotSaveRequest):
         gist_id = gist_data['id']
         
         # Generate shareable URL
-        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+        frontend_url = os.getenv('FRONTEND_URL', 'https://dfusenew.onrender.com')
         share_url = f"{frontend_url}?snapshot={gist_id}"
         
         print(f"✅ Gist created successfully: {gist_id}")
