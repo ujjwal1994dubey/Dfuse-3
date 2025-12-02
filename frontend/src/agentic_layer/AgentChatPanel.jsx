@@ -443,7 +443,7 @@ function MessageBubble({ message }) {
               </div>
             )}
           </div>
-
+``
           {/* Actions */}
           <div className="mt-3 flex items-center gap-2">
             <button
