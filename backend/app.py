@@ -13,7 +13,11 @@ import json
 import os
 import requests
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 from gemini_llm import GeminiDataFormulator
+
+# Load environment variables from .env file (for local development)
+load_dotenv()
 
 app = FastAPI(title="Chart Fusion Backend")
 # app.add_middleware(
