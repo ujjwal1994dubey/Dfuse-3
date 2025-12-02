@@ -186,18 +186,22 @@ export function downloadCanvasStateAsJSON(editor, nodes, filename = null) {
  * 
  * @param {Object} editor - TLDraw editor instance
  * @param {Object} snapshot - Previously exported snapshot object
+ * @param {Object} options - Load options
+ * @param {boolean} options.silent - If true, suppress success alerts (for shared dashboards)
  * @returns {boolean} Success status
  */
-export function loadCanvasStateFromJSON(editor, snapshot) {
+export function loadCanvasStateFromJSON(editor, snapshot, options = {}) {
+  const { silent = false } = options;
+  
   if (!editor) {
     console.error('Editor instance not available');
-    alert('Cannot load: Editor not initialized');
+    if (!silent) alert('Cannot load: Editor not initialized');
     return false;
   }
   
   if (!snapshot) {
     console.error('Snapshot is null or undefined');
-    alert('Invalid snapshot file. Please select a valid dashboard JSON file.');
+    if (!silent) alert('Invalid snapshot file. Please select a valid dashboard JSON file.');
     return false;
   }
   
@@ -211,7 +215,7 @@ export function loadCanvasStateFromJSON(editor, snapshot) {
   
   if (!snapshot.canvasState) {
     console.error('Snapshot missing canvasState property');
-    alert('Invalid snapshot file. Missing canvasState property. Please select a valid dashboard JSON file.');
+    if (!silent) alert('Invalid snapshot file. Missing canvasState property. Please select a valid dashboard JSON file.');
     return false;
   }
   
@@ -236,7 +240,7 @@ export function loadCanvasStateFromJSON(editor, snapshot) {
         hasRecords: !!snapshot.canvasState?.records,
         canvasStateKeys: Object.keys(snapshot.canvasState || {})
       });
-      alert('Invalid snapshot structure. Missing schema or records.');
+      if (!silent) alert('Invalid snapshot structure. Missing schema or records.');
       return false;
     }
     
@@ -287,13 +291,16 @@ export function loadCanvasStateFromJSON(editor, snapshot) {
       records: snapshot.canvasState.records?.length || 0
     });
     
-    alert(`Dashboard restored successfully!\nCharts: ${snapshot.metadata?.chartCount || 0}\nExported: ${new Date(snapshot.exportedAt).toLocaleString()}`);
+    // Only show alert for manual imports, not shared dashboards
+    if (!silent) {
+      alert(`Dashboard restored successfully!\nCharts: ${snapshot.metadata?.chartCount || 0}\nExported: ${new Date(snapshot.exportedAt).toLocaleString()}`);
+    }
     return true;
     
   } catch (error) {
     console.error('Failed to load canvas state:', error);
     console.error('Error details:', error.stack);
-    alert(`Failed to restore dashboard: ${error.message}\n\nPlease make sure this is a valid dashboard JSON file exported from this application.`);
+    if (!silent) alert(`Failed to restore dashboard: ${error.message}\n\nPlease make sure this is a valid dashboard JSON file exported from this application.`);
     return false;
   }
 }
@@ -434,8 +441,7 @@ function extractStatisticalSummary(table) {
 export async function shareCanvasViaGist(editor, nodes, options = {}) {
   if (!editor) {
     console.error('❌ Editor instance not available');
-    alert('Cannot share: Editor not initialized');
-    return null;
+    throw new Error('Cannot share: Editor not initialized');
   }
 
   try {
@@ -497,18 +503,17 @@ export async function shareCanvasViaGist(editor, nodes, options = {}) {
  * 
  * @param {Object} editor - TLDraw editor instance
  * @param {string} snapshotId - Gist ID from URL parameter
- * @returns {Promise<boolean>} Success status
+ * @returns {Promise<Object>} Result object with { success, chartCount, error }
  */
 export async function loadSharedCanvasState(editor, snapshotId) {
   if (!editor) {
     console.error('❌ Editor instance not available');
-    alert('Cannot load: Editor not initialized');
-    return false;
+    return { success: false, chartCount: 0, error: 'Editor not initialized' };
   }
 
   if (!snapshotId) {
     console.error('❌ No snapshot ID provided');
-    return false;
+    return { success: false, chartCount: 0, error: 'No snapshot ID provided' };
   }
 
   try {
@@ -534,9 +539,10 @@ export async function loadSharedCanvasState(editor, snapshotId) {
     }
 
     const data = await response.json();
+    const chartCount = data.metadata?.chartCount || 0;
     
     console.log('📥 Snapshot retrieved successfully');
-    console.log(`   Charts: ${data.metadata?.chartCount || 0}`);
+    console.log(`   Charts: ${chartCount}`);
     console.log(`   Created: ${new Date(data.created_at).toLocaleString()}`);
     
     // Reconstruct the snapshot format expected by loadCanvasStateFromJSON
@@ -546,29 +552,18 @@ export async function loadSharedCanvasState(editor, snapshotId) {
       exportedAt: data.created_at
     };
     
-    // Load into canvas
-    const success = loadCanvasStateFromJSON(editor, snapshot);
+    // Load into canvas silently (no alerts - caller handles notification)
+    const success = loadCanvasStateFromJSON(editor, snapshot, { silent: true });
     
     if (success) {
       console.log('✅ Shared dashboard loaded successfully!');
-      
-      // Show success message
-      const chartCount = data.metadata?.chartCount || 0;
-      const createdAt = new Date(data.created_at).toLocaleString();
-      alert(
-        `📊 Shared Dashboard Loaded!\n\n` +
-        `Charts: ${chartCount}\n` +
-        `Created: ${createdAt}\n\n` +
-        `This dashboard was shared with you.`
-      );
     }
     
-    return success;
+    return { success, chartCount, error: null };
 
   } catch (error) {
     console.error('❌ Failed to load shared dashboard:', error);
-    alert(`Failed to load shared dashboard:\n${error.message}`);
-    return false;
+    return { success: false, chartCount: 0, error: error.message };
   }
 }
 

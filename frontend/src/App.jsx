@@ -1,8 +1,8 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import EChartsWrapper from './charts/EChartsWrapper';
 import TLDrawCanvas from './components/canvas/TLDrawCanvas';
-import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui';
-import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, FileDown, FileUp, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus } from 'lucide-react';
+import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, ShareModal, Toast } from './components/ui';
+import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus } from 'lucide-react';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
 import { AgentChatPanel } from './agentic_layer';
@@ -1641,7 +1641,10 @@ function UnifiedSidebar({
   selectedChartForActions,
   // Export/Import functionality
   tldrawEditorRef,
-  nodes
+  nodes,
+  // Share modal
+  setShareModalOpen,
+  setShareModalData
 }) {
   const toggleButtons = [
     { 
@@ -1718,65 +1721,7 @@ function UnifiedSidebar({
     },
     // Separator indicator
     { id: 'separator-1', isSeparator: true },
-    // Export/Import Dashboard
-    {
-      id: 'export',
-      icon: FileDown,
-      label: 'Export Dashboard',
-      onClick: () => {
-        const { downloadCanvasStateAsJSON } = require('./agentic_layer/canvasSnapshot');
-        downloadCanvasStateAsJSON(tldrawEditorRef.current, nodes);
-      }
-    },
-    {
-      id: 'import',
-      icon: FileUp,
-      label: 'Import Dashboard',
-      onClick: () => {
-        // Trigger hidden file input
-        document.getElementById('import-json-input')?.click();
-      }
-    },
-    {
-      id: 'share',
-      icon: Share2,
-      label: 'Share Dashboard',
-      onClick: async () => {
-        try {
-          const { shareCanvasViaGist } = require('./agentic_layer/canvasSnapshot');
-          const result = await shareCanvasViaGist(tldrawEditorRef.current, nodes, {
-            title: 'My Dashboard',
-            expiresIn: 30 // 30 days
-          });
-          
-          if (result && result.share_url) {
-            // Copy to clipboard
-            navigator.clipboard.writeText(result.share_url).then(() => {
-              alert(
-                `✅ Shareable link created and copied to clipboard!\n\n` +
-                `Link: ${result.share_url}\n\n` +
-                `This link will expire on ${new Date(result.expires_at).toLocaleDateString()}\n\n` +
-                `You can also view it on GitHub:\n${result.gist_url}`
-              );
-            }).catch(() => {
-              // Fallback if clipboard fails
-              alert(
-                `✅ Shareable link created!\n\n` +
-                `Link: ${result.share_url}\n\n` +
-                `This link will expire on ${new Date(result.expires_at).toLocaleDateString()}\n\n` +
-                `You can also view it on GitHub:\n${result.gist_url}\n\n` +
-                `(Please copy the link manually)`
-              );
-            });
-          }
-        } catch (error) {
-          console.error('Failed to share dashboard:', error);
-          alert(`Failed to create shareable link:\n${error.message}`);
-        }
-      }
-    },
-    { id: 'separator-2', isSeparator: true },
-    // App control buttons (moved from bottom)
+    // App control buttons
     {
       id: 'instructions',
       icon: BookOpen,
@@ -1824,6 +1769,54 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
+        }
+      }
+    },
+    { id: 'separator-2', isSeparator: true },
+    // Share Dashboard (at the bottom)
+    {
+      id: 'share',
+      icon: Share2,
+      label: 'Share Dashboard',
+      onClick: async () => {
+        // Open modal and show loading state
+        setShareModalOpen(true);
+        setShareModalData({
+          shareUrl: null,
+          expiresAt: null,
+          isLoading: true,
+          error: null
+        });
+        
+        try {
+          const { shareCanvasViaGist } = require('./agentic_layer/canvasSnapshot');
+          const result = await shareCanvasViaGist(tldrawEditorRef.current, nodes, {
+            title: 'My Dashboard',
+            expiresIn: 30 // 30 days
+          });
+          
+          if (result && result.share_url) {
+            // Update modal with success data
+            setShareModalData({
+              shareUrl: result.share_url,
+              expiresAt: result.expires_at,
+              isLoading: false,
+              error: null
+            });
+            
+            // Auto-copy to clipboard silently
+            navigator.clipboard.writeText(result.share_url).catch(() => {
+              // Silent fail - user can manually copy from modal
+            });
+          }
+        } catch (error) {
+          console.error('Failed to share dashboard:', error);
+          setShareModalData({
+            shareUrl: null,
+            expiresAt: null,
+            isLoading: false,
+            error: error.message || 'Failed to create shareable link'
+          });
         }
       }
     }
@@ -2835,61 +2828,31 @@ const getMinimapNodeColor = (node) => {
  * ClearFiltersButton Component
  * Floating button that appears when a global filter is active
  * Allows users to clear all click-through filters at once
+ * Styled consistently with Toast component
  */
 function ClearFiltersButton() {
   const { globalFilter, clearGlobalFilter, isFilterActive } = useGlobalFilter();
   
   if (!isFilterActive()) return null;
   
+  const filterText = `Clear Filter: ${globalFilter.activeDimension} = ${
+    globalFilter.activeValues?.length === 1 
+      ? globalFilter.activeValues[0]
+      : `${globalFilter.activeValues?.length || 0} values`
+  }`;
+  
   return (
-    <div
-      style={{
-        position: 'fixed',
-        top: '20px',
-        left: '50%',
-        transform: 'translateX(-50%)',
-        zIndex: 1200,
-        pointerEvents: 'all'
-      }}
-    >
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[9999]">
       <button
         onClick={() => {
           clearGlobalFilter();
           console.log('🧹 All filters cleared');
         }}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          padding: '10px 20px',
-          backgroundColor: '#10B981',
-          color: 'white',
-          border: 'none',
-          borderRadius: '8px',
-          fontSize: '14px',
-          fontWeight: '600',
-          cursor: 'pointer',
-          boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)',
-          transition: 'all 0.2s ease'
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.backgroundColor = '#059669';
-          e.currentTarget.style.transform = 'translateY(-1px)';
-          e.currentTarget.style.boxShadow = '0 6px 16px rgba(16, 185, 129, 0.4)';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.backgroundColor = '#10B981';
-          e.currentTarget.style.transform = 'translateY(0)';
-          e.currentTarget.style.boxShadow = '0 4px 12px rgba(16, 185, 129, 0.3)';
-        }}
+        className="flex items-center gap-3 px-5 py-3 bg-[#4CAF93] hover:bg-[#3d9a80] rounded-full shadow-lg transition-all duration-200 hover:-translate-y-0.5"
       >
-        <X size={16} />
-        <span>
-          Clear Filter: {globalFilter.activeDimension} = {
-            globalFilter.activeValues?.length === 1 
-              ? globalFilter.activeValues[0]
-              : `${globalFilter.activeValues?.length || 0} values`
-          }
+        <X className="w-5 h-5 text-white flex-shrink-0" />
+        <span className="text-white text-sm font-medium whitespace-nowrap">
+          {filterText}
         </span>
       </button>
     </div>
@@ -2972,15 +2935,21 @@ function AppWrapper() {
       try {
         console.log(`📥 Loading shared dashboard from URL: ${snapshotId}`);
         const { loadSharedCanvasState } = require('./agentic_layer/canvasSnapshot');
-        const success = await loadSharedCanvasState(tldrawEditorRef.current, snapshotId);
+        const result = await loadSharedCanvasState(tldrawEditorRef.current, snapshotId);
         
-        if (success) {
+        if (result.success) {
           sharedDashboardLoaded.current = true;
           // Clean up URL parameter after loading
           window.history.replaceState({}, document.title, window.location.pathname);
+          // Show success toast
+          showToast(`Opened canvas with ${result.chartCount} chart${result.chartCount !== 1 ? 's' : ''}, in view only mode`, 'success');
+        } else if (result.error) {
+          // Show error toast
+          showToast(result.error, 'error');
         }
       } catch (error) {
         console.error('❌ Failed to load shared dashboard:', error);
+        showToast('Failed to load shared dashboard', 'error');
       }
     })();
   }, [editorReady]); // Re-run when editor becomes ready
@@ -3119,7 +3088,26 @@ function AppWrapper() {
     estimatedCost: 0
   });
   
+  // Share modal state
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareModalData, setShareModalData] = useState({
+    shareUrl: null,
+    expiresAt: null,
+    isLoading: false,
+    error: null
+  });
   
+  // Toast notification state
+  const [toast, setToast] = useState({
+    isOpen: false,
+    message: '',
+    type: 'success'
+  });
+  
+  // Helper to show toast
+  const showToast = (message, type = 'success') => {
+    setToast({ isOpen: true, message, type });
+  };
 
   // Helper function to calculate token costs (Gemini pricing)
   const updateTokenUsage = useCallback((newUsage) => {
@@ -6001,43 +5989,6 @@ function AppWrapper() {
       {/* Clear Filters Button - Only show when filter is active */}
       <ClearFiltersButton />
       
-      {/* Hidden file input for JSON import */}
-      <input
-        id="import-json-input"
-        type="file"
-        accept=".json,application/json"
-        style={{ display: 'none' }}
-        onChange={(e) => {
-          const file = e.target.files[0];
-          if (!file) return;
-          
-          const reader = new FileReader();
-          reader.onload = (event) => {
-            try {
-              console.log('📄 File read successfully, parsing JSON...');
-              const snapshot = JSON.parse(event.target.result);
-              console.log('✅ JSON parsed successfully:', {
-                hasVersion: !!snapshot.version,
-                hasCanvasState: !!snapshot.canvasState,
-                hasMetadata: !!snapshot.metadata,
-                version: snapshot.version
-              });
-              
-              const { loadCanvasStateFromJSON } = require('./agentic_layer/canvasSnapshot');
-              loadCanvasStateFromJSON(tldrawEditorRef.current, snapshot);
-            } catch (error) {
-              console.error('Failed to parse or load JSON:', error);
-              console.error('Error stack:', error.stack);
-              alert(`Invalid JSON file: ${error.message}\n\nPlease select a valid dashboard JSON file exported from this application.`);
-            }
-          };
-          reader.readAsText(file);
-          
-          // Reset input so same file can be selected again
-          e.target.value = '';
-        }}
-      />
-      
       {/* Floating Overlay Sidebar */}
       <UnifiedSidebar
         uploadPanelOpen={uploadPanelOpen}
@@ -6062,6 +6013,8 @@ function AppWrapper() {
         selectedChartForActions={selectedChartForActions}
         tldrawEditorRef={tldrawEditorRef}
         nodes={nodes}
+        setShareModalOpen={setShareModalOpen}
+        setShareModalData={setShareModalData}
       />
       
       {/* Floating Panels Container - Positioned next to sidebar */}
@@ -7028,6 +6981,36 @@ function AppWrapper() {
           </div>
         </SlidingPanel>
       )}
+
+      {/* Share Modal */}
+      <ShareModal
+        isOpen={shareModalOpen}
+        onClose={() => {
+          setShareModalOpen(false);
+          // Reset modal data after close animation
+          setTimeout(() => {
+            setShareModalData({
+              shareUrl: null,
+              expiresAt: null,
+              isLoading: false,
+              error: null
+            });
+          }, 200);
+        }}
+        shareUrl={shareModalData.shareUrl}
+        expiresAt={shareModalData.expiresAt}
+        isLoading={shareModalData.isLoading}
+        error={shareModalData.error}
+      />
+      
+      {/* Toast Notification */}
+      <Toast
+        isOpen={toast.isOpen}
+        onClose={() => setToast(prev => ({ ...prev, isOpen: false }))}
+        message={toast.message}
+        type={toast.type}
+        duration={4000}
+      />
             </div>
     </div>
   );
