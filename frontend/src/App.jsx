@@ -1659,6 +1659,7 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
+          setAgentPanelOpen(false);
         }
       }, 
       active: uploadPanelOpen 
@@ -1675,6 +1676,7 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
+          setAgentPanelOpen(false);
         }
       }, 
       active: variablesPanelOpen 
@@ -1691,6 +1693,7 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
+          setAgentPanelOpen(false);
         }
       }, 
       // Only show as active when panel is actually open
@@ -1715,6 +1718,7 @@ function UnifiedSidebar({
         setChartActionsPanelOpen(false);
         setInstructionsPanelOpen(false);
         setSettingsPanelOpen(false);
+        setAgentPanelOpen(false);
       }, 
       active: mergePanelOpen
       // No disabled state - always accessible
@@ -1735,6 +1739,7 @@ function UnifiedSidebar({
           setChartActionsPanelOpen(false);
           setMergePanelOpen(false);
           setSettingsPanelOpen(false);
+          setAgentPanelOpen(false);
         }
       }
     },
