@@ -750,3 +750,396 @@ Use the actual data provided above."""
                 "query": user_query,
                 "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
             }
+    
+    def generate_agent_actions(
+        self,
+        query: str,
+        canvas_state: Dict[str, Any],
+        dataset_id: str,
+        dataset_metadata: Optional[Dict[str, Any]] = None,
+        mode: str = "canvas"
+    ) -> Dict[str, Any]:
+        """
+        Generate Agent Actions
+        Uses Gemini to generate structured actions based on user query and canvas state.
+        Leverages dataset metadata for enhanced semantic understanding.
+        
+        Args:
+            query: Natural language query from user
+            canvas_state: Current canvas state (charts, tables, textboxes)
+            dataset_id: ID of the dataset
+            dataset_metadata: Enhanced dataset context (summary, column descriptions)
+        
+        Returns:
+            Dict containing:
+                - actions: List of action objects
+                - reasoning: Overall reasoning
+                - token_usage: Token metrics
+        """
+        try:
+            print(f"🤖 Generating agent actions for query: '{query}'")
+            
+            # Get dataset
+            from app import DATASETS
+            if dataset_id not in DATASETS:
+                raise ValueError(f"Dataset {dataset_id} not found")
+            
+            dataset = DATASETS[dataset_id]
+            print(f"📊 Dataset: {dataset.shape[0]} rows, {dataset.shape[1]} columns")
+            
+            # Build enhanced context from metadata
+            enhanced_context = ""
+            if dataset_metadata and dataset_metadata.get('success'):
+                dataset_summary = dataset_metadata.get('dataset_summary', '')
+                columns_info = dataset_metadata.get('columns', [])
+                
+                if dataset_summary and dataset_summary.strip():
+                    enhanced_context += f"\n📊 DATASET PURPOSE:\n{dataset_summary.strip()}\n"
+                
+                if columns_info and len(columns_info) > 0:
+                    enhanced_context += "\n📋 COLUMN MEANINGS:\n"
+                    for col_info in columns_info:
+                        col_name = col_info.get('name')
+                        col_desc = col_info.get('description', 'No description')
+                        col_type = col_info.get('type', 'unknown')
+                        if col_desc and col_desc.strip():
+                            enhanced_context += f"- {col_name} ({col_type}): {col_desc}\n"
+                
+                print(f"✨ Using enhanced context: {len(enhanced_context)} chars")
+            
+            # Build canvas state summary
+            canvas_summary = self._summarize_canvas_state(canvas_state)
+            
+            # Get chart count for prompt
+            charts = canvas_state.get('charts', [])
+            chart_count = len(charts)
+            
+            # Build mode-specific instructions
+            if mode == "ask":
+                mode_instructions = """
+🔵 ASK MODE ACTIVE - You are in analytical Q&A mode.
+
+STRICT RULES FOR ASK MODE:
+1. Generate ONLY ai_query actions - no charts, tables, or insights on canvas
+2. Every response must use ai_query to answer the user's question directly
+3. The ai_query will execute and return results inline in the chat
+4. Do NOT create any visual artifacts - only answer questions
+
+Example ask mode response:
+{{
+  "actions": [{{
+    "type": "ai_query",
+    "query": "Which two sprints had the highest number of completed story points?",
+    "position": "center",
+    "reasoning": "User wants analytical answer about top performing sprints"
+  }}],
+  "reasoning": "Direct analytical query to identify best sprints"
+}}
+"""
+            else:
+                mode_instructions = """
+🟣 CANVAS MODE ACTIVE - You are in visualization creation mode.
+
+STRICT RULES FOR CANVAS MODE:
+1. Generate visual artifacts: create_chart, create_insight, show_table, generate_chart_insights
+2. Do NOT use ai_query - create visualizations instead of inline answers
+3. All created items will appear on the canvas for the user to see
+4. Focus on creating meaningful visual representations of the data
+
+Example canvas mode response:
+{{
+  "actions": [{{
+    "type": "create_chart",
+    "dimensions": ["Sprint"],
+    "measures": ["PointsCompleted"],
+    "position": "center",
+    "reasoning": "Visualize completed points across sprints"
+  }}],
+  "reasoning": "Creating chart to show sprint performance"
+}}
+"""
+            
+            # Build agent prompt
+            prompt = f"""You are an AI data analysis agent that creates visualizations and insights.
+
+{mode_instructions}
+
+{enhanced_context}
+
+CURRENT CANVAS STATE:
+{canvas_summary}
+
+DATASET STRUCTURE:
+- Columns: {list(dataset.columns)}
+- Rows: {len(dataset)}
+- Available dimensions: {[col for col in dataset.columns if dataset[col].dtype == 'object']}
+- Available measures: {[col for col in dataset.columns if dataset[col].dtype in ['int64', 'float64']]}
+
+Sample data (first 3 rows):
+{dataset.head(3).to_string(index=False)}
+
+CRITICAL: CANVAS STATE AWARENESS
+
+Before generating actions, carefully analyze the CURRENT CANVAS STATE above:
+
+1. PRESENCE QUERIES: If user asks "Is X present?" or "Do we have X?" or "Does canvas have X?"
+   → CHECK canvas state for matching chart (same dimensions + measures)
+   → If found: Respond with create_insight confirming "Yes, chart-ID shows [data/insight]"
+   → If not found: create_chart with those dimensions/measures
+
+2. COUNT & REFERENCE ALL: If user says "above charts", "these charts", "all charts", "create tables"
+   → Count ALL charts in canvas state (currently {chart_count} charts present)
+   → Reference ALL chart IDs when creating actions (e.g., 5 charts = 5 show_table actions)
+
+3. EXISTENCE CHECK: If user asks to create something that already exists
+   → Respond with create_insight explaining it exists (provide chart ID and context)
+
+4. CONTEXT QUESTIONS: If user asks "what does chart show?" or "explain this"
+   → Use existing insights or data summaries from canvas state
+   → Respond with create_insight or ai_query referencing the specific chart
+
+Examples:
+- Query: "Is Product vs Profit chart present?"
+  → Check canvas: Look for chart with dimensions=['Product'], measures=['Profit']
+  → If exists: create_insight "Yes, chart-abc123 shows Profit by Product. [Include data/insight if available]"
+  → If missing: create_chart with dimensions=['Product'], measures=['Profit']
+
+- Query: "Create tables for above charts" (5 charts on canvas)
+  → Generate 5 show_table actions, one per chart ID
+
+- Query: "Show revenue by region" (when already exists)
+  → create_insight "Chart-xyz789 already shows Revenue by Region: [data summary]"
+
+USER QUERY: "{query}"
+
+Based on the canvas state and dataset, generate 1-3 actions to help the user.
+ALWAYS check canvas state FIRST before deciding what to create.
+
+Output ONLY valid JSON in this EXACT format (no markdown, no extra text):
+
+EXAMPLE 1 - Create chart:
+{{
+  "actions": [
+    {{
+      "type": "create_chart",
+      "dimensions": ["column_name"],
+      "measures": ["column_name"],
+      "position": "center",
+      "reasoning": "Why this chart helps answer the query"
+    }}
+  ],
+  "reasoning": "Overall strategy for answering the user's query"
+}}
+
+EXAMPLE 2 - Answer analytical question:
+{{
+  "actions": [
+    {{
+      "type": "ai_query",
+      "query": "What is the average revenue by region?",
+      "position": "center",
+      "reasoning": "User needs analytical answer from data"
+    }}
+  ],
+  "reasoning": "Direct query to analyze data and provide answer"
+}}
+
+EXAMPLE 3 - Multiple actions:
+{{
+  "actions": [
+    {{
+      "type": "create_chart",
+      "dimensions": ["Region"],
+      "measures": ["Revenue"],
+      "position": "center",
+      "reasoning": "Visualize revenue distribution"
+    }},
+    {{
+      "type": "create_insight",
+      "text": "Revenue is highest in North region",
+      "position": "below_chart",
+      "referenceChartId": "chart-id",
+      "reasoning": "Provide key takeaway"
+    }}
+  ],
+  "reasoning": "Create visualization with explanatory insight"
+}}
+
+Valid action types:
+
+1. create_chart: Create a new visualization
+   - dimensions (array of strings): Column names to use as dimensions
+   - measures (array of strings): Column names to use as measures
+   - position (string): "center", "right_of_chart", "below_chart"
+   - referenceChartId (optional string): Chart ID for relative positioning
+   - reasoning (string): Why this chart helps
+
+2. create_insight: Add a text note or explanation
+   - text (string): The insight text to display
+   - position (string): "center", "right_of_chart", "below_chart"
+   - referenceChartId (optional string): Chart ID for relative positioning
+   - reasoning (string): Why this insight is relevant
+
+3. generate_chart_insights: Generate AI-powered insights for an existing chart
+   - chartId (string): ID of existing chart from canvas state
+   - position (string): "right_of_chart", "below_chart", "center"
+   - userContext (optional string): Additional context
+   - reasoning (string): Why generate insights
+
+4. ai_query: Answer a free-form question about the data (works with or without charts)
+   - query (string): The question to answer
+   - chartId (optional string): If provided, analyzes specific chart's data as context
+   - position (string): "center", "right_of_chart", "below_chart"
+   - reasoning (string): Why this query helps
+   Note: chartId is optional - queries work on entire dataset if no chart specified
+
+5. show_table: Display the underlying data table for a chart
+   - chartId (string): ID of existing chart from canvas state
+   - reasoning (string): Why show the data table
+
+Valid positions: "center", "right_of_chart", "below_chart"
+If using "right_of_chart" or "below_chart", include referenceChartId with an existing chart ID from canvas state.
+
+Action selection guidelines:
+- User asks "why" or "explain" (about a chart) → use generate_chart_insights
+- User asks "what is", "how many", "calculate", "average", "which", "tell me", "find", "compare" → use ai_query (no chart needed)
+- User asks "show data" or "see values" → use show_table (requires existing chart)
+- User asks "create", "visualize", "show me a chart" → use create_chart
+
+Important notes:
+- ai_query works WITHOUT any charts on canvas - perfect for quick data questions
+- generate_chart_insights and show_table REQUIRE an existing chart (specify chartId)
+
+CRITICAL: When using ai_query action, the structure must be:
+{{
+  "type": "ai_query",
+  "query": "the actual user question",
+  "position": "center",
+  "reasoning": "why this helps"
+}}
+
+Example for "which two sprints performed well?":
+{{
+  "actions": [
+    {{
+      "type": "ai_query",
+      "query": "Which two sprints performed best in terms of user stories completed?",
+      "position": "center",
+      "reasoning": "User wants analytical answer about sprint performance"
+    }}
+  ],
+  "reasoning": "Direct data query to identify top performing sprints"
+}}
+
+IMPORTANT JSON FORMATTING RULES:
+1. Output ONLY the JSON object, no markdown code blocks (no ```json or ```)
+2. All field names must be in double quotes
+3. All string values must be in double quotes
+4. Arrays must use square brackets []
+5. Objects must use curly braces {{}}
+6. Every action MUST have: type, position, reasoning (+ action-specific required fields)
+7. The "actions" array can have 1-3 actions maximum"""
+
+            print("📝 Sending prompt to Gemini...")
+            response, token_usage = self.run_gemini_with_usage(prompt)
+            
+            print("🔍 Parsing response...")
+            actions_data = self._parse_agent_response(response)
+            
+            # Add token usage
+            actions_data["token_usage"] = token_usage
+            
+            print(f"✅ Successfully generated {len(actions_data.get('actions', []))} actions")
+            return actions_data
+            
+        except Exception as e:
+            print(f"❌ Agent action generation failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "actions": [],
+                "reasoning": f"Failed to generate actions: {str(e)}",
+                "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+            }
+    
+    def _summarize_canvas_state(self, canvas_state: Dict[str, Any]) -> str:
+        """
+        Summarize canvas state for prompt - TOKEN EFFICIENT
+        Reuses existing insights > statistical summaries > basic structure
+        """
+        charts = canvas_state.get('charts', [])
+        tables = canvas_state.get('tables', [])
+        textBoxes = canvas_state.get('textBoxes', [])
+        
+        summary = []
+        
+        if len(charts) > 0:
+            summary.append(f"\nExisting Charts ({len(charts)}):")
+            for chart in charts:
+                dims = ', '.join(chart.get('dimensions', []))
+                meas = ', '.join(chart.get('measures', []))
+                chart_type = chart.get('chartType', 'bar')
+                chart_id = chart.get('id', 'unknown')
+                
+                # Basic chart info
+                summary.append(f"  - Chart '{chart_id}': {chart_type} | {dims} vs {meas}")
+                
+                # Token-efficient context: Reuse existing insight (FREE!)
+                existing_insight = chart.get('existingInsight')
+                if existing_insight:
+                    # Truncate long insights to save tokens
+                    insight_preview = existing_insight[:200] + '...' if len(existing_insight) > 200 else existing_insight
+                    summary.append(f"    Insight: {insight_preview}")
+                else:
+                    # Fallback to statistical summary (minimal tokens, informative)
+                    data_summary = chart.get('dataSummary')
+                    if data_summary:
+                        summary.append(f"    Data: {data_summary}")
+                
+                # Show provenance if created by agent
+                created_by = chart.get('createdBy')
+                if created_by == 'agent':
+                    query = chart.get('createdByQuery', '')
+                    if query:
+                        summary.append(f"    (Created by agent for: '{query}')")
+        else:
+            summary.append("\nExisting Charts: None (empty canvas)")
+        
+        if len(tables) > 0:
+            summary.append(f"\nExisting Tables: {len(tables)}")
+        
+        if len(textBoxes) > 0:
+            summary.append(f"\nExisting Insights/Textboxes: {len(textBoxes)}")
+        
+        return '\n'.join(summary)
+    
+    def _parse_agent_response(self, response: str) -> Dict[str, Any]:
+        """Parse Gemini response to extract action JSON"""
+        try:
+            # Try to extract JSON from markdown code blocks
+            if "```json" in response:
+                json_str = response.split("```json")[1].split("```")[0].strip()
+            elif "```" in response:
+                json_str = response.split("```")[1].strip()
+            else:
+                json_str = response.strip()
+            
+            # Parse JSON
+            parsed = json.loads(json_str)
+            
+            # Validate structure
+            if "actions" not in parsed:
+                raise ValueError("Response missing 'actions' field")
+            if "reasoning" not in parsed:
+                parsed["reasoning"] = "No reasoning provided"
+            
+            return parsed
+            
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON parsing failed: {e}")
+            print(f"Response text: {response[:500]}...")
+            # Return empty actions on parse failure
+            return {
+                "actions": [],
+                "reasoning": f"Failed to parse agent response: {str(e)}"
+            }

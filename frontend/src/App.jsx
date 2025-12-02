@@ -1,10 +1,12 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import EChartsWrapper from './charts/EChartsWrapper';
 import TLDrawCanvas from './components/canvas/TLDrawCanvas';
-import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui';
-import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus } from 'lucide-react';
+import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, ShareModal, Toast } from './components/ui';
+import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus } from 'lucide-react';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
+import { AgentChatPanel } from './agentic_layer';
+import { GlobalFilterProvider, useGlobalFilter } from './contexts/GlobalFilterContext';
 
 // Backend API endpoint URL
 //const API = 'http://localhost:8000';
@@ -1628,13 +1630,21 @@ function UnifiedSidebar({
   setInstructionsPanelOpen,
   settingsPanelOpen,
   setSettingsPanelOpen,
+  agentPanelOpen,
+  setAgentPanelOpen,
   activeTool,
   onToolChange,
   // Action handlers
   onMergeCharts,
   selectedChartsCount,
   canMerge,
-  selectedChartForActions
+  selectedChartForActions,
+  // Export/Import functionality
+  tldrawEditorRef,
+  nodes,
+  // Share modal
+  setShareModalOpen,
+  setShareModalData
 }) {
   const toggleButtons = [
     { 
@@ -1649,6 +1659,7 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
+          setAgentPanelOpen(false);
         }
       }, 
       active: uploadPanelOpen 
@@ -1665,6 +1676,7 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
+          setAgentPanelOpen(false);
         }
       }, 
       active: variablesPanelOpen 
@@ -1681,6 +1693,7 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
+          setAgentPanelOpen(false);
         }
       }, 
       // Only show as active when panel is actually open
@@ -1705,13 +1718,14 @@ function UnifiedSidebar({
         setChartActionsPanelOpen(false);
         setInstructionsPanelOpen(false);
         setSettingsPanelOpen(false);
+        setAgentPanelOpen(false);
       }, 
       active: mergePanelOpen
       // No disabled state - always accessible
     },
     // Separator indicator
     { id: 'separator-1', isSeparator: true },
-    // App control buttons (moved from bottom)
+    // App control buttons
     {
       id: 'instructions',
       icon: BookOpen,
@@ -1725,6 +1739,7 @@ function UnifiedSidebar({
           setChartActionsPanelOpen(false);
           setMergePanelOpen(false);
           setSettingsPanelOpen(false);
+          setAgentPanelOpen(false);
         }
       }
     },
@@ -1741,6 +1756,72 @@ function UnifiedSidebar({
           setChartActionsPanelOpen(false);
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
+          setAgentPanelOpen(false);
+        }
+      }
+    },
+    {
+      id: 'agent',
+      icon: Sparkles,
+      label: 'AI Agent',
+      active: agentPanelOpen,
+      onClick: () => {
+        setAgentPanelOpen(!agentPanelOpen);
+        if (!agentPanelOpen) {
+          setUploadPanelOpen(false);
+          setVariablesPanelOpen(false);
+          setChartActionsPanelOpen(false);
+          setMergePanelOpen(false);
+          setInstructionsPanelOpen(false);
+          setSettingsPanelOpen(false);
+        }
+      }
+    },
+    { id: 'separator-2', isSeparator: true },
+    // Share Dashboard (at the bottom)
+    {
+      id: 'share',
+      icon: Share2,
+      label: 'Share Dashboard',
+      onClick: async () => {
+        // Open modal and show loading state
+        setShareModalOpen(true);
+        setShareModalData({
+          shareUrl: null,
+          expiresAt: null,
+          isLoading: true,
+          error: null
+        });
+        
+        try {
+          const { shareCanvasViaGist } = require('./agentic_layer/canvasSnapshot');
+          const result = await shareCanvasViaGist(tldrawEditorRef.current, nodes, {
+            title: 'My Dashboard',
+            expiresIn: 30 // 30 days
+          });
+          
+          if (result && result.share_url) {
+            // Update modal with success data
+            setShareModalData({
+              shareUrl: result.share_url,
+              expiresAt: result.expires_at,
+              isLoading: false,
+              error: null
+            });
+            
+            // Auto-copy to clipboard silently
+            navigator.clipboard.writeText(result.share_url).catch(() => {
+              // Silent fail - user can manually copy from modal
+            });
+          }
+        } catch (error) {
+          console.error('Failed to share dashboard:', error);
+          setShareModalData({
+            shareUrl: null,
+            expiresAt: null,
+            isLoading: false,
+            error: error.message || 'Failed to create shareable link'
+          });
         }
       }
     }
@@ -1766,7 +1847,11 @@ function UnifiedSidebar({
     >
       {/* Logo */}
       <div className="mb-4">
-        <SquaresExclude size={32} className="text-primary" />
+        <img 
+          src="/logo.svg" 
+          alt="App Logo" 
+          style={{ width: '32px', height: '32px' }}
+        />
       </div>
       
       {/* Toggle Buttons with Inline Separators */}
@@ -1905,6 +1990,9 @@ function ChartActionsPanel({
   // Filter state
   const [dimensionFilters, setDimensionFilters] = useState({});
   const [filterApplying, setFilterApplying] = useState(false);
+  
+  // Global filter context for click-through filtering
+  const { setGlobalFilter, clearGlobalFilter } = useGlobalFilter();
   
   // Update local state when selected chart changes
   useEffect(() => {
@@ -2242,8 +2330,9 @@ function ChartActionsPanel({
   const handleClearFilters = useCallback(async () => {
     if (!selectedChart) return;
     
-    // Clear the filters state
+    // Clear both chart-level filters AND global filters
     setDimensionFilters({});
+    clearGlobalFilter(); // Also clear global filter
     
     // Re-fetch chart without filters
     setFilterApplying(true);
@@ -2304,6 +2393,38 @@ function ChartActionsPanel({
       setFilterApplying(false);
     }
   }, [selectedChart, onChartUpdate]);
+  
+  // Apply filters globally to all charts on canvas (click-through filtering)
+  const handleApplyGlobalFilter = useCallback(() => {
+    if (!selectedChart || !dimensionFilters || Object.keys(dimensionFilters).length === 0) {
+      alert('Please select at least one filter value first');
+      return;
+    }
+    
+    // Multi-value support: send all selected values for the dimension
+    // Get first dimension with selected values
+    const dimensions = Object.keys(dimensionFilters);
+    const firstDimension = dimensions[0];
+    const selectedValues = dimensionFilters[firstDimension];
+    
+    if (!selectedValues || selectedValues.length === 0) {
+      alert('Please select at least one filter value first');
+      return;
+    }
+    
+    console.log('🌍 Applying global filter:', {
+      dimension: firstDimension,
+      values: selectedValues,  // Send ALL selected values
+      count: selectedValues.length,
+      sourceChart: selectedChart.id
+    });
+    
+    // Use GlobalFilterContext to set the filter with multiple values
+    // This will trigger the useEffect in AppWrapper that updates all charts
+    setGlobalFilter(firstDimension, selectedValues, selectedChart.id);
+    
+    console.log('✅ Global filter set - all charts will update automatically');
+  }, [selectedChart, dimensionFilters, setGlobalFilter]);
   
   // Get chart type info
   const dims = selectedChart?.data?.dimensions?.filter(d => d !== 'count').length || 0;
@@ -2447,15 +2568,28 @@ function ChartActionsPanel({
                   ))}
                 </div>
                 
-                {/* Apply Filters Button */}
-                <Button
-                  onClick={handleApplyFilters}
-                  disabled={filterApplying}
-                  className="w-full mt-3 bg-blue-600 hover:bg-blue-700 text-white"
-                  size="md"
-                >
-                  {filterApplying ? 'Applying...' : 'Apply Filters'}
-                </Button>
+                {/* Filter Action Buttons */}
+                <div className="space-y-2 mt-3">
+                  {/* Apply as Chart Filter */}
+                  <Button
+                    onClick={handleApplyFilters}
+                    disabled={filterApplying}
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                    size="md"
+                  >
+                    {filterApplying ? 'Applying...' : 'Apply as Chart Filter'}
+                  </Button>
+                  
+                  {/* Apply as Global Filter */}
+                  <Button
+                    onClick={handleApplyGlobalFilter}
+                    disabled={filterApplying || Object.keys(dimensionFilters).length === 0}
+                    className="w-full bg-green-600 hover:bg-green-700 text-white"
+                    size="md"
+                  >
+                    Apply as Global Filter
+                  </Button>
+                </div>
                 
                 {/* Active Filters Badge */}
                 {Object.keys(dimensionFilters).some(d => dimensionFilters[d]?.length > 0) && (
@@ -2696,6 +2830,41 @@ const getMinimapNodeColor = (node) => {
 };
 
 /**
+ * ClearFiltersButton Component
+ * Floating button that appears when a global filter is active
+ * Allows users to clear all click-through filters at once
+ * Styled consistently with Toast component
+ */
+function ClearFiltersButton() {
+  const { globalFilter, clearGlobalFilter, isFilterActive } = useGlobalFilter();
+  
+  if (!isFilterActive()) return null;
+  
+  const filterText = `Clear Filter: ${globalFilter.activeDimension} = ${
+    globalFilter.activeValues?.length === 1 
+      ? globalFilter.activeValues[0]
+      : `${globalFilter.activeValues?.length || 0} values`
+  }`;
+  
+  return (
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[9999]">
+      <button
+        onClick={() => {
+          clearGlobalFilter();
+          console.log('🧹 All filters cleared');
+        }}
+        className="flex items-center gap-3 px-5 py-3 bg-[#4CAF93] hover:bg-[#3d9a80] rounded-full shadow-lg transition-all duration-200 hover:-translate-y-0.5"
+      >
+        <X className="w-5 h-5 text-white flex-shrink-0" />
+        <span className="text-white text-sm font-medium whitespace-nowrap">
+          {filterText}
+        </span>
+      </button>
+    </div>
+  );
+}
+
+/**
  * Main Application Component
  * Manages all state and orchestrates the data flow.
  * Handles:
@@ -2710,6 +2879,9 @@ const getMinimapNodeColor = (node) => {
  * the application state. It renders the layout with sidebars, panels, canvas, and report.
  */
 function AppWrapper() {
+  // Global filter context for click-through filtering
+  const { globalFilter, setGlobalFilter, shouldChartApplyFilter, getFilterForAPI } = useGlobalFilter();
+  
   const [datasetId, setDatasetId] = useState(null);
   const [csvFileName, setCsvFileName] = useState('');
   const [availableDimensions, setAvailableDimensions] = useState([]);
@@ -2737,6 +2909,55 @@ function AppWrapper() {
   const tldrawEditorRef = useRef(null); // Reference to TLDraw editor for programmatic control
   const isProgrammaticDeselect = useRef(false); // Flag to prevent listener from re-selecting during programmatic clear
   const createdStickyNotes = useRef(new Set()); // Track which charts already have sticky notes
+  const sharedDashboardLoaded = useRef(false); // Track if we've already loaded a shared dashboard
+  const [editorReady, setEditorReady] = useState(false); // Track when editor is mounted
+  
+  // Callback when TLDraw editor is mounted
+  const handleEditorMount = useCallback(() => {
+    console.log('✅ TLDraw editor mounted and ready');
+    setEditorReady(true);
+  }, []);
+  
+  // Auto-load shared dashboard from URL parameter
+  useEffect(() => {
+    // Only run once when component mounts
+    if (sharedDashboardLoaded.current) return;
+    
+    // Check if there's a snapshot parameter in the URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const snapshotId = urlParams.get('snapshot');
+    
+    if (!snapshotId) return;
+    
+    // Wait for editor to be ready
+    if (!editorReady || !tldrawEditorRef.current) {
+      console.log('⏳ Waiting for editor to initialize before loading shared dashboard...');
+      return;
+    }
+    
+    // Load the shared dashboard
+    (async () => {
+      try {
+        console.log(`📥 Loading shared dashboard from URL: ${snapshotId}`);
+        const { loadSharedCanvasState } = require('./agentic_layer/canvasSnapshot');
+        const result = await loadSharedCanvasState(tldrawEditorRef.current, snapshotId);
+        
+        if (result.success) {
+          sharedDashboardLoaded.current = true;
+          // Clean up URL parameter after loading
+          window.history.replaceState({}, document.title, window.location.pathname);
+          // Show success toast
+          showToast(`Opened canvas with ${result.chartCount} chart${result.chartCount !== 1 ? 's' : ''}, in view only mode`, 'success');
+        } else if (result.error) {
+          // Show error toast
+          showToast(result.error, 'error');
+        }
+      } catch (error) {
+        console.error('❌ Failed to load shared dashboard:', error);
+        showToast('Failed to load shared dashboard', 'error');
+      }
+    })();
+  }, [editorReady]); // Re-run when editor becomes ready
   
   // Auto-create sticky notes for charts with preloaded insights
   useEffect(() => {
@@ -2855,6 +3076,9 @@ function AppWrapper() {
     return !hasSeenInstructions;
   });
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+  const [canvasMessages, setCanvasMessages] = useState([]); // Canvas mode conversation
+  const [askMessages, setAskMessages] = useState([]); // Ask mode conversation
   
   const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_api_key') || '');
   const [selectedModel, setSelectedModel] = useState(localStorage.getItem('gemini_model') || 'gemini-2.0-flash');
@@ -2869,7 +3093,26 @@ function AppWrapper() {
     estimatedCost: 0
   });
   
+  // Share modal state
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareModalData, setShareModalData] = useState({
+    shareUrl: null,
+    expiresAt: null,
+    isLoading: false,
+    error: null
+  });
   
+  // Toast notification state
+  const [toast, setToast] = useState({
+    isOpen: false,
+    message: '',
+    type: 'success'
+  });
+  
+  // Helper to show toast
+  const showToast = (message, type = 'success') => {
+    setToast({ isOpen: true, message, type });
+  };
 
   // Helper function to calculate token costs (Gemini pricing)
   const updateTokenUsage = useCallback((newUsage) => {
@@ -2903,6 +3146,176 @@ function AppWrapper() {
     // Remove cache clearing to avoid potential interference with active charts
   }, []);
 
+  // Track the previous global filter dimension to know what to clear
+  const prevGlobalFilterRef = useRef(null);
+
+  // Global filter subscription - Apply click-through filters to all charts
+  useEffect(() => {
+    const hasActiveFilter = globalFilter.activeDimension && 
+                           globalFilter.activeValues && 
+                           globalFilter.activeValues.length > 0;
+    
+    if (hasActiveFilter) {
+      // Filter is active - apply to all matching charts
+      console.log('🔍 Global filter active, updating charts:', {
+        dimension: globalFilter.activeDimension,
+        values: globalFilter.activeValues,
+        count: globalFilter.activeValues.length,
+        sourceChart: globalFilter.sourceChartId
+      });
+      
+      // Remember this filter for cleanup later
+      prevGlobalFilterRef.current = globalFilter.activeDimension;
+      
+      // Find all chart nodes that should be filtered
+      const chartsToUpdate = nodes.filter(node => {
+        if (node.type !== 'chart') return false;
+        
+        // Check if this chart has the matching dimension
+        const chartDimensions = node.data?.dimensions || [];
+        return shouldChartApplyFilter(chartDimensions);
+      });
+      
+      console.log(`📊 Found ${chartsToUpdate.length} charts to filter`);
+      
+      // Update each chart with filtered data
+      chartsToUpdate.forEach(async (chartNode) => {
+        try {
+          const filterObj = getFilterForAPI();
+          
+          console.log(`🔍 Applying global filter to chart ${chartNode.id}:`, filterObj);
+          
+          // Call backend to get filtered data
+          const res = await fetch(`${API}/charts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              dataset_id: chartNode.data.datasetId,
+              dimensions: chartNode.data.dimensions,
+              measures: chartNode.data.measures,
+              agg: chartNode.data.agg || 'sum',
+              filters: filterObj
+            })
+          });
+          
+          if (!res.ok) {
+            console.error(`Failed to apply filter to chart ${chartNode.id}`);
+            return;
+          }
+          
+          const chart = await res.json();
+          
+          // Regenerate chart visualization with filtered data
+          const chartType = chartNode.data.chartType || 'bar';
+          const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
+          
+          if (chartConfig) {
+            const option = chartConfig.createOption(chart.table, {
+              dimensions: chart.dimensions,
+              measures: chart.measures
+            });
+            
+            // Update the node with filtered data
+            // Mark it with globalFilterActive flag to distinguish from local filters
+            setNodes(nds => nds.map(n => {
+              if (n.id === chartNode.id) {
+                return {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    chartData: option.series,
+                    chartLayout: option,
+                    table: chart.table,
+                    filters: filterObj,
+                    globalFilterActive: true // Mark as globally filtered
+                  }
+                };
+              }
+              return n;
+            }));
+            
+            console.log(`✅ Chart ${chartNode.id} globally filtered successfully`);
+          }
+        } catch (error) {
+          console.error(`Failed to filter chart ${chartNode.id}:`, error);
+        }
+      });
+    } else if (prevGlobalFilterRef.current !== null) {
+      // Filter was cleared - only reset charts that were globally filtered
+      console.log('🧹 Global filter cleared, resetting globally filtered charts');
+      
+      const globallyFilteredCharts = nodes.filter(node => 
+        node.type === 'chart' && 
+        node.data?.globalFilterActive === true
+      );
+      
+      console.log(`📊 Found ${globallyFilteredCharts.length} globally filtered charts to reset`);
+      
+      // Reset each globally filtered chart
+      globallyFilteredCharts.forEach(async (chartNode) => {
+        try {
+          console.log(`🔄 Resetting chart ${chartNode.id} from global filter`);
+          
+          // Call backend to get unfiltered data
+          const res = await fetch(`${API}/charts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              dataset_id: chartNode.data.datasetId,
+              dimensions: chartNode.data.dimensions,
+              measures: chartNode.data.measures,
+              agg: chartNode.data.agg || 'sum',
+              filters: {} // Empty filters = unfiltered
+            })
+          });
+          
+          if (!res.ok) {
+            console.error(`Failed to reset chart ${chartNode.id}`);
+            return;
+          }
+          
+          const chart = await res.json();
+          
+          // Regenerate chart visualization with unfiltered data
+          const chartType = chartNode.data.chartType || 'bar';
+          const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
+          
+          if (chartConfig) {
+            const option = chartConfig.createOption(chart.table, {
+              dimensions: chart.dimensions,
+              measures: chart.measures
+            });
+            
+            // Update the node with unfiltered data
+            setNodes(nds => nds.map(n => {
+              if (n.id === chartNode.id) {
+                return {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    chartData: option.series,
+                    chartLayout: option,
+                    table: chart.table,
+                    filters: {}, // Clear filters
+                    globalFilterActive: false // Remove global filter flag
+                  }
+                };
+              }
+              return n;
+            }));
+            
+            console.log(`✅ Chart ${chartNode.id} reset from global filter`);
+          }
+        } catch (error) {
+          console.error(`Failed to reset chart ${chartNode.id}:`, error);
+        }
+      });
+      
+      // Clear the previous filter reference
+      prevGlobalFilterRef.current = null;
+    }
+  }, [globalFilter, nodes, shouldChartApplyFilter, getFilterForAPI]);
+  
   // Sync selected chart with Chart Actions Panel (for single selection only)
   useEffect(() => {
     // Get all chart nodes that match the selected IDs in selectedCharts
@@ -3234,6 +3647,21 @@ function AppWrapper() {
   // Tool change handler
   const handleToolChange = useCallback((toolId) => {
     setActiveTool(toolId);
+  }, []);
+
+  // Listen for checkbox-based chart selection
+  useEffect(() => {
+    const handleCheckboxToggle = (e) => {
+      const { shapeId, selected } = e.detail;
+      console.log('📋 Chart checkbox event received:', { shapeId, selected });
+      handleChartSelect(shapeId);
+    };
+    
+    window.addEventListener('chart-checkbox-toggle', handleCheckboxToggle);
+    
+    return () => {
+      window.removeEventListener('chart-checkbox-toggle', handleCheckboxToggle);
+    };
   }, []);
 
   const handleChartSelect = useCallback((chartId) => {
@@ -4202,7 +4630,11 @@ function AppWrapper() {
           text: xValues.map(v => String(v)), // Full text for hover
           hovertemplate: '%{text}<br>%{y}<extra></extra>',
           line: { width: 3 },
-          marker: { size: 8 }
+          marker: { size: 8 },
+          clickable: true,
+          onClick: () => {
+            console.log('Chart clicked:', g);
+          }
         };
       });
       
@@ -5349,6 +5781,7 @@ function AppWrapper() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onChartSelect={handleChartSelect}
+        onEditorMount={handleEditorMount}
         onNodeClick={(event) => {
           // TLDraw passes { node } object
           const node = event.node || event;
@@ -5558,6 +5991,9 @@ function AppWrapper() {
         {renderMainCanvas()}
       </div>
       
+      {/* Clear Filters Button - Only show when filter is active */}
+      <ClearFiltersButton />
+      
       {/* Floating Overlay Sidebar */}
       <UnifiedSidebar
         uploadPanelOpen={uploadPanelOpen}
@@ -5572,12 +6008,18 @@ function AppWrapper() {
         setInstructionsPanelOpen={setInstructionsPanelOpen}
         settingsPanelOpen={settingsPanelOpen}
         setSettingsPanelOpen={setSettingsPanelOpen}
+        agentPanelOpen={agentPanelOpen}
+        setAgentPanelOpen={setAgentPanelOpen}
         activeTool={activeTool}
         onToolChange={handleToolChange}
         onMergeCharts={mergeSelectedCharts}
         selectedChartsCount={selectedCharts.length}
         canMerge={selectedCharts.length === 2}
         selectedChartForActions={selectedChartForActions}
+        tldrawEditorRef={tldrawEditorRef}
+        nodes={nodes}
+        setShareModalOpen={setShareModalOpen}
+        setShareModalData={setShareModalData}
       />
       
       {/* Floating Panels Container - Positioned next to sidebar */}
@@ -5587,7 +6029,7 @@ function AppWrapper() {
           left: 'calc(var(--size-sidebar) + 14px)',
           top: '60px',
           bottom: '100px',
-          pointerEvents: (uploadPanelOpen || variablesPanelOpen || chartActionsPanelOpen || mergePanelOpen || instructionsPanelOpen || settingsPanelOpen) ? 'auto' : 'none'
+          pointerEvents: (uploadPanelOpen || variablesPanelOpen || chartActionsPanelOpen || mergePanelOpen || instructionsPanelOpen || settingsPanelOpen || agentPanelOpen) ? 'auto' : 'none'
         }}
       >
       {/* Single Panel Container - Only one panel can be open at a time */}
@@ -5989,6 +6431,45 @@ function AppWrapper() {
                 </div>
               )}
             </div>
+          </SlidingPanel>
+        )}
+
+        {/* Agent Panel */}
+        {agentPanelOpen && (
+          <SlidingPanel
+            isOpen={agentPanelOpen}
+            title="AI Agent"
+            onClose={() => setAgentPanelOpen(false)}
+            size="md"
+          >
+            <AgentChatPanel
+              isOpen={agentPanelOpen}
+              onClose={() => setAgentPanelOpen(false)}
+              datasetId={datasetId}
+              apiKey={apiKey}
+              canvasMessages={canvasMessages}
+              setCanvasMessages={setCanvasMessages}
+              askMessages={askMessages}
+              setAskMessages={setAskMessages}
+              onTokenUsage={(usage) => {
+                setTokenUsage(prev => ({
+                  inputTokens: prev.inputTokens + (usage.inputTokens || 0),
+                  outputTokens: prev.outputTokens + (usage.outputTokens || 0),
+                  totalTokens: prev.totalTokens + (usage.totalTokens || 0),
+                  estimatedCost: prev.estimatedCost + (usage.estimatedCost || 0)
+                }));
+              }}
+              canvasContext={{
+                editor: tldrawEditorRef.current,
+                nodes,
+                setNodes,
+                getViewportCenter,
+                API,
+                datasetId,
+                apiKey,
+                figureFromPayload
+              }}
+            />
           </SlidingPanel>
         )}
 
@@ -6505,6 +6986,36 @@ function AppWrapper() {
           </div>
         </SlidingPanel>
       )}
+
+      {/* Share Modal */}
+      <ShareModal
+        isOpen={shareModalOpen}
+        onClose={() => {
+          setShareModalOpen(false);
+          // Reset modal data after close animation
+          setTimeout(() => {
+            setShareModalData({
+              shareUrl: null,
+              expiresAt: null,
+              isLoading: false,
+              error: null
+            });
+          }, 200);
+        }}
+        shareUrl={shareModalData.shareUrl}
+        expiresAt={shareModalData.expiresAt}
+        isLoading={shareModalData.isLoading}
+        error={shareModalData.error}
+      />
+      
+      {/* Toast Notification */}
+      <Toast
+        isOpen={toast.isOpen}
+        onClose={() => setToast(prev => ({ ...prev, isOpen: false }))}
+        message={toast.message}
+        type={toast.type}
+        duration={4000}
+      />
             </div>
     </div>
   );
@@ -6513,9 +7024,14 @@ function AppWrapper() {
 /**
  * App Component (Main Entry Point)
  * Root component for the D.Fuse application.
+ * Wraps AppWrapper with GlobalFilterProvider for click-through filtering.
  * 
  * @returns {JSX.Element} The complete D.Fuse application
  */
 export default function App() {
-  return <AppWrapper />;
+  return (
+    <GlobalFilterProvider>
+      <AppWrapper />
+    </GlobalFilterProvider>
+  );
 }
