@@ -69,7 +69,39 @@ export class ChartShape extends BaseBoxShapeUtil {
   component(shape) {
     // Create a functional component to use hooks
     const ChartShapeContent = () => {
-      const { globalFilter } = useGlobalFilter();
+      const { globalFilter, setGlobalFilter } = useGlobalFilter();
+      
+      // Handle chart element clicks for filtering
+      const handleChartClick = (params) => {
+        console.log('📊 Chart element clicked:', params);
+        
+        // Only process series clicks (bars, points, slices)
+        if (params.componentType !== 'series') {
+          console.log('⚠️ Not a series element, ignoring click');
+          return;
+        }
+        
+        // Extract dimension and value
+        const dimensions = shape.props.dimensions;
+        if (!dimensions || dimensions.length === 0) {
+          console.warn('❌ No dimensions available for filtering');
+          return;
+        }
+        
+        // Use the primary dimension (x-axis for most charts)
+        const dimension = dimensions[0];
+        const value = params.name; // Category name from xAxis
+        
+        if (!value) {
+          console.warn('❌ No value found for clicked element');
+          return;
+        }
+        
+        console.log('🎯 Applying global filter:', { dimension, value, chartId: shape.id });
+        
+        // Apply global filter (will update all charts with matching dimension)
+        setGlobalFilter(dimension, value, shape.id);
+      };
       
       const {
         w,
@@ -172,6 +204,7 @@ export class ChartShape extends BaseBoxShapeUtil {
                 <EChartsWrapper
                   data={chartData}
                   layout={chartLayout}
+                  onChartClick={handleChartClick}
                   style={{
                     width: '100%',
                     height: '100%'

@@ -3149,6 +3149,12 @@ function AppWrapper() {
   // Track the previous global filter dimension to know what to clear
   const prevGlobalFilterRef = useRef(null);
 
+  // Keep nodes in a ref to avoid dependency issues
+  const nodesRef = useRef(nodes);
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+
   // Global filter subscription - Apply click-through filters to all charts
   useEffect(() => {
     const hasActiveFilter = globalFilter.activeDimension && 
@@ -3167,8 +3173,8 @@ function AppWrapper() {
       // Remember this filter for cleanup later
       prevGlobalFilterRef.current = globalFilter.activeDimension;
       
-      // Find all chart nodes that should be filtered
-      const chartsToUpdate = nodes.filter(node => {
+      // Find all chart nodes that should be filtered (use ref to avoid dependency loop)
+      const chartsToUpdate = nodesRef.current.filter(node => {
         if (node.type !== 'chart') return false;
         
         // Check if this chart has the matching dimension
@@ -3182,8 +3188,6 @@ function AppWrapper() {
       chartsToUpdate.forEach(async (chartNode) => {
         try {
           const filterObj = getFilterForAPI();
-          
-          console.log(`🔍 Applying global filter to chart ${chartNode.id}:`, filterObj);
           
           // Call backend to get filtered data
           const res = await fetch(`${API}/charts`, {
@@ -3233,8 +3237,6 @@ function AppWrapper() {
               }
               return n;
             }));
-            
-            console.log(`✅ Chart ${chartNode.id} globally filtered successfully`);
           }
         } catch (error) {
           console.error(`Failed to filter chart ${chartNode.id}:`, error);
@@ -3244,7 +3246,7 @@ function AppWrapper() {
       // Filter was cleared - only reset charts that were globally filtered
       console.log('🧹 Global filter cleared, resetting globally filtered charts');
       
-      const globallyFilteredCharts = nodes.filter(node => 
+      const globallyFilteredCharts = nodesRef.current.filter(node => 
         node.type === 'chart' && 
         node.data?.globalFilterActive === true
       );
@@ -3303,8 +3305,6 @@ function AppWrapper() {
               }
               return n;
             }));
-            
-            console.log(`✅ Chart ${chartNode.id} reset from global filter`);
           }
         } catch (error) {
           console.error(`Failed to reset chart ${chartNode.id}:`, error);
@@ -3314,7 +3314,7 @@ function AppWrapper() {
       // Clear the previous filter reference
       prevGlobalFilterRef.current = null;
     }
-  }, [globalFilter, nodes, shouldChartApplyFilter, getFilterForAPI]);
+  }, [globalFilter, shouldChartApplyFilter, getFilterForAPI]); // Removed 'nodes' to prevent infinite loop
   
   // Sync selected chart with Chart Actions Panel (for single selection only)
   useEffect(() => {
