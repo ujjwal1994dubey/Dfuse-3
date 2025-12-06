@@ -78,6 +78,11 @@ export function AgentChatPanel({
     }]);
 
     setLoading(true);
+    
+    // Track AI feature usage
+    if (canvasContext.trackAIUsed) {
+      canvasContext.trackAIUsed();
+    }
 
     try {
       // Get canvas snapshot

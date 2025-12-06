@@ -15,9 +15,27 @@ import requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from gemini_llm import GeminiDataFormulator
+from supabase import create_client, Client
 
 # Load environment variables from .env file (for local development)
 load_dotenv()
+
+# -----------------------
+# Supabase Configuration
+# -----------------------
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Initialize Supabase client (will be None if credentials not set)
+supabase: Optional[Client] = None
+if SUPABASE_URL and SUPABASE_KEY and SUPABASE_URL != "https://your-project-id.supabase.co":
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("✅ Supabase client initialized successfully")
+    except Exception as e:
+        print(f"⚠️ Failed to initialize Supabase client: {e}")
+else:
+    print("⚠️ Supabase credentials not configured - login tracking disabled")
 
 app = FastAPI(title="Chart Fusion Backend")
 # app.add_middleware(
@@ -58,6 +76,253 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "timestamp": "2024-01-01"}
+
+# -----------------------
+# User Authentication & Tracking
+# -----------------------
+class UserLoginRequest(BaseModel):
+    id: str
+    email: str
+    name: str
+    picture: Optional[str] = None
+
+@app.post("/auth/login")
+async def record_user_login(user: UserLoginRequest):
+    """Record a user login event to Supabase for tracking purposes"""
+    login_record = {
+        "user_id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "picture": user.picture,
+        "login_time": datetime.now().isoformat(),
+    }
+    
+    if supabase:
+        try:
+            # Insert into Supabase
+            result = supabase.table("user_logins").insert(login_record).execute()
+            login_id = result.data[0]["id"] if result.data else None
+            print(f"✅ User login recorded: {user.email} ({user.name}) - ID: {login_id}")
+            return {
+                "success": True,
+                "message": f"Login recorded for {user.email}",
+                "login_id": login_id,  # Return UUID for session tracking
+                "data": result.data
+            }
+        except Exception as e:
+            print(f"❌ Failed to record login: {e}")
+            # Don't fail the login if tracking fails
+            return {
+                "success": False,
+                "message": f"Login tracking failed: {str(e)}",
+                "error": str(e)
+            }
+    else:
+        print(f"⚠️ Supabase not configured - login not tracked: {user.email}")
+        return {
+            "success": False,
+            "message": "Supabase not configured - login tracking disabled"
+        }
+
+@app.get("/auth/logins")
+async def get_login_history(limit: int = 100):
+    """Get login history from Supabase (for admin/tracking purposes)"""
+    if supabase:
+        try:
+            result = supabase.table("user_logins")\
+                .select("*")\
+                .order("login_time", desc=True)\
+                .limit(limit)\
+                .execute()
+            
+            # Get unique user count
+            unique_result = supabase.table("user_logins")\
+                .select("email")\
+                .execute()
+            unique_emails = set(record["email"] for record in unique_result.data)
+            
+            return {
+                "success": True,
+                "total_logins": len(result.data),
+                "unique_users": len(unique_emails),
+                "logins": result.data
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch logins: {str(e)}")
+    else:
+        raise HTTPException(status_code=503, detail="Supabase not configured")
+
+@app.get("/auth/users")
+async def get_unique_users():
+    """Get list of unique users who have logged in"""
+    if supabase:
+        try:
+            # Get all logins and aggregate by email
+            result = supabase.table("user_logins")\
+                .select("email, name, picture, login_time")\
+                .order("login_time", desc=True)\
+                .execute()
+            
+            # Group by email, keeping latest login info
+            users_dict = {}
+            for record in result.data:
+                email = record["email"]
+                if email not in users_dict:
+                    users_dict[email] = {
+                        "email": email,
+                        "name": record["name"],
+                        "picture": record["picture"],
+                        "last_login": record["login_time"],
+                        "login_count": 1
+                    }
+                else:
+                    users_dict[email]["login_count"] += 1
+            
+            return {
+                "success": True,
+                "total_users": len(users_dict),
+                "users": list(users_dict.values())
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch users: {str(e)}")
+    else:
+        raise HTTPException(status_code=503, detail="Supabase not configured")
+
+@app.post("/auth/logout")
+async def record_user_logout(user: UserLoginRequest):
+    """Record when a user logs out (optional tracking)"""
+    print(f"👋 User logged out: {user.email}")
+    return {"success": True, "message": f"Logout recorded for {user.email}"}
+
+# -----------------------
+# Session Usage Tracking
+# -----------------------
+class SessionStartRequest(BaseModel):
+    login_id: str  # UUID from user_logins table
+
+class SessionUpdateRequest(BaseModel):
+    session_id: str
+    charts_created_manually: int = 0
+    charts_created_using_ai: int = 0
+    tables_created: int = 0
+    ai_insights_generated: int = 0
+    charts_merged: int = 0
+    ai_feature_used: int = 0
+    total_tokens: int = 0
+    canvas_objects: int = 0
+    is_active: Optional[bool] = True
+    session_end: Optional[str] = None
+
+@app.post("/session/start")
+async def start_session(data: SessionStartRequest):
+    """Start a new user session linked to login record"""
+    if supabase:
+        try:
+            # Use local time for session_start
+            local_time = datetime.now().isoformat()
+            
+            result = supabase.table("user_sessions").insert({
+                "login_id": data.login_id,
+                "is_active": True,
+                "session_start": local_time
+            }).execute()
+            
+            if result.data:
+                session_id = result.data[0]["id"]
+                print(f"📊 Session started: {session_id}")
+                return {"success": True, "session_id": session_id}
+            return {"success": False, "error": "No data returned"}
+        except Exception as e:
+            print(f"❌ Failed to start session: {e}")
+            return {"success": False, "error": str(e)}
+    
+    return {"success": False, "error": "Supabase not configured"}
+
+@app.post("/session/update")
+async def update_session(data: SessionUpdateRequest):
+    """Update session metrics"""
+    if supabase:
+        try:
+            update_data = {
+                "charts_created_manually": data.charts_created_manually,
+                "charts_created_using_ai": data.charts_created_using_ai,
+                "tables_created": data.tables_created,
+                "ai_insights_generated": data.ai_insights_generated,
+                "charts_merged": data.charts_merged,
+                "ai_feature_used": data.ai_feature_used,
+                "total_tokens": data.total_tokens,
+                "canvas_objects": data.canvas_objects,
+            }
+            
+            if data.session_end:
+                update_data["session_end"] = data.session_end
+                update_data["is_active"] = False
+            
+            result = supabase.table("user_sessions")\
+                .update(update_data)\
+                .eq("id", data.session_id)\
+                .execute()
+            
+            return {"success": True}
+        except Exception as e:
+            print(f"❌ Failed to update session: {e}")
+            return {"success": False, "error": str(e)}
+    
+    return {"success": False, "error": "Supabase not configured"}
+
+@app.post("/session/end")
+async def end_session(data: SessionUpdateRequest):
+    """End a user session with final metrics"""
+    if supabase:
+        try:
+            result = supabase.table("user_sessions")\
+                .update({
+                    "charts_created_manually": data.charts_created_manually,
+                    "charts_created_using_ai": data.charts_created_using_ai,
+                    "tables_created": data.tables_created,
+                    "ai_insights_generated": data.ai_insights_generated,
+                    "charts_merged": data.charts_merged,
+                    "ai_feature_used": data.ai_feature_used,
+                    "total_tokens": data.total_tokens,
+                    "canvas_objects": data.canvas_objects,
+                    "session_end": datetime.now().isoformat(),
+                    "is_active": False
+                })\
+                .eq("id", data.session_id)\
+                .execute()
+            
+            print(f"📊 Session ended: {data.session_id}")
+            return {"success": True}
+        except Exception as e:
+            print(f"❌ Failed to end session: {e}")
+            return {"success": False, "error": str(e)}
+    
+    return {"success": False, "error": "Supabase not configured"}
+
+@app.get("/session/history")
+async def get_session_history(email: Optional[str] = None, limit: int = 50):
+    """Get session history with user details (join with user_logins)"""
+    if supabase:
+        try:
+            # Query sessions with login info via join
+            query = supabase.table("user_sessions")\
+                .select("*, user_logins(email, name, login_time)")\
+                .order("session_start", desc=True)\
+                .limit(limit)
+            
+            result = query.execute()
+            
+            # Filter by email if provided (post-processing since Supabase doesn't support filtering on joined fields easily)
+            sessions = result.data
+            if email:
+                sessions = [s for s in sessions if s.get("user_logins", {}).get("email") == email]
+            
+            return {"success": True, "sessions": sessions}
+        except Exception as e:
+            print(f"❌ Failed to fetch session history: {e}")
+            return {"success": False, "error": str(e)}
+    
+    return {"success": False, "error": "Supabase not configured"}
 
 # -----------------------
 # Models

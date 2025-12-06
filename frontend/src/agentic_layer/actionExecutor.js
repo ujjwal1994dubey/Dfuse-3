@@ -63,7 +63,7 @@ async function executeAction(action, context) {
  * Create a chart on the canvas
  */
 async function createChartAction(action, context) {
-  const { API, datasetId, setNodes, figureFromPayload } = context;
+  const { API, datasetId, setNodes, figureFromPayload, trackChartCreatedByAI } = context;
   
   // Call existing /charts endpoint
   const response = await fetch(`${API}/charts`, {
@@ -127,6 +127,11 @@ async function createChartAction(action, context) {
   }));
   
   console.log(`✅ Chart created:`, chartId, 'at position', position);
+  
+  // Track AI chart creation for session analytics
+  if (trackChartCreatedByAI) {
+    trackChartCreatedByAI();
+  }
   
   return { 
     chartId, 
@@ -231,7 +236,7 @@ function findNodeById(nodeId, nodes) {
  * Generate AI insights for an existing chart
  */
 async function generateChartInsightsAction(action, context) {
-  const { API, apiKey, setNodes, nodes } = context;
+  const { API, apiKey, setNodes, nodes, trackAIInsight } = context;
   
   if (!apiKey) {
     throw new Error('API key is required for generating insights');
@@ -292,6 +297,11 @@ async function generateChartInsightsAction(action, context) {
   }));
   
   console.log(`✅ Generated insights for chart:`, action.chartId, 'at position', position);
+  
+  // Track AI insight generation for session analytics
+  if (trackAIInsight) {
+    trackAIInsight();
+  }
   
   return {
     insightId,
@@ -422,7 +432,7 @@ async function aiQueryAction(action, context) {
  * Show table for a chart's underlying data
  */
 async function showTableAction(action, context) {
-  const { setNodes, nodes } = context;
+  const { setNodes, nodes, trackTableCreated } = context;
   
   // Find the chart
   const chartNode = nodes.find(n => n.id === action.chartId);
@@ -464,6 +474,11 @@ async function showTableAction(action, context) {
   }));
   
   console.log(`✅ Created table for chart:`, action.chartId, 'at position', tablePosition);
+  
+  // Track table creation for session analytics
+  if (trackTableCreated) {
+    trackTableCreated();
+  }
   
   return {
     tableId,

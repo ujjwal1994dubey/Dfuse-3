@@ -2,11 +2,14 @@ import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react'
 import EChartsWrapper from './charts/EChartsWrapper';
 import TLDrawCanvas from './components/canvas/TLDrawCanvas';
 import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, ShareModal, Toast } from './components/ui';
-import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus } from 'lucide-react';
+import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus, LogOut } from 'lucide-react';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
 import { AgentChatPanel } from './agentic_layer';
 import { GlobalFilterProvider, useGlobalFilter } from './contexts/GlobalFilterContext';
+import { useAuth } from './contexts/AuthContext';
+import { useSessionTracking } from './contexts/SessionTrackingContext';
+import LoginPage from './components/LoginPage';
 
 // Backend API endpoint URL
 //const API = 'http://localhost:8000';
@@ -733,6 +736,9 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
   const { title, figure, isFused, strategy, stats, agg, dimensions = [], measures = [], onAggChange, onShowTable, table = [], chartType: externalChartType } = data;
   const [aiLoading, setAiLoading] = useState(false);
   const [insightSticky, setInsightSticky] = useState(null);
+  
+  // Session tracking for AI feature usage
+  const { trackAIUsed } = useSessionTracking();
   
   // Auto-display preloaded insights for AI-generated charts
   React.useEffect(() => {
@@ -1644,8 +1650,25 @@ function UnifiedSidebar({
   nodes,
   // Share modal
   setShareModalOpen,
-  setShareModalData
+  setShareModalData,
+  // User authentication
+  user,
+  onLogout
 }) {
+  // User menu dropdown state
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef(null);
+
+  // Close user menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target)) {
+        setUserMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
   const toggleButtons = [
     { 
       id: 'upload', 
@@ -1885,6 +1908,55 @@ function UnifiedSidebar({
           );
         })}
       </div>
+      
+      {/* Spacer to push user button to bottom */}
+      <div className="flex-1" />
+      
+      {/* User Profile Button */}
+      {user && (
+        <div className="relative" ref={userMenuRef}>
+          <button
+            onClick={() => setUserMenuOpen(!userMenuOpen)}
+            className="w-10 h-10 rounded-lg flex items-center justify-center transition-colors hover:bg-[#F1F5F9]"
+            style={{
+              border: '1px solid var(--color-border)',
+              backgroundColor: userMenuOpen ? 'var(--color-surface-hover)' : 'transparent'
+            }}
+            title={user?.name || 'User'}
+          >
+            <img
+              src={user?.picture}
+              alt={user?.name || 'User'}
+              className="w-6 h-6 rounded-full"
+              onError={(e) => {
+                e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(user?.name || 'U')}&background=E5E7EB&color=6B7280&size=24`;
+              }}
+            />
+          </button>
+          
+          {/* User Dropdown Menu */}
+          {userMenuOpen && (
+            <div 
+              className="absolute left-full ml-2 bottom-0 w-56 bg-white rounded-lg shadow-lg border border-[#E5E7EB] py-2 z-[2000]"
+            >
+              <div className="px-4 py-3 border-b border-[#E5E7EB]">
+                <p className="font-medium text-[#111827] truncate">{user?.name}</p>
+                <p className="text-sm text-[#6B7280] truncate">{user?.email}</p>
+              </div>
+              <button
+                onClick={() => {
+                  setUserMenuOpen(false);
+                  onLogout();
+                }}
+                className="w-full text-left px-4 py-2 text-[#EF4444] hover:bg-[#FEE2E2] transition-colors flex items-center gap-2"
+              >
+                <LogOut className="w-4 h-4" />
+                Sign out
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1976,6 +2048,9 @@ function ChartActionsPanel({
   scrollToAI,
   setScrollToAI
 }) {
+  // Session tracking for AI feature usage
+  const { trackAIUsed, trackAIInsight, trackTokens } = useSessionTracking();
+  
   // AI state
   const [aiQuery, setAiQuery] = useState('');
   const aiQuerySectionRef = useRef(null);
@@ -2047,6 +2122,9 @@ function ChartActionsPanel({
     
     setAiLoading(true);
     
+    // Track AI feature usage
+    trackAIUsed();
+    
     try {
       const response = await fetch(`${API}/ai-explore`, {
         method: 'POST',
@@ -2065,6 +2143,8 @@ function ChartActionsPanel({
       
       if (result.token_usage) {
         updateTokenUsage(result.token_usage);
+        // Also track tokens for session analytics
+        trackTokens(result.token_usage.totalTokens || result.token_usage.total_tokens || 0);
       }
       
       setAiResult(result);
@@ -2158,6 +2238,9 @@ function ChartActionsPanel({
     
     setInsightsLoading(true);
     
+    // Track AI feature usage
+    trackAIUsed();
+    
     try {
       // Call chart insights API
       const response = await fetch(`${API}/chart-insights`, {
@@ -2181,6 +2264,8 @@ function ChartActionsPanel({
       // Track token usage
       if (result.token_usage) {
         updateTokenUsage(result.token_usage);
+        // Also track tokens for session analytics
+        trackTokens(result.token_usage.totalTokens || result.token_usage.total_tokens || 0);
       }
       
       // Get the chart shape from TLDraw to calculate position
@@ -2238,6 +2323,9 @@ function ChartActionsPanel({
       });
       
       console.log('✅ Chart insights generated and displayed in textbox');
+      
+      // Track AI insight generation for session analytics
+      trackAIInsight();
       
     } catch (error) {
       console.error('Generate insights failed:', error);
@@ -2878,9 +2966,21 @@ function ClearFiltersButton() {
  * This is the core orchestrator that connects all UI components and manages
  * the application state. It renders the layout with sidebars, panels, canvas, and report.
  */
-function AppWrapper() {
+function AppWrapper({ user, onLogout }) {
   // Global filter context for click-through filtering
   const { globalFilter, setGlobalFilter, shouldChartApplyFilter, getFilterForAPI } = useGlobalFilter();
+  
+  // Session tracking for usage analytics
+  const { 
+    trackChartCreatedManually,
+    trackChartCreatedByAI,
+    trackTableCreated, 
+    trackAIInsight, 
+    trackChartsMerged, 
+    trackAIUsed, 
+    trackTokens, 
+    trackCanvasObjects 
+  } = useSessionTracking();
   
   const [datasetId, setDatasetId] = useState(null);
   const [csvFileName, setCsvFileName] = useState('');
@@ -2917,6 +3017,11 @@ function AppWrapper() {
     console.log('✅ TLDraw editor mounted and ready');
     setEditorReady(true);
   }, []);
+  
+  // Track canvas objects count when nodes change
+  useEffect(() => {
+    trackCanvasObjects(nodes.length);
+  }, [nodes.length, trackCanvasObjects]);
   
   // Auto-load shared dashboard from URL parameter
   useEffect(() => {
@@ -3124,13 +3229,18 @@ function AppWrapper() {
     const inputCost = (newUsage.inputTokens / 1000) * inputCostPer1K;
     const outputCost = (newUsage.outputTokens / 1000) * outputCostPer1K;
     
+    const totalNewTokens = (newUsage.inputTokens || 0) + (newUsage.outputTokens || 0);
+    
     setTokenUsage(prev => ({
       inputTokens: prev.inputTokens + (newUsage.inputTokens || 0),
       outputTokens: prev.outputTokens + (newUsage.outputTokens || 0),
-      totalTokens: prev.totalTokens + (newUsage.inputTokens || 0) + (newUsage.outputTokens || 0),
+      totalTokens: prev.totalTokens + totalNewTokens,
       estimatedCost: prev.estimatedCost + inputCost + outputCost
     }));
-  }, []);
+    
+    // Track tokens for session analytics
+    trackTokens(totalNewTokens);
+  }, [trackTokens]);
 
 
   // Initialize locked state if configuration is already stored
@@ -3792,11 +3902,14 @@ function AppWrapper() {
       
       setNodeIdCounter(c => c + 1);
       
+      // Track table creation for session analytics
+      trackTableCreated();
+      
     } catch (error) {
       console.error('Failed to show table:', error);
       alert('Failed to show table: ' + error.message);
     }
-  }, []);
+  }, [trackTableCreated]);
 
   /**
    * Handle AI Query Shortcut from Contextual Toolbar
@@ -3854,6 +3967,9 @@ function AppWrapper() {
       return;
     }
     
+    // Track AI feature usage
+    trackAIUsed();
+    
     try {
       // Find the chart node
       const chartNode = nodes.find(n => n.id === chartId);
@@ -3885,6 +4001,8 @@ function AppWrapper() {
       // Track token usage
       if (result.token_usage) {
         updateTokenUsage(result.token_usage);
+        // Also track tokens for session analytics
+        trackTokens(result.token_usage.totalTokens || result.token_usage.total_tokens || 0);
       }
       
       // Get the chart shape from TLDraw to calculate position
@@ -3931,11 +4049,14 @@ function AppWrapper() {
       
       console.log('✅ Chart insights generated from toolbar shortcut');
       
+      // Track AI insight generation for session analytics
+      trackAIInsight();
+      
     } catch (error) {
       console.error('Generate insights from toolbar failed:', error);
       alert(`Failed to generate insights: ${error.message}`);
     }
-  }, [nodes, apiKey, selectedModel, tldrawEditorRef, updateTokenUsage]);
+  }, [nodes, apiKey, selectedModel, tldrawEditorRef, updateTokenUsage, trackAIUsed, trackAIInsight, trackTokens]);
 
   const mergeSelectedCharts = useCallback(async () => {
     if (selectedCharts.length !== 2) {
@@ -4031,13 +4152,16 @@ function AppWrapper() {
       // Show success message instead of closing panel
       setMergeSuccess(true);
       
+      // Track chart merge for session analytics
+      trackChartsMerged();
+      
       // Clear selections after successful merge (both React state and TLDraw editor)
       deselectAllCharts();
       
     } catch (e) {
       alert('Merge failed: ' + e.message);
     }
-  }, [selectedCharts, nodes, handleChartSelect, getViewportCenter, deselectAllCharts]);
+  }, [selectedCharts, nodes, handleChartSelect, getViewportCenter, deselectAllCharts, trackChartsMerged]);
 
   // Update chart data (for filters and other updates)
   const handleChartUpdate = useCallback((chartId, updates) => {
@@ -4763,6 +4887,9 @@ function AppWrapper() {
     try {
       console.log('🤖 Calling AI to select best 3 variables...');
       
+      // Track AI feature usage
+      trackAIUsed();
+      
       // Normalize IDs by removing "shape:" prefix if present
       const c1 = c1Raw.startsWith('shape:') ? c1Raw.replace('shape:', '') : c1Raw;
       const c2 = c2Raw.startsWith('shape:') ? c2Raw.replace('shape:', '') : c2Raw;
@@ -4861,6 +4988,9 @@ function AppWrapper() {
       // Show success message instead of closing panel
       setMergeSuccess(true);
       
+      // Track chart merge for session analytics
+      trackChartsMerged();
+      
       // Clear selections (both React state and TLDraw editor)
       deselectAllCharts();
       
@@ -4873,7 +5003,7 @@ function AppWrapper() {
       console.error('AI-assisted merge failed:', error);
       alert('AI-assisted merge failed: ' + error.message);
     }
-  }, [nodes, apiKey, selectedModel, updateTokenUsage, getViewportCenter, handleShowTable, updateChartAgg, handleAIExplore, setNodes, setEdges, deselectAllCharts]);
+  }, [nodes, apiKey, selectedModel, updateTokenUsage, getViewportCenter, handleShowTable, updateChartAgg, handleAIExplore, setNodes, setEdges, deselectAllCharts, trackChartsMerged, trackAIUsed]);
 
   // Handle merge context submission
   const handleMergeContextSubmit = useCallback(async () => {
@@ -5132,6 +5262,9 @@ function AppWrapper() {
           updateTokenUsage(result.token_usage);
         }
         
+        // Track AI feature usage for session analytics
+        trackAIUsed();
+        
         // Auto-generate charts on canvas using existing chart creation logic
         await generateSuggestedCharts(result.suggestions || []);
         
@@ -5251,6 +5384,9 @@ function AppWrapper() {
             filters: chart.filters || {} // Store filters for persistence
           } 
         }));
+        
+        // Track AI chart creation for session analytics
+        trackChartCreatedByAI();
       }
       
       else if (method === 'single_measure') {
@@ -5362,6 +5498,9 @@ function AppWrapper() {
             filters: chart.filters || {} // Store filters for persistence
           } 
         }));
+        
+        // Track AI chart creation for session analytics
+        trackChartCreatedByAI();
       }
       
       else if (method === 'single_dimension') {
@@ -5423,6 +5562,9 @@ function AppWrapper() {
             filters: chart.filters || {} // Store filters for persistence
           } 
         }));
+        
+        // Track AI chart creation for session analytics
+        trackChartCreatedByAI();
       }
       
       // Auto-generate insights for AI-generated charts (up to user-requested count)
@@ -5469,6 +5611,9 @@ function AppWrapper() {
             ));
             
             console.log(`✅ Auto-insights generated for chart ${id}`);
+            
+            // Track AI insight generation for session analytics
+            trackAIInsight();
           }
           
           // Increment counter after attempt (success or fail)
@@ -5549,6 +5694,9 @@ function AppWrapper() {
             filters: chart.filters || {} // Store filters for persistence
           } 
         }));
+        
+        // Track manual chart creation for session analytics
+        trackChartCreatedManually();
       }
       
       // Case 2: Single Measure (Histogram with Frontend Binning)
@@ -5645,6 +5793,9 @@ function AppWrapper() {
             originalMeasure: selectedMeasure  // Store the real measure for semantic merging
           } 
         }));
+        
+        // Track manual chart creation for session analytics
+        trackChartCreatedManually();
       }
       
       // Case 3: Single Dimension (Bar Chart with Count)
@@ -5697,6 +5848,9 @@ function AppWrapper() {
             onAggChange: updateChartAgg 
           } 
         }));
+        
+        // Track manual chart creation for session analytics
+        trackChartCreatedManually();
       }
     } catch (e) {
       alert('Visualization failed: ' + e.message);
@@ -6020,6 +6174,8 @@ function AppWrapper() {
         nodes={nodes}
         setShareModalOpen={setShareModalOpen}
         setShareModalData={setShareModalData}
+        user={user}
+        onLogout={onLogout}
       />
       
       {/* Floating Panels Container - Positioned next to sidebar */}
@@ -6467,7 +6623,12 @@ function AppWrapper() {
                 API,
                 datasetId,
                 apiKey,
-                figureFromPayload
+                figureFromPayload,
+                // Session tracking functions
+                trackChartCreatedByAI,  // Canvas AI creates charts using AI
+                trackTableCreated,
+                trackAIInsight,
+                trackAIUsed  // Track AI feature usage
               }}
             />
           </SlidingPanel>
@@ -7022,16 +7183,49 @@ function AppWrapper() {
 }
 
 /**
+ * Authenticated App Wrapper
+ * Handles authentication state and renders login or main app accordingly
+ */
+function AuthenticatedApp() {
+  const { isAuthenticated, isLoading, user, logout } = useAuth();
+  const { endSession } = useSessionTracking();
+
+  // Combined logout handler that ends session first
+  const handleLogout = async () => {
+    console.log('👋 Logging out and ending session...');
+    await endSession();  // End session and save final metrics
+    await logout();      // Then logout
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-900">
+        <div className="flex flex-col items-center gap-4">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500"></div>
+          <p className="text-gray-400 text-sm">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginPage />;
+  }
+
+  return (
+    <GlobalFilterProvider>
+      <AppWrapper user={user} onLogout={handleLogout} />
+    </GlobalFilterProvider>
+  );
+}
+
+/**
  * App Component (Main Entry Point)
  * Root component for the D.Fuse application.
- * Wraps AppWrapper with GlobalFilterProvider for click-through filtering.
+ * Wraps AuthenticatedApp for authentication handling.
  * 
  * @returns {JSX.Element} The complete D.Fuse application
  */
 export default function App() {
-  return (
-    <GlobalFilterProvider>
-      <AppWrapper />
-    </GlobalFilterProvider>
-  );
+  return <AuthenticatedApp />;
 }
