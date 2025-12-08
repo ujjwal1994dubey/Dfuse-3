@@ -256,7 +256,7 @@ async function generateChartInsightsAction(action, context) {
       chart_id: action.chartId,
       api_key: apiKey,
       user_context: action.userContext || '',
-      model: 'gemini-2.0-flash'
+      model: 'gemini-2.5-flash'
     })
   });
   
@@ -343,7 +343,7 @@ async function aiQueryAction(action, context) {
   const requestPayload = {
     user_query: action.query,
     api_key: apiKey,
-    model: 'gemini-2.0-flash'
+    model: 'gemini-2.5-flash'
   };
   
   if (chartIdToUse) {
@@ -374,10 +374,13 @@ async function aiQueryAction(action, context) {
   // In Canvas Mode, create a textbox on the canvas
   if (mode === 'ask') {
     console.log(`✅ AI Query answered (Ask Mode - no canvas element created)`);
+    console.log(`   Is refined: ${result.is_refined || false}`);
     
     return {
       query: action.query,
       answer: result.answer,
+      raw_analysis: result.raw_analysis || '',      // Original pandas output
+      is_refined: result.is_refined || false,       // Whether insights were refined
       code_steps: result.code_steps || [],
       python_code: result.code_steps ? result.code_steps.join('\n') : '',
       reasoning_steps: result.reasoning_steps || [],

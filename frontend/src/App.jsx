@@ -1035,7 +1035,7 @@ const ChartNode = React.memo(function ChartNode({ data, id, selected, apiKey, se
     
     // Check if API key is configured
     const currentApiKey = apiKey || localStorage.getItem('gemini_api_key');
-    const currentModel = selectedModel || localStorage.getItem('gemini_model') || 'gemini-2.0-flash';
+    const currentModel = selectedModel || localStorage.getItem('gemini_model') || 'gemini-2.5-flash';
     
     if (!currentApiKey.trim()) {
       alert('⚠️ Please configure your Gemini API key in Settings first.');
@@ -2249,7 +2249,7 @@ function ChartActionsPanel({
         body: JSON.stringify({
           chart_id: selectedChart.id,
           api_key: apiKey,
-          model: selectedModel || 'gemini-2.0-flash',
+          model: selectedModel || 'gemini-2.5-flash',
           user_context: selectedChart.data?.user_goal || null
         })
       });
@@ -3186,7 +3186,7 @@ function AppWrapper({ user, onLogout }) {
   const [askMessages, setAskMessages] = useState([]); // Ask mode conversation
   
   const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_api_key') || '');
-  const [selectedModel, setSelectedModel] = useState(localStorage.getItem('gemini_model') || 'gemini-2.0-flash');
+  const [selectedModel, setSelectedModel] = useState(localStorage.getItem('gemini_model') || 'gemini-2.5-flash');
   const [configStatus, setConfigStatus] = useState('idle'); // idle, testing, success, error
   const [configMessage, setConfigMessage] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
@@ -3986,7 +3986,7 @@ function AppWrapper({ user, onLogout }) {
         body: JSON.stringify({
           chart_id: chartId,
           api_key: apiKey,
-          model: selectedModel || 'gemini-2.0-flash',
+          model: selectedModel || 'gemini-2.5-flash',
           user_context: chartNode.data?.user_goal || null
         })
       });
@@ -6486,9 +6486,10 @@ function AppWrapper({ user, onLogout }) {
                     sideOffset={5}
                     style={{ zIndex: 9999 }}
                   >
-                    <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash</SelectItem>
+                    <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash (Recommended)</SelectItem>
+                    <SelectItem value="gemini-2.5-pro">Gemini 2.5 Pro</SelectItem>
                     <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash</SelectItem>
-                    <SelectItem value="gemini-2.0-flash-exp">Gemini 2.0 Flash Experimental</SelectItem>
+                    <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

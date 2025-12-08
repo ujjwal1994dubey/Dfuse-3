@@ -103,7 +103,7 @@ export function AgentChatPanel({
           canvas_state: canvasState,
           dataset_id: datasetId,
           api_key: apiKey,
-          model: 'gemini-2.0-flash',
+          model: 'gemini-2.5-flash',
           mode: mode // Send current mode to backend
         })
       });
@@ -133,7 +133,35 @@ export function AgentChatPanel({
         console.log('📊 Token usage:', usage, 'Cost:', `$${estimatedCost.toFixed(4)}`);
       }
 
-      // Validate actions
+      // =====================================================================
+      // OPTIMIZATION: Handle Ask Mode embedded result (skipped planning call)
+      // Backend returns ask_mode_result directly, no need to execute actions
+      // =====================================================================
+      if (mode === 'ask' && data.ask_mode_result) {
+        console.log('✨ Ask Mode: Using embedded result (planning skipped)');
+        const aiResult = data.ask_mode_result;
+        
+        // Add agent response with AI answer data directly
+        setCurrentMessages(prev => [...prev, {
+          type: 'ai_answer',
+          query: aiResult.query,
+          answer: aiResult.answer,
+          raw_analysis: aiResult.raw_analysis || '',
+          is_refined: aiResult.is_refined || false,
+          python_code: aiResult.python_code,
+          code_steps: aiResult.code_steps,
+          tabular_data: aiResult.tabular_data || [],
+          has_table: aiResult.has_table || false,
+          timestamp: new Date(),
+          mode,
+          canvasContext
+        }]);
+        
+        setLoading(false);
+        return; // Skip validation and action execution
+      }
+
+      // Validate actions (for Canvas mode or legacy flow)
       const validation = validateActionsSafe(data);
       if (!validation.success) {
         throw new Error(`Invalid actions: ${validation.error}`);
@@ -151,7 +179,7 @@ export function AgentChatPanel({
 
       console.log('📦 Action results:', results);
 
-      // Handle Ask Mode differently - show actual AI response
+      // Handle Ask Mode differently - show actual AI response (legacy path)
       if (mode === 'ask' && results.length > 0 && results[0].success && results[0].result?.mode === 'ask') {
         console.log('✨ Ask Mode response detected, showing AI answer');
         const aiResult = results[0].result;
@@ -161,6 +189,8 @@ export function AgentChatPanel({
           type: 'ai_answer',
           query: aiResult.query,
           answer: aiResult.answer,
+          raw_analysis: aiResult.raw_analysis || '',  // Original pandas output
+          is_refined: aiResult.is_refined || false,   // Whether insights were refined
           python_code: aiResult.python_code,
           code_steps: aiResult.code_steps,
           tabular_data: aiResult.tabular_data || [],
@@ -350,6 +380,7 @@ export function AgentChatPanel({
 
 function MessageBubble({ message }) {
   const [showCode, setShowCode] = useState(false);
+  const [showRawData, setShowRawData] = useState(false);
   const isUser = message.type === 'user';
   const isError = message.type === 'error';
   const isAIAnswer = message.type === 'ai_answer';
@@ -448,9 +479,9 @@ function MessageBubble({ message }) {
               </div>
             )}
           </div>
-``
+
           {/* Actions */}
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
             <button
               onClick={handleAddToCanvas}
               className="px-4 py-2 bg-white border border-cyan-300 text-cyan-700 rounded-lg hover:bg-cyan-50 text-sm font-medium transition-colors flex items-center gap-2"
@@ -463,7 +494,17 @@ function MessageBubble({ message }) {
                 onClick={() => setShowCode(!showCode)}
                 className="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-sm font-medium transition-colors"
               >
-                {showCode ? '▼' : '▶'} View Python Code
+                {showCode ? '▼' : '▶'} View Code
+              </button>
+            )}
+            
+            {/* View Raw Data button - only show if refined */}
+            {message.is_refined && message.raw_analysis && (
+              <button
+                onClick={() => setShowRawData(!showRawData)}
+                className="px-4 py-2 bg-white border border-amber-300 text-amber-700 rounded-lg hover:bg-amber-50 text-sm font-medium transition-colors"
+              >
+                {showRawData ? '▼' : '▶'} View Raw Data
               </button>
             )}
           </div>
@@ -471,8 +512,19 @@ function MessageBubble({ message }) {
           {/* Python Code (Collapsible) */}
           {showCode && message.python_code && (
             <div className="mt-3 bg-gray-900 rounded-lg p-4">
+              <p className="text-xs text-gray-400 mb-2">Generated Python Code:</p>
               <pre className="text-xs text-green-400 font-mono whitespace-pre-wrap overflow-x-auto">
                 {message.python_code}
+              </pre>
+            </div>
+          )}
+          
+          {/* Raw Data (Collapsible) - shows original pandas output before refinement */}
+          {showRawData && message.raw_analysis && (
+            <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg p-4">
+              <p className="text-xs text-amber-700 font-medium mb-2">📊 Raw Pandas Output:</p>
+              <pre className="text-xs text-amber-900 font-mono whitespace-pre-wrap overflow-x-auto bg-white p-3 rounded border border-amber-100">
+                {message.raw_analysis}
               </pre>
             </div>
           )}

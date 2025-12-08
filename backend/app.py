@@ -346,7 +346,7 @@ class FuseWithAIRequest(BaseModel):
     chart2_id: str
     user_goal: str
     api_key: Optional[str] = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
 
 class ChartTableRequest(BaseModel):
     chart_id: str
@@ -373,22 +373,22 @@ class AIExploreRequest(BaseModel):
     dataset_id: Optional[str] = None  # Optional - for dataset-level queries
     user_query: str
     api_key: Optional[str] = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
 
 class MetricCalculationRequest(BaseModel):
     user_query: str
     dataset_id: str
     api_key: Optional[str] = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
 
 class ConfigTestRequest(BaseModel):
     api_key: str
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
 
 class DatasetAnalysisRequest(BaseModel):
     dataset_id: str
     api_key: Optional[str] = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
 
 class DatasetMetadataSaveRequest(BaseModel):
     dataset_id: str
@@ -399,7 +399,7 @@ class ChartSuggestionRequest(BaseModel):
     dataset_id: str
     goal: str
     api_key: Optional[str] = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
     num_charts: Optional[int] = 4  # Default 4 for backward compatibility, min 1, max 5
 
 class ChartSuggestion(BaseModel):
@@ -430,7 +430,7 @@ class AgentQueryRequest(BaseModel):
     canvas_state: Dict[str, Any]
     dataset_id: str
     api_key: Optional[str] = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
     mode: str = "canvas"  # 'canvas' or 'ask'
 
 # -----------------------
@@ -934,7 +934,7 @@ async def upload_dataset(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
-def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.0-flash") -> Dict[str, Any]:
+def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.5-flash") -> Dict[str, Any]:
     """
     AI-Powered Dataset Analysis
     Performs comprehensive dataset analysis combining statistical profiling with AI-generated semantic insights.
@@ -2108,11 +2108,14 @@ async def ai_explore_data(request: AIExploreRequest):
         
         print(f"✅ AI Analysis completed successfully!")
         print(f"   Result length: {len(ai_result.get('answer', ''))}")
+        print(f"   Is refined: {ai_result.get('is_refined', False)}")
         
-        # Return complete AI analysis response including code_steps and token_usage
+        # Return complete AI analysis response including code_steps, token_usage, and refinement info
         return {
             "success": ai_result.get("success", True),
             "answer": ai_result.get("answer", "I couldn't process your query."),
+            "raw_analysis": ai_result.get("raw_analysis", ""),  # Original pandas output
+            "is_refined": ai_result.get("is_refined", False),  # Whether insights were refined
             "query": request.user_query,
             "dataset_info": f"Dataset: {full_dataset.shape[0]} rows, {full_dataset.shape[1]} columns",
             "code_steps": ai_result.get("code_steps", []),
@@ -2193,7 +2196,7 @@ async def ai_calculate_metric(request: MetricCalculationRequest):
         raise HTTPException(status_code=500, detail=f"Failed to calculate metric: {error_message}")
 
 
-def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.0-flash") -> Dict[str, Any]:
+def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.5-flash") -> Dict[str, Any]:
     """
     AI-Powered Dataset Analysis
     Performs comprehensive dataset analysis combining statistical profiling with AI-generated semantic insights.
@@ -2876,7 +2879,7 @@ def list_models(api_key: str) -> List[Dict[str, str]]:
 class ChartInsightRequest(BaseModel):
     chart_id: str
     api_key: str
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
     user_context: Optional[str] = None  # User's original goal/query for context-aware insights
 
 @app.post("/chart-insights")
@@ -3095,12 +3098,16 @@ async def agent_query(request: AgentQueryRequest):
     Processes natural language queries and generates actions for the agentic layer.
     Uses canvas state and dataset metadata for enhanced context understanding.
     
+    OPTIMIZATION: In Ask mode, skips the planning LLM call and directly executes
+    AI query, reducing API calls from 3 to 2 (33% reduction).
+    
     Request:
         - user_query: Natural language query from user
         - canvas_state: Current canvas state (charts, tables, insights)
         - dataset_id: ID of the active dataset
         - api_key: Gemini API key
         - model: Gemini model to use
+        - mode: 'canvas' or 'ask'
     
     Returns:
         - success: bool
@@ -3111,6 +3118,7 @@ async def agent_query(request: AgentQueryRequest):
     try:
         print(f"🤖 Agent query received: '{request.user_query}'")
         print(f"   Dataset ID: {request.dataset_id}")
+        print(f"   Mode: {request.mode}")
         print(f"   Canvas state: {len(request.canvas_state.get('charts', []))} charts, {len(request.canvas_state.get('textBoxes', []))} insights")
         
         # Validate dataset exists
@@ -3133,6 +3141,61 @@ async def agent_query(request: AgentQueryRequest):
         
         # Initialize Gemini formulator
         formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
+        
+        # =====================================================================
+        # OPTIMIZATION: Skip planning LLM call in Ask mode
+        # In Ask mode, we KNOW the action is always ai_query, so we directly
+        # call get_text_analysis() instead of wasting an LLM call on planning.
+        # This reduces API calls from 3 to 2 (33% reduction).
+        # =====================================================================
+        if request.mode == "ask":
+            print("🔵 ASK MODE: Skipping planning, directly executing AI query")
+            
+            # Get the dataset
+            dataset = DATASETS[request.dataset_id]
+            
+            # Directly call AI analysis (skips the planning LLM call)
+            ai_result = formulator.get_text_analysis(
+                user_query=request.user_query,
+                dataset=dataset,
+                dataset_id=request.dataset_id,
+                dataset_metadata=dataset_metadata
+            )
+            
+            print(f"✅ Ask mode AI query completed")
+            print(f"   Token usage: {ai_result.get('token_usage', {})}")
+            
+            # Return as a pre-built ai_query action result
+            # This matches the format expected by the frontend
+            return {
+                "success": True,
+                "actions": [{
+                    "type": "ai_query",
+                    "query": request.user_query,
+                    "position": "center",
+                    "reasoning": "Direct AI query in Ask mode"
+                }],
+                "reasoning": "Ask mode: Direct analytical response without planning",
+                "token_usage": ai_result.get("token_usage", {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}),
+                # Embed the AI result directly so frontend can display it
+                "ask_mode_result": {
+                    "mode": "ask",
+                    "query": request.user_query,
+                    "answer": ai_result.get("answer", ""),
+                    "raw_analysis": ai_result.get("raw_analysis", ""),
+                    "is_refined": ai_result.get("is_refined", False),
+                    "python_code": ai_result.get("code_steps", [""])[0] if ai_result.get("code_steps") else "",
+                    "code_steps": ai_result.get("code_steps", []),
+                    "tabular_data": ai_result.get("tabular_data", []),
+                    "has_table": ai_result.get("has_table", False),
+                    "success": ai_result.get("success", True)
+                }
+            }
+        
+        # =====================================================================
+        # CANVAS MODE: Full planning flow (3 LLM calls for ai_query actions)
+        # =====================================================================
+        print("🟣 CANVAS MODE: Using full planning flow")
         
         # Generate agent actions with mode
         result = formulator.generate_agent_actions(
