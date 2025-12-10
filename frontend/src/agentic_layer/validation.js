@@ -40,6 +40,24 @@ export const CreateInsightActionSchema = z.object({
 });
 
 /**
+ * Schema for create_kpi action
+ * Supports pre-computed values from agent planning (eliminates extra API calls)
+ */
+export const CreateKPIActionSchema = z.object({
+  type: z.literal(ACTION_TYPES.CREATE_KPI),
+  query: z.string().min(1, "KPI query cannot be empty"),
+  value: z.number().optional(),  // Pre-computed value
+  formatted_value: z.string().optional(),  // Pre-computed formatted value
+  explanation: z.string().optional(),  // Pre-computed explanation
+  position: z.enum([
+    POSITION_TYPES.CENTER,
+    POSITION_TYPES.RIGHT_OF_CHART,
+    POSITION_TYPES.BELOW_CHART
+  ]),
+  reasoning: z.string()
+});
+
+/**
  * Schema for generate_chart_insights action
  */
 export const GenerateChartInsightsSchema = z.object({
@@ -84,6 +102,7 @@ export const ShowTableSchema = z.object({
 export const AgentActionSchema = z.union([
   CreateChartActionSchema,
   CreateInsightActionSchema,
+  CreateKPIActionSchema,
   GenerateChartInsightsSchema,
   AIQuerySchema,
   ShowTableSchema

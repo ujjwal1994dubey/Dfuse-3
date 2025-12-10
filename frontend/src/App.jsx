@@ -1645,6 +1645,9 @@ function UnifiedSidebar({
   selectedChartsCount,
   canMerge,
   selectedChartForActions,
+  // KPI handler
+  onAddKPI,
+  hasDataset,
   // Export/Import functionality
   tldrawEditorRef,
   nodes,
@@ -1745,6 +1748,13 @@ function UnifiedSidebar({
       }, 
       active: mergePanelOpen
       // No disabled state - always accessible
+    },
+    {
+      id: 'kpi',
+      icon: SquareSigma,
+      label: 'Add KPI Card',
+      onClick: () => onAddKPI?.(),
+      disabled: !hasDataset
     },
     // Separator indicator
     { id: 'separator-1', isSeparator: true },
@@ -4163,6 +4173,46 @@ function AppWrapper({ user, onLogout }) {
     }
   }, [selectedCharts, nodes, handleChartSelect, getViewportCenter, deselectAllCharts, trackChartsMerged]);
 
+  // Add KPI card to canvas
+  const handleAddKPI = useCallback(() => {
+    if (!datasetId) {
+      alert('Please upload a dataset first to create KPI cards');
+      return;
+    }
+    
+    // Generate unique ID for the KPI node
+    const id = `kpi-${Date.now()}`;
+    
+    // Get position at viewport center
+    const position = getViewportCenter();
+    
+    // Create the KPI node
+    setNodes(nds => nds.concat({
+      id,
+      type: 'kpi',
+      position,
+      draggable: true,
+      selectable: true,
+      data: {
+        query: '',
+        title: 'Calculate KPI',
+        value: null,
+        formattedValue: '',
+        explanation: '',
+        isEditing: true,  // Start in edit mode
+        isLoading: false,
+        datasetId: datasetId,
+        error: '',
+        apiKey: apiKey || '',
+        model: selectedModel || 'gemini-2.5-flash',
+        width: 320,
+        height: 160
+      }
+    }));
+    
+    console.log('📊 KPI card created:', id);
+  }, [datasetId, getViewportCenter, apiKey, selectedModel]);
+
   // Update chart data (for filters and other updates)
   const handleChartUpdate = useCallback((chartId, updates) => {
     console.log('📊 Chart update requested:', { chartId, updates });
@@ -6170,6 +6220,8 @@ function AppWrapper({ user, onLogout }) {
         selectedChartsCount={selectedCharts.length}
         canMerge={selectedCharts.length === 2}
         selectedChartForActions={selectedChartForActions}
+        onAddKPI={handleAddKPI}
+        hasDataset={!!datasetId}
         tldrawEditorRef={tldrawEditorRef}
         nodes={nodes}
         setShareModalOpen={setShareModalOpen}

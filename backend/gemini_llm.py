@@ -894,7 +894,7 @@ Use the actual data provided above."""
                 else:
                     formatted_value = f"{calculated_value:,.2f}"
             
-                    return {
+            return {
                 "success": True,
                 "value": calculated_value,
                 "formatted_value": formatted_value,
@@ -982,13 +982,29 @@ Use the actual data provided above."""
             
             # Build mode-specific instructions - CONDENSED
             if mode == "ask":
-                mode_instructions = """🔵 ASK MODE: Generate ONLY ai_query actions. No charts/tables/insights. Answer questions directly via ai_query."""
+                mode_instructions = """🔵 ASK MODE: Generate ONLY ai_query actions. No charts/tables/insights/KPIs. Answer questions directly via ai_query."""
             else:
-                mode_instructions = """🟣 CANVAS MODE: Generate visual artifacts (create_chart, create_insight, show_table, generate_chart_insights). NO ai_query - create visualizations instead."""
+                mode_instructions = """🟣 CANVAS MODE: Generate visual artifacts (create_chart, create_kpi, create_insight, show_table, generate_chart_insights). NO ai_query - create visualizations instead."""
             
             # Build agent prompt - BALANCED for reliability + token efficiency
             dimensions_list = [col for col in dataset.columns if dataset[col].dtype == 'object']
             measures_list = [col for col in dataset.columns if dataset[col].dtype in ['int64', 'float64']]
+            
+            # Compute measure statistics for KPI pre-computation
+            measure_stats = {}
+            for col in measures_list:
+                measure_stats[col] = {
+                    'sum': float(dataset[col].sum()),
+                    'mean': float(dataset[col].mean()),
+                    'min': float(dataset[col].min()),
+                    'max': float(dataset[col].max()),
+                    'count': int(dataset[col].count())
+                }
+            
+            # Build measure stats string for prompt
+            measure_stats_str = "MEASURE STATISTICS (use these for KPI calculations):\n"
+            for col, stats in measure_stats.items():
+                measure_stats_str += f"- {col}: sum={stats['sum']:,.2f}, avg={stats['mean']:,.2f}, min={stats['min']:,.2f}, max={stats['max']:,.2f}, count={stats['count']}\n"
             
             # Dynamic example using actual column names
             dim1 = dimensions_list[0] if dimensions_list else 'category'
@@ -996,6 +1012,10 @@ Use the actual data provided above."""
             m1 = measures_list[0] if measures_list else 'value'
             m2 = measures_list[1] if len(measures_list) > 1 else m1
             m3 = measures_list[2] if len(measures_list) > 2 else m2
+            
+            # Get example values for KPI
+            m1_sum = measure_stats.get(m1, {}).get('sum', 0)
+            m2_avg = measure_stats.get(m2, {}).get('mean', 0)
             
             prompt = f"""You are an AI data analysis agent. Generate 1-3 actions based on user query.
 
@@ -1008,10 +1028,12 @@ DATASET: {len(dataset)} rows
 Dimensions (categorical - use for grouping): {dimensions_list}
 Measures (numeric - use for values): {measures_list}
 
+{measure_stats_str}
 USER QUERY: "{query}"
 
 ACTION SELECTION (choose based on query intent):
 - "show", "create", "visualize", "chart", "plot" → create_chart
+- "calculate", "total", "average", "sum", "count", "kpi", "metric" → create_kpi
 - "which", "what", "how many", "find", "tell me", "compare", "top", "best" → ai_query  
 - "explain", "why", "insights" (for existing chart) → generate_chart_insights
 - "show data", "table" (for existing chart) → show_table
@@ -1024,10 +1046,20 @@ CHART TYPE SELECTION (based on dimensions + measures count):
 
 ACTION SCHEMAS:
 1. create_chart: {{"type": "create_chart", "dimensions": ["dim"], "measures": ["measure"], "chartType": "bar", "position": "center", "reasoning": "why"}}
-2. ai_query: {{"type": "ai_query", "query": "analytical question", "position": "center", "reasoning": "why"}}
-3. create_insight: {{"type": "create_insight", "text": "insight text", "position": "center", "reasoning": "why"}}
-4. generate_chart_insights: {{"type": "generate_chart_insights", "chartId": "existing-id", "position": "center", "reasoning": "why"}}
-5. show_table: {{"type": "show_table", "chartId": "existing-id", "reasoning": "why"}}
+2. create_kpi: {{"type": "create_kpi", "query": "description", "value": 12345.67, "formatted_value": "12,345.67", "explanation": "brief explanation", "position": "center", "reasoning": "why"}}
+3. ai_query: {{"type": "ai_query", "query": "analytical question", "position": "center", "reasoning": "why"}}
+4. create_insight: {{"type": "create_insight", "text": "insight text", "position": "center", "reasoning": "why"}}
+5. generate_chart_insights: {{"type": "generate_chart_insights", "chartId": "existing-id", "position": "center", "reasoning": "why"}}
+6. show_table: {{"type": "show_table", "chartId": "existing-id", "reasoning": "why"}}
+
+KPI CALCULATION RULES:
+- For create_kpi, you MUST compute the value from MEASURE STATISTICS above
+- "total X" or "sum of X" → use sum value from stats
+- "average X" or "avg X" or "mean X" → use avg value from stats  
+- "minimum X" or "min X" → use min value from stats
+- "maximum X" or "max X" → use max value from stats
+- "count of X" → use count value from stats
+- Format large numbers with commas (e.g., 1,234,567.89)
 
 EXAMPLE 1 - "show profit by category" (1D+1M → bar):
 {{"actions": [{{"type": "create_chart", "dimensions": ["{dim1}"], "measures": ["{m1}"], "chartType": "bar", "position": "center", "reasoning": "Bar chart for single metric by category"}}], "reasoning": "Simple distribution chart"}}
@@ -1043,6 +1075,9 @@ EXAMPLE 4 - "compare revenue, profit, and cost trends" (1D+3M → multi_series_b
 
 EXAMPLE 5 - "which items have highest sales" (analytical question → ai_query):
 {{"actions": [{{"type": "ai_query", "query": "Which items have the highest sales?", "position": "center", "reasoning": "Analytical question needs data query"}}], "reasoning": "Direct data analysis"}}
+
+EXAMPLE 6 - "calculate total profit and average revenue" (KPI with pre-computed values):
+{{"actions": [{{"type": "create_kpi", "query": "Total {m1}", "value": {m1_sum}, "formatted_value": "{m1_sum:,.2f}", "explanation": "Sum of all {m1} values", "position": "center", "reasoning": "Sum aggregation"}}, {{"type": "create_kpi", "query": "Average {m2}", "value": {m2_avg}, "formatted_value": "{m2_avg:,.2f}", "explanation": "Mean of {m2} values", "position": "center", "reasoning": "Average aggregation"}}], "reasoning": "Two KPI metrics with pre-computed values"}}
 
 CRITICAL RULES:
 1. create_chart MUST have at least 1 dimension AND at least 1 measure from the lists above
