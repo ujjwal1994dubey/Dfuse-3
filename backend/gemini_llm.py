@@ -279,7 +279,7 @@ class GeminiDataFormulator:
                 "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
             }
     
-    def get_text_analysis(self, user_query: str, dataset: pd.DataFrame, dataset_id: Optional[str] = None, dataset_metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def get_text_analysis(self, user_query: str, dataset: pd.DataFrame, dataset_id: Optional[str] = None, dataset_metadata: Optional[Dict[str, Any]] = None, skip_refinement: bool = False) -> Dict[str, Any]:
         """
         Main AI Data Analysis Pipeline
         Primary entry point for AI-powered data exploration.
@@ -297,6 +297,7 @@ class GeminiDataFormulator:
             dataset: Pandas DataFrame to analyze
             dataset_id: Optional dataset ID (for logging purposes)
             dataset_metadata: Optional pre-loaded dataset analysis metadata for enhanced context
+            skip_refinement: If True, skip LLM refinement and return raw pandas output only
         
         Returns:
             Dict containing:
@@ -355,8 +356,8 @@ class GeminiDataFormulator:
             # Store raw answer before potential refinement
             raw_answer = result.get("answer", "")
             
-            # Conditional refinement: only refine analytical queries
-            if self._needs_refinement(user_query) and result.get("success", False):
+            # Conditional refinement: only refine analytical queries (unless skip_refinement is True)
+            if not skip_refinement and self._needs_refinement(user_query) and result.get("success", False):
                 print("🔄 Applying insight refinement to raw results...")
                 refined_answer, refine_tokens = self._refine_analysis_results(
                     user_query,
@@ -382,7 +383,10 @@ class GeminiDataFormulator:
                 result["raw_analysis"] = raw_answer
                 result["is_refined"] = False
                 result["token_usage"] = token_usage
-                print("📊 Returning raw results (no refinement applied)")
+                if skip_refinement:
+                    print("📊 Returning raw results (refinement skipped by user)")
+                else:
+                    print("📊 Returning raw results (no refinement applied)")
             
             return result
             

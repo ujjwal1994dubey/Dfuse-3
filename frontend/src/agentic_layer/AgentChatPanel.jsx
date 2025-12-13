@@ -60,6 +60,7 @@ export function AgentChatPanel({
   const [error, setError] = useState(null);
   const [mode, setMode] = useState('canvas'); // 'canvas' or 'ask'
   const [progressStep, setProgressStep] = useState(0);
+  const [analysisType, setAnalysisType] = useState('detailed'); // 'raw' or 'detailed' (Ask mode only)
   const messagesEndRef = useRef(null);
 
   // Get current messages based on mode
@@ -151,7 +152,8 @@ export function AgentChatPanel({
           dataset_id: datasetId,
           api_key: apiKey,
           model: 'gemini-2.5-flash',
-          mode: mode // Send current mode to backend
+          mode: mode, // Send current mode to backend
+          analysis_type: analysisType // 'raw' or 'detailed' for Ask mode
         })
       });
 
@@ -409,6 +411,35 @@ export function AgentChatPanel({
 
       {/* Input */}
       <div className="p-4 border-t border-gray-200">
+        {/* Analysis Type Toggle - Only in Ask Mode */}
+        {mode === 'ask' && (
+          <div className="mb-3">
+            <div className="flex items-center gap-2 border border-gray-200 rounded-lg p-1 w-fit">
+              <button
+                onClick={() => setAnalysisType('raw')}
+                type="button"
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                  analysisType === 'raw'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Raw Analysis
+              </button>
+              <button
+                onClick={() => setAnalysisType('detailed')}
+                type="button"
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                  analysisType === 'detailed'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Detailed Analysis
+              </button>
+            </div>
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="relative">
           <div className="relative border border-gray-200 rounded-2xl bg-gray-50 focus-within:border-gray-300 focus-within:bg-white transition-colors">
             <textarea

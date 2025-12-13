@@ -432,6 +432,7 @@ class AgentQueryRequest(BaseModel):
     api_key: Optional[str] = None
     model: str = "gemini-2.5-flash"
     mode: str = "canvas"  # 'canvas' or 'ask'
+    analysis_type: str = "detailed"  # 'raw' or 'detailed' (Ask mode only)
 
 # -----------------------
 # Helpers
@@ -3149,17 +3150,23 @@ async def agent_query(request: AgentQueryRequest):
         # This reduces API calls from 3 to 2 (33% reduction).
         # =====================================================================
         if request.mode == "ask":
-            print("🔵 ASK MODE: Skipping planning, directly executing AI query")
+            # Check if user wants raw analysis (no LLM refinement)
+            skip_refinement = request.analysis_type == "raw"
+            analysis_label = "RAW ANALYSIS" if skip_refinement else "DETAILED ANALYSIS"
+            
+            print(f"🔵 ASK MODE ({analysis_label}): Skipping planning, directly executing AI query")
             
             # Get the dataset
             dataset = DATASETS[request.dataset_id]
             
             # Directly call AI analysis (skips the planning LLM call)
+            # If raw analysis, also skip the refinement step
             ai_result = formulator.get_text_analysis(
                 user_query=request.user_query,
                 dataset=dataset,
                 dataset_id=request.dataset_id,
-                dataset_metadata=dataset_metadata
+                dataset_metadata=dataset_metadata,
+                skip_refinement=skip_refinement
             )
             
             print(f"✅ Ask mode AI query completed")
