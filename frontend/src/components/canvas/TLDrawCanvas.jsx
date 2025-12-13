@@ -4,6 +4,7 @@ import '@tldraw/tldraw/tldraw.css';
 import { ChartShape } from './shapes/ChartShape';
 import { TextBoxShape } from './shapes/TextShape';
 import { TableShape } from './shapes/TableShape';
+import { KPIShape } from './shapes/KPIShape';
 import { convertEdgesToArrows, convertArrowsToEdges } from './util/stateConverter';
 import ChartContextualToolbar from './ChartContextualToolbar';
 import './tldraw-custom.css';
@@ -36,7 +37,7 @@ const TLDrawCanvas = ({
   const previouslySelectedChartsRef = useRef(new Set()); // Track selected charts
 
   // Custom shape utilities
-  const shapeUtils = [ChartShape, TextBoxShape, TableShape];
+  const shapeUtils = [ChartShape, TextBoxShape, TableShape, KPIShape];
   
   // TLDraw components configuration - memoized to prevent unnecessary re-renders
   const components = useMemo(() => {
@@ -149,7 +150,7 @@ const TLDrawCanvas = ({
       if (entry.source === 'user') {
         // Get all shapes and separate by type
         const shapes = editor.getCurrentPageShapes();
-        const nodeShapes = shapes.filter(s => ['chart', 'textbox', 'table'].includes(s.type));
+        const nodeShapes = shapes.filter(s => ['chart', 'textbox', 'table', 'kpi'].includes(s.type));
         const arrowShapes = shapes.filter(s => s.type === 'arrow');
         
         // Convert and emit node changes
@@ -204,7 +205,7 @@ const TLDrawCanvas = ({
       // Handle onSelectionChange callback
       if (onSelectionChange) {
         const selectedNodes = convertShapesToNodes(currentSelection.filter(s => 
-          ['chart', 'textbox', 'table'].includes(s.type)
+          ['chart', 'textbox', 'table', 'kpi'].includes(s.type)
         ));
         if (selectedNodes.length > 0) {
           onSelectionChange({ nodes: selectedNodes });
@@ -290,6 +291,23 @@ function importNodesToTLDraw(editor, nodes) {
         rows: node.data.rows || [],
         totalRows: node.data.totalRows || 0
       };
+    } else if (node.type === 'kpi') {
+      shapeType = 'kpi';
+      shapeProps = {
+        w: node.data.width || 320,
+        h: node.data.height || 160,
+        query: node.data.query || '',
+        title: node.data.title || 'Calculate KPI',
+        value: node.data.value || null,
+        formattedValue: node.data.formattedValue || '',
+        explanation: node.data.explanation || '',
+        isEditing: node.data.isEditing !== false, // Default to true for new KPIs
+        isLoading: node.data.isLoading || false,
+        datasetId: node.data.datasetId || '',
+        error: node.data.error || '',
+        apiKey: node.data.apiKey || '',
+        model: node.data.model || 'gemini-2.5-flash'
+      };
     } else {
       // Skip unknown types
       return;
@@ -371,6 +389,25 @@ function convertShapeToNode(shape) {
     };
   }
 
+  if (shape.type === 'kpi') {
+    return {
+      ...baseNode,
+      data: {
+        query: shape.props.query,
+        title: shape.props.title,
+        value: shape.props.value,
+        formattedValue: shape.props.formattedValue,
+        explanation: shape.props.explanation,
+        isEditing: shape.props.isEditing,
+        isLoading: shape.props.isLoading,
+        datasetId: shape.props.datasetId,
+        error: shape.props.error,
+        width: shape.props.w,
+        height: shape.props.h
+      }
+    };
+  }
+
   return baseNode;
 }
 
@@ -379,7 +416,7 @@ function convertShapeToNode(shape) {
  */
 function convertShapesToNodes(shapes) {
   return shapes
-    .filter(shape => ['chart', 'textbox', 'table'].includes(shape.type))
+    .filter(shape => ['chart', 'textbox', 'table', 'kpi'].includes(shape.type))
     .map(convertShapeToNode);
 }
 
@@ -474,6 +511,20 @@ function updateNodesInTLDraw(editor, nodes) {
         headers: node.data.headers || existingShape.props.headers,
         rows: node.data.rows || existingShape.props.rows,
         totalRows: node.data.totalRows || existingShape.props.totalRows
+      };
+    } else if (node.type === 'kpi') {
+      updatedProps = {
+        w: node.data.width || existingShape.props.w,
+        h: node.data.height || existingShape.props.h,
+        query: node.data.query || existingShape.props.query,
+        title: node.data.title || existingShape.props.title,
+        value: node.data.value !== undefined ? node.data.value : existingShape.props.value,
+        formattedValue: node.data.formattedValue || existingShape.props.formattedValue,
+        explanation: node.data.explanation || existingShape.props.explanation,
+        isEditing: node.data.isEditing !== undefined ? node.data.isEditing : existingShape.props.isEditing,
+        isLoading: node.data.isLoading !== undefined ? node.data.isLoading : existingShape.props.isLoading,
+        datasetId: node.data.datasetId || existingShape.props.datasetId,
+        error: node.data.error || existingShape.props.error
       };
     }
     

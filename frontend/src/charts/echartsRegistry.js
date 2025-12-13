@@ -443,7 +443,7 @@ export const ECHARTS_TYPES = {
         legend: {
           type: 'plain',
           data: [m1, m2],
-          bottom: 10,
+          bottom: 5,
           textStyle: { fontSize: 11, color: '#6B7280' }
         },
         dataZoom: [
@@ -458,10 +458,10 @@ export const ECHARTS_TYPES = {
           }
         ],
         grid: {
-          left: '80px',
-          right: '80px',
-          top: '20px',
-          bottom: '80px',
+          left: '90px',
+          right: '90px',
+          top: '60px',
+          bottom: '120px',
           containLabel: false
         },
         xAxis: {
@@ -483,19 +483,25 @@ export const ECHARTS_TYPES = {
             type: 'value',
             name: m1,
             position: 'left',
-            axisLabel: { fontSize: 11, color: '#3182ce' },
-            axisLine: { lineStyle: { color: '#3182ce' } },
+            axisLabel: { fontSize: 11, color: '#2563EB' },
+            axisLine: { lineStyle: { color: '#2563EB' } },
             splitLine: { lineStyle: { color: '#E5E7EB' } },
-            nameTextStyle: { fontSize: 12, color: '#3182ce' }
+            nameTextStyle: { fontSize: 12, color: '#2563EB' },
+            nameRotate: 90,
+            nameLocation: 'middle',
+            nameGap: 60
           },
           {
             type: 'value',
             name: m2,
             position: 'right',
-            axisLabel: { fontSize: 11, color: '#38a169' },
-            axisLine: { lineStyle: { color: '#38a169' } },
+            axisLabel: { fontSize: 11, color: '#F97316' },
+            axisLine: { lineStyle: { color: '#F97316' } },
             splitLine: { show: false },
-            nameTextStyle: { fontSize: 12, color: '#38a169' }
+            nameTextStyle: { fontSize: 12, color: '#F97316' },
+            nameRotate: 90,
+            nameLocation: 'middle',
+            nameGap: 60
           }
         ],
         series: [
@@ -504,8 +510,8 @@ export const ECHARTS_TYPES = {
             type: 'line',
             data: m1Values,
             smooth: false,
-            lineStyle: { color: '#3182ce', width: 3 },
-            itemStyle: { color: '#3182ce' },
+            lineStyle: { color: '#2563EB', width: 3 },
+            itemStyle: { color: '#2563EB' },
             symbol: 'circle',
             symbolSize: 8
           },
@@ -515,8 +521,8 @@ export const ECHARTS_TYPES = {
             yAxisIndex: 1,
             data: m2Values,
             smooth: false,
-            lineStyle: { color: '#38a169', width: 3 },
-            itemStyle: { color: '#38a169' },
+            lineStyle: { color: '#F97316', width: 3 },
+            itemStyle: { color: '#F97316' },
             symbol: 'circle',
             symbolSize: 8
           }

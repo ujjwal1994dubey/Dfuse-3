@@ -15,10 +15,19 @@ import { getEChartsDefaultType } from '../charts/echartsRegistry';
 export async function executeActions(actions, context) {
   const results = [];
   
+  // Track KPI index for positioning multiple KPIs in a row
+  let kpiIndex = 0;
+  
   for (const action of actions) {
     try {
       console.log(`🤖 Executing action: ${action.type}`, action);
-      const result = await executeAction(action, context);
+      
+      // Pass kpiIndex for KPI positioning
+      const contextWithIndex = action.type === ACTION_TYPES.CREATE_KPI 
+        ? { ...context, kpiIndex: kpiIndex++ }
+        : context;
+      
+      const result = await executeAction(action, contextWithIndex);
       results.push({ 
         success: true, 
         action, 
@@ -48,6 +57,8 @@ async function executeAction(action, context) {
       return await createChartAction(action, context);
     case ACTION_TYPES.CREATE_INSIGHT:
       return createInsightAction(action, context);
+    case ACTION_TYPES.CREATE_KPI:
+      return await createKPIAction(action, context);
     case ACTION_TYPES.GENERATE_CHART_INSIGHTS:
       return await generateChartInsightsAction(action, context);
     case ACTION_TYPES.AI_QUERY:
@@ -63,7 +74,7 @@ async function executeAction(action, context) {
  * Create a chart on the canvas
  */
 async function createChartAction(action, context) {
-  const { API, datasetId, setNodes, figureFromPayload } = context;
+  const { API, datasetId, setNodes, figureFromPayload, trackChartCreatedByAI } = context;
   
   // Call existing /charts endpoint
   const response = await fetch(`${API}/charts`, {
@@ -128,12 +139,179 @@ async function createChartAction(action, context) {
   
   console.log(`✅ Chart created:`, chartId, 'at position', position);
   
+  // Track AI chart creation for session analytics
+  if (trackChartCreatedByAI) {
+    trackChartCreatedByAI();
+  }
+  
   return { 
     chartId, 
     position,
     dimensions: action.dimensions,
     measures: action.measures
   };
+}
+
+/**
+ * Create a KPI card on the canvas
+ * Uses pre-computed values from agent planning when available (saves API calls)
+ * Falls back to /ai-calculate-metric endpoint only if no pre-computed value
+ */
+async function createKPIAction(action, context) {
+  const { API, datasetId, apiKey, setNodes, getViewportCenter, kpiIndex = 0 } = context;
+  
+  let value, formattedValue, explanation;
+  
+  // Check if agent pre-computed the value (optimization - no extra API call needed)
+  if (action.value !== undefined && action.value !== null) {
+    console.log(`⚡ Using pre-computed KPI value for "${action.query}":`, action.value);
+    value = action.value;
+    formattedValue = action.formatted_value || formatKPIValue(action.value);
+    explanation = action.explanation || '';
+  } else {
+    // Fallback: Call API if no pre-computed value (shouldn't happen with updated prompt)
+    console.log(`🔄 No pre-computed value, calling API for "${action.query}"`);
+    
+    if (!apiKey) {
+      throw new Error('API key is required for KPI calculation');
+    }
+    
+    const response = await fetch(`${API}/ai-calculate-metric`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_query: action.query,
+        dataset_id: datasetId,
+        api_key: apiKey,
+        model: 'gemini-2.5-flash'
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`KPI calculation failed: ${error}`);
+    }
+    
+    const result = await response.json();
+    
+    if (!result.success) {
+      throw new Error(result.error || 'KPI calculation failed');
+    }
+    
+    value = result.value;
+    formattedValue = result.formatted_value || formatKPIValue(result.value);
+    explanation = result.explanation || '';
+  }
+  
+  // Calculate position - offset each KPI horizontally
+  const center = getViewportCenter();
+  const position = {
+    x: center.x + (kpiIndex * AGENT_CONFIG.KPI_HORIZONTAL_SPACING),
+    y: center.y
+  };
+  
+  // Generate a nice title from the query
+  const title = generateKPITitle(action.query, explanation);
+  
+  const kpiId = `kpi-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
+  // Create KPI node in view mode (already calculated)
+  setNodes(nodes => nodes.concat({
+    id: kpiId,
+    type: 'kpi',
+    position,
+    draggable: true,
+    selectable: true,
+    data: {
+      query: action.query,
+      title: title,
+      value: value,
+      formattedValue: formattedValue,
+      explanation: explanation,
+      isEditing: false,  // Start in view mode since we already calculated
+      isLoading: false,
+      datasetId: datasetId,
+      error: '',
+      width: AGENT_CONFIG.DEFAULT_KPI_WIDTH,
+      height: AGENT_CONFIG.DEFAULT_KPI_HEIGHT,
+      // Provenance metadata
+      createdBy: 'agent',
+      createdByQuery: context.currentQuery || null,
+      creationReasoning: action.reasoning || null,
+      createdAt: new Date().toISOString()
+    }
+  }));
+  
+  console.log(`✅ KPI created:`, kpiId, 'at position', position, 'value:', formattedValue);
+  
+  return {
+    kpiId,
+    position,
+    query: action.query,
+    value: value,
+    formattedValue: formattedValue
+  };
+}
+
+/**
+ * Generate a nice title from the KPI query
+ */
+function generateKPITitle(query, explanation) {
+  if (!query) return 'KPI';
+  
+  let title = query.trim();
+  
+  // Clean up common prefixes
+  const prefixes = ['what is', 'calculate', 'show me', 'get', 'compute', 'find'];
+  for (const prefix of prefixes) {
+    if (title.toLowerCase().startsWith(prefix + ' ')) {
+      title = title.substring(prefix.length + 1);
+      break;
+    }
+  }
+  
+  // Remove 'the' at the start
+  if (title.toLowerCase().startsWith('the ')) {
+    title = title.substring(4);
+  }
+  
+  // Capitalize first letter
+  title = title.charAt(0).toUpperCase() + title.slice(1);
+  
+  // Truncate if too long
+  if (title.length > 40) {
+    title = title.substring(0, 37) + '...';
+  }
+  
+  return title;
+}
+
+/**
+ * Format a numeric value for KPI display
+ */
+function formatKPIValue(value) {
+  if (value === null || value === undefined) return '—';
+  
+  if (typeof value === 'number') {
+    // Check if it's a percentage (between 0 and 1 with decimals)
+    if (value > 0 && value < 1 && !Number.isInteger(value)) {
+      return `${(value * 100).toFixed(1)}%`;
+    }
+    
+    // Large numbers with commas
+    if (Math.abs(value) >= 1000) {
+      return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    }
+    
+    // Small decimals
+    if (!Number.isInteger(value)) {
+      return value.toFixed(2);
+    }
+    
+    return value.toLocaleString('en-US');
+  }
+  
+  return String(value);
 }
 
 /**
@@ -231,7 +409,7 @@ function findNodeById(nodeId, nodes) {
  * Generate AI insights for an existing chart
  */
 async function generateChartInsightsAction(action, context) {
-  const { API, apiKey, setNodes, nodes } = context;
+  const { API, apiKey, setNodes, nodes, trackAIInsight } = context;
   
   if (!apiKey) {
     throw new Error('API key is required for generating insights');
@@ -251,7 +429,7 @@ async function generateChartInsightsAction(action, context) {
       chart_id: action.chartId,
       api_key: apiKey,
       user_context: action.userContext || '',
-      model: 'gemini-2.0-flash'
+      model: 'gemini-2.5-flash'
     })
   });
   
@@ -293,6 +471,11 @@ async function generateChartInsightsAction(action, context) {
   
   console.log(`✅ Generated insights for chart:`, action.chartId, 'at position', position);
   
+  // Track AI insight generation for session analytics
+  if (trackAIInsight) {
+    trackAIInsight();
+  }
+  
   return {
     insightId,
     text: insightText,
@@ -333,7 +516,7 @@ async function aiQueryAction(action, context) {
   const requestPayload = {
     user_query: action.query,
     api_key: apiKey,
-    model: 'gemini-2.0-flash'
+    model: 'gemini-2.5-flash'
   };
   
   if (chartIdToUse) {
@@ -364,10 +547,13 @@ async function aiQueryAction(action, context) {
   // In Canvas Mode, create a textbox on the canvas
   if (mode === 'ask') {
     console.log(`✅ AI Query answered (Ask Mode - no canvas element created)`);
+    console.log(`   Is refined: ${result.is_refined || false}`);
     
     return {
       query: action.query,
       answer: result.answer,
+      raw_analysis: result.raw_analysis || '',      // Original pandas output
+      is_refined: result.is_refined || false,       // Whether insights were refined
       code_steps: result.code_steps || [],
       python_code: result.code_steps ? result.code_steps.join('\n') : '',
       reasoning_steps: result.reasoning_steps || [],
@@ -422,7 +608,7 @@ async function aiQueryAction(action, context) {
  * Show table for a chart's underlying data
  */
 async function showTableAction(action, context) {
-  const { setNodes, nodes } = context;
+  const { setNodes, nodes, trackTableCreated } = context;
   
   // Find the chart
   const chartNode = nodes.find(n => n.id === action.chartId);
@@ -465,6 +651,11 @@ async function showTableAction(action, context) {
   
   console.log(`✅ Created table for chart:`, action.chartId, 'at position', tablePosition);
   
+  // Track table creation for session analytics
+  if (trackTableCreated) {
+    trackTableCreated();
+  }
+  
   return {
     tableId,
     rowCount: rows.length,
@@ -481,6 +672,8 @@ function getSuccessMessage(action, result) {
       return `✅ Created ${action.chartType || 'bar'} chart: ${action.measures.join(', ')} by ${action.dimensions.join(', ')}`;
     case ACTION_TYPES.CREATE_INSIGHT:
       return `✅ Added insight: "${action.text.substring(0, 50)}${action.text.length > 50 ? '...' : ''}"`;
+    case ACTION_TYPES.CREATE_KPI:
+      return `✅ Created KPI: ${result.formattedValue || result.value}`;
     case ACTION_TYPES.GENERATE_CHART_INSIGHTS:
       return `✅ Generated AI insights for chart`;
     case ACTION_TYPES.AI_QUERY:

@@ -6,6 +6,7 @@
 export const ACTION_TYPES = {
   CREATE_CHART: 'create_chart',
   CREATE_INSIGHT: 'create_insight',
+  CREATE_KPI: 'create_kpi',
   GENERATE_CHART_INSIGHTS: 'generate_chart_insights',
   AI_QUERY: 'ai_query',
   SHOW_TABLE: 'show_table'
@@ -25,6 +26,9 @@ export const AGENT_CONFIG = {
   DEFAULT_CHART_HEIGHT: 400,
   CHART_HORIZONTAL_SPACING: 850,
   CHART_VERTICAL_SPACING: 450,
-  TABLE_HORIZONTAL_SPACING: 850
+  TABLE_HORIZONTAL_SPACING: 850,
+  DEFAULT_KPI_WIDTH: 320,
+  DEFAULT_KPI_HEIGHT: 160,
+  KPI_HORIZONTAL_SPACING: 340  // KPI width + 20px padding
 };
 

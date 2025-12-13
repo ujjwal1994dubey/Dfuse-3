@@ -15,9 +15,27 @@ import requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from gemini_llm import GeminiDataFormulator
+from supabase import create_client, Client
 
 # Load environment variables from .env file (for local development)
 load_dotenv()
+
+# -----------------------
+# Supabase Configuration
+# -----------------------
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Initialize Supabase client (will be None if credentials not set)
+supabase: Optional[Client] = None
+if SUPABASE_URL and SUPABASE_KEY and SUPABASE_URL != "https://your-project-id.supabase.co":
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("✅ Supabase client initialized successfully")
+    except Exception as e:
+        print(f"⚠️ Failed to initialize Supabase client: {e}")
+else:
+    print("⚠️ Supabase credentials not configured - login tracking disabled")
 
 app = FastAPI(title="Chart Fusion Backend")
 # app.add_middleware(
@@ -60,6 +78,253 @@ async def health_check():
     return {"status": "healthy", "timestamp": "2024-01-01"}
 
 # -----------------------
+# User Authentication & Tracking
+# -----------------------
+class UserLoginRequest(BaseModel):
+    id: str
+    email: str
+    name: str
+    picture: Optional[str] = None
+
+@app.post("/auth/login")
+async def record_user_login(user: UserLoginRequest):
+    """Record a user login event to Supabase for tracking purposes"""
+    login_record = {
+        "user_id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "picture": user.picture,
+        "login_time": datetime.now().isoformat(),
+    }
+    
+    if supabase:
+        try:
+            # Insert into Supabase
+            result = supabase.table("user_logins").insert(login_record).execute()
+            login_id = result.data[0]["id"] if result.data else None
+            print(f"✅ User login recorded: {user.email} ({user.name}) - ID: {login_id}")
+            return {
+                "success": True,
+                "message": f"Login recorded for {user.email}",
+                "login_id": login_id,  # Return UUID for session tracking
+                "data": result.data
+            }
+        except Exception as e:
+            print(f"❌ Failed to record login: {e}")
+            # Don't fail the login if tracking fails
+            return {
+                "success": False,
+                "message": f"Login tracking failed: {str(e)}",
+                "error": str(e)
+            }
+    else:
+        print(f"⚠️ Supabase not configured - login not tracked: {user.email}")
+        return {
+            "success": False,
+            "message": "Supabase not configured - login tracking disabled"
+        }
+
+@app.get("/auth/logins")
+async def get_login_history(limit: int = 100):
+    """Get login history from Supabase (for admin/tracking purposes)"""
+    if supabase:
+        try:
+            result = supabase.table("user_logins")\
+                .select("*")\
+                .order("login_time", desc=True)\
+                .limit(limit)\
+                .execute()
+            
+            # Get unique user count
+            unique_result = supabase.table("user_logins")\
+                .select("email")\
+                .execute()
+            unique_emails = set(record["email"] for record in unique_result.data)
+            
+            return {
+                "success": True,
+                "total_logins": len(result.data),
+                "unique_users": len(unique_emails),
+                "logins": result.data
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch logins: {str(e)}")
+    else:
+        raise HTTPException(status_code=503, detail="Supabase not configured")
+
+@app.get("/auth/users")
+async def get_unique_users():
+    """Get list of unique users who have logged in"""
+    if supabase:
+        try:
+            # Get all logins and aggregate by email
+            result = supabase.table("user_logins")\
+                .select("email, name, picture, login_time")\
+                .order("login_time", desc=True)\
+                .execute()
+            
+            # Group by email, keeping latest login info
+            users_dict = {}
+            for record in result.data:
+                email = record["email"]
+                if email not in users_dict:
+                    users_dict[email] = {
+                        "email": email,
+                        "name": record["name"],
+                        "picture": record["picture"],
+                        "last_login": record["login_time"],
+                        "login_count": 1
+                    }
+                else:
+                    users_dict[email]["login_count"] += 1
+            
+            return {
+                "success": True,
+                "total_users": len(users_dict),
+                "users": list(users_dict.values())
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch users: {str(e)}")
+    else:
+        raise HTTPException(status_code=503, detail="Supabase not configured")
+
+@app.post("/auth/logout")
+async def record_user_logout(user: UserLoginRequest):
+    """Record when a user logs out (optional tracking)"""
+    print(f"👋 User logged out: {user.email}")
+    return {"success": True, "message": f"Logout recorded for {user.email}"}
+
+# -----------------------
+# Session Usage Tracking
+# -----------------------
+class SessionStartRequest(BaseModel):
+    login_id: str  # UUID from user_logins table
+
+class SessionUpdateRequest(BaseModel):
+    session_id: str
+    charts_created_manually: int = 0
+    charts_created_using_ai: int = 0
+    tables_created: int = 0
+    ai_insights_generated: int = 0
+    charts_merged: int = 0
+    ai_feature_used: int = 0
+    total_tokens: int = 0
+    canvas_objects: int = 0
+    is_active: Optional[bool] = True
+    session_end: Optional[str] = None
+
+@app.post("/session/start")
+async def start_session(data: SessionStartRequest):
+    """Start a new user session linked to login record"""
+    if supabase:
+        try:
+            # Use local time for session_start
+            local_time = datetime.now().isoformat()
+            
+            result = supabase.table("user_sessions").insert({
+                "login_id": data.login_id,
+                "is_active": True,
+                "session_start": local_time
+            }).execute()
+            
+            if result.data:
+                session_id = result.data[0]["id"]
+                print(f"📊 Session started: {session_id}")
+                return {"success": True, "session_id": session_id}
+            return {"success": False, "error": "No data returned"}
+        except Exception as e:
+            print(f"❌ Failed to start session: {e}")
+            return {"success": False, "error": str(e)}
+    
+    return {"success": False, "error": "Supabase not configured"}
+
+@app.post("/session/update")
+async def update_session(data: SessionUpdateRequest):
+    """Update session metrics"""
+    if supabase:
+        try:
+            update_data = {
+                "charts_created_manually": data.charts_created_manually,
+                "charts_created_using_ai": data.charts_created_using_ai,
+                "tables_created": data.tables_created,
+                "ai_insights_generated": data.ai_insights_generated,
+                "charts_merged": data.charts_merged,
+                "ai_feature_used": data.ai_feature_used,
+                "total_tokens": data.total_tokens,
+                "canvas_objects": data.canvas_objects,
+            }
+            
+            if data.session_end:
+                update_data["session_end"] = data.session_end
+                update_data["is_active"] = False
+            
+            result = supabase.table("user_sessions")\
+                .update(update_data)\
+                .eq("id", data.session_id)\
+                .execute()
+            
+            return {"success": True}
+        except Exception as e:
+            print(f"❌ Failed to update session: {e}")
+            return {"success": False, "error": str(e)}
+    
+    return {"success": False, "error": "Supabase not configured"}
+
+@app.post("/session/end")
+async def end_session(data: SessionUpdateRequest):
+    """End a user session with final metrics"""
+    if supabase:
+        try:
+            result = supabase.table("user_sessions")\
+                .update({
+                    "charts_created_manually": data.charts_created_manually,
+                    "charts_created_using_ai": data.charts_created_using_ai,
+                    "tables_created": data.tables_created,
+                    "ai_insights_generated": data.ai_insights_generated,
+                    "charts_merged": data.charts_merged,
+                    "ai_feature_used": data.ai_feature_used,
+                    "total_tokens": data.total_tokens,
+                    "canvas_objects": data.canvas_objects,
+                    "session_end": datetime.now().isoformat(),
+                    "is_active": False
+                })\
+                .eq("id", data.session_id)\
+                .execute()
+            
+            print(f"📊 Session ended: {data.session_id}")
+            return {"success": True}
+        except Exception as e:
+            print(f"❌ Failed to end session: {e}")
+            return {"success": False, "error": str(e)}
+    
+    return {"success": False, "error": "Supabase not configured"}
+
+@app.get("/session/history")
+async def get_session_history(email: Optional[str] = None, limit: int = 50):
+    """Get session history with user details (join with user_logins)"""
+    if supabase:
+        try:
+            # Query sessions with login info via join
+            query = supabase.table("user_sessions")\
+                .select("*, user_logins(email, name, login_time)")\
+                .order("session_start", desc=True)\
+                .limit(limit)
+            
+            result = query.execute()
+            
+            # Filter by email if provided (post-processing since Supabase doesn't support filtering on joined fields easily)
+            sessions = result.data
+            if email:
+                sessions = [s for s in sessions if s.get("user_logins", {}).get("email") == email]
+            
+            return {"success": True, "sessions": sessions}
+        except Exception as e:
+            print(f"❌ Failed to fetch session history: {e}")
+            return {"success": False, "error": str(e)}
+    
+    return {"success": False, "error": "Supabase not configured"}
+
+# -----------------------
 # Models
 # -----------------------
 class ChartCreate(BaseModel):
@@ -81,7 +346,7 @@ class FuseWithAIRequest(BaseModel):
     chart2_id: str
     user_goal: str
     api_key: Optional[str] = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
 
 class ChartTableRequest(BaseModel):
     chart_id: str
@@ -108,22 +373,22 @@ class AIExploreRequest(BaseModel):
     dataset_id: Optional[str] = None  # Optional - for dataset-level queries
     user_query: str
     api_key: Optional[str] = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
 
 class MetricCalculationRequest(BaseModel):
     user_query: str
     dataset_id: str
     api_key: Optional[str] = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
 
 class ConfigTestRequest(BaseModel):
     api_key: str
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
 
 class DatasetAnalysisRequest(BaseModel):
     dataset_id: str
     api_key: Optional[str] = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
 
 class DatasetMetadataSaveRequest(BaseModel):
     dataset_id: str
@@ -134,7 +399,7 @@ class ChartSuggestionRequest(BaseModel):
     dataset_id: str
     goal: str
     api_key: Optional[str] = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
     num_charts: Optional[int] = 4  # Default 4 for backward compatibility, min 1, max 5
 
 class ChartSuggestion(BaseModel):
@@ -165,8 +430,9 @@ class AgentQueryRequest(BaseModel):
     canvas_state: Dict[str, Any]
     dataset_id: str
     api_key: Optional[str] = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
     mode: str = "canvas"  # 'canvas' or 'ask'
+    analysis_type: str = "detailed"  # 'raw' or 'detailed' (Ask mode only)
 
 # -----------------------
 # Helpers
@@ -669,7 +935,7 @@ async def upload_dataset(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
-def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.0-flash") -> Dict[str, Any]:
+def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.5-flash") -> Dict[str, Any]:
     """
     AI-Powered Dataset Analysis
     Performs comprehensive dataset analysis combining statistical profiling with AI-generated semantic insights.
@@ -1843,11 +2109,14 @@ async def ai_explore_data(request: AIExploreRequest):
         
         print(f"✅ AI Analysis completed successfully!")
         print(f"   Result length: {len(ai_result.get('answer', ''))}")
+        print(f"   Is refined: {ai_result.get('is_refined', False)}")
         
-        # Return complete AI analysis response including code_steps and token_usage
+        # Return complete AI analysis response including code_steps, token_usage, and refinement info
         return {
             "success": ai_result.get("success", True),
             "answer": ai_result.get("answer", "I couldn't process your query."),
+            "raw_analysis": ai_result.get("raw_analysis", ""),  # Original pandas output
+            "is_refined": ai_result.get("is_refined", False),  # Whether insights were refined
             "query": request.user_query,
             "dataset_info": f"Dataset: {full_dataset.shape[0]} rows, {full_dataset.shape[1]} columns",
             "code_steps": ai_result.get("code_steps", []),
@@ -1928,7 +2197,7 @@ async def ai_calculate_metric(request: MetricCalculationRequest):
         raise HTTPException(status_code=500, detail=f"Failed to calculate metric: {error_message}")
 
 
-def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.0-flash") -> Dict[str, Any]:
+def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.5-flash") -> Dict[str, Any]:
     """
     AI-Powered Dataset Analysis
     Performs comprehensive dataset analysis combining statistical profiling with AI-generated semantic insights.
@@ -2611,7 +2880,7 @@ def list_models(api_key: str) -> List[Dict[str, str]]:
 class ChartInsightRequest(BaseModel):
     chart_id: str
     api_key: str
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
     user_context: Optional[str] = None  # User's original goal/query for context-aware insights
 
 @app.post("/chart-insights")
@@ -2830,12 +3099,16 @@ async def agent_query(request: AgentQueryRequest):
     Processes natural language queries and generates actions for the agentic layer.
     Uses canvas state and dataset metadata for enhanced context understanding.
     
+    OPTIMIZATION: In Ask mode, skips the planning LLM call and directly executes
+    AI query, reducing API calls from 3 to 2 (33% reduction).
+    
     Request:
         - user_query: Natural language query from user
         - canvas_state: Current canvas state (charts, tables, insights)
         - dataset_id: ID of the active dataset
         - api_key: Gemini API key
         - model: Gemini model to use
+        - mode: 'canvas' or 'ask'
     
     Returns:
         - success: bool
@@ -2846,6 +3119,7 @@ async def agent_query(request: AgentQueryRequest):
     try:
         print(f"🤖 Agent query received: '{request.user_query}'")
         print(f"   Dataset ID: {request.dataset_id}")
+        print(f"   Mode: {request.mode}")
         print(f"   Canvas state: {len(request.canvas_state.get('charts', []))} charts, {len(request.canvas_state.get('textBoxes', []))} insights")
         
         # Validate dataset exists
@@ -2868,6 +3142,67 @@ async def agent_query(request: AgentQueryRequest):
         
         # Initialize Gemini formulator
         formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
+        
+        # =====================================================================
+        # OPTIMIZATION: Skip planning LLM call in Ask mode
+        # In Ask mode, we KNOW the action is always ai_query, so we directly
+        # call get_text_analysis() instead of wasting an LLM call on planning.
+        # This reduces API calls from 3 to 2 (33% reduction).
+        # =====================================================================
+        if request.mode == "ask":
+            # Check if user wants raw analysis (no LLM refinement)
+            skip_refinement = request.analysis_type == "raw"
+            analysis_label = "RAW ANALYSIS" if skip_refinement else "DETAILED ANALYSIS"
+            
+            print(f"🔵 ASK MODE ({analysis_label}): Skipping planning, directly executing AI query")
+            
+            # Get the dataset
+            dataset = DATASETS[request.dataset_id]
+            
+            # Directly call AI analysis (skips the planning LLM call)
+            # If raw analysis, also skip the refinement step
+            ai_result = formulator.get_text_analysis(
+                user_query=request.user_query,
+                dataset=dataset,
+                dataset_id=request.dataset_id,
+                dataset_metadata=dataset_metadata,
+                skip_refinement=skip_refinement
+            )
+            
+            print(f"✅ Ask mode AI query completed")
+            print(f"   Token usage: {ai_result.get('token_usage', {})}")
+            
+            # Return as a pre-built ai_query action result
+            # This matches the format expected by the frontend
+            return {
+                "success": True,
+                "actions": [{
+                    "type": "ai_query",
+                    "query": request.user_query,
+                    "position": "center",
+                    "reasoning": "Direct AI query in Ask mode"
+                }],
+                "reasoning": "Ask mode: Direct analytical response without planning",
+                "token_usage": ai_result.get("token_usage", {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}),
+                # Embed the AI result directly so frontend can display it
+                "ask_mode_result": {
+                    "mode": "ask",
+                    "query": request.user_query,
+                    "answer": ai_result.get("answer", ""),
+                    "raw_analysis": ai_result.get("raw_analysis", ""),
+                    "is_refined": ai_result.get("is_refined", False),
+                    "python_code": ai_result.get("code_steps", [""])[0] if ai_result.get("code_steps") else "",
+                    "code_steps": ai_result.get("code_steps", []),
+                    "tabular_data": ai_result.get("tabular_data", []),
+                    "has_table": ai_result.get("has_table", False),
+                    "success": ai_result.get("success", True)
+                }
+            }
+        
+        # =====================================================================
+        # CANVAS MODE: Full planning flow (3 LLM calls for ai_query actions)
+        # =====================================================================
+        print("🟣 CANVAS MODE: Using full planning flow")
         
         # Generate agent actions with mode
         result = formulator.generate_agent_actions(
