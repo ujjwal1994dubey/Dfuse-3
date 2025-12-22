@@ -7,9 +7,11 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { getCanvasSnapshot } from './canvasSnapshot';
+import { getCanvasSnapshot, getEnhancedCanvasContext } from './canvasSnapshot';
 import { executeActions } from './actionExecutor';
 import { validateActionsSafe } from './validation';
+import { createTldrawAgent, executeDrawingActions } from './tldrawAgent';
+import { organizeCanvas, organizeByHeuristics } from './canvasOrganizer';
 import { Loader2, AlertCircle, Trash2, ArrowUp } from 'lucide-react';
 
 // Progress messages for each mode (defined outside component to avoid re-creation)
@@ -25,6 +27,12 @@ const PROGRESS_MESSAGES = {
     "Scanning the dataset...",
     "Running analysis...",
     "Preparing your answer..."
+  ],
+  draw: [
+    "Understanding your drawing request...",
+    "Planning shape layout...",
+    "Generating drawing actions...",
+    "Creating shapes on canvas..."
   ]
 };
 
@@ -58,14 +66,21 @@ export function AgentChatPanel({
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [mode, setMode] = useState('canvas'); // 'canvas' or 'ask'
+  const [mode, setMode] = useState('canvas'); // 'canvas', 'ask', or 'draw'
   const [progressStep, setProgressStep] = useState(0);
   const [analysisType, setAnalysisType] = useState('detailed'); // 'raw' or 'detailed' (Ask mode only)
+  const [drawMessages, setDrawMessages] = useState([]); // Draw mode messages
+  const [executionProgress, setExecutionProgress] = useState(null); // Progress tracking for multi-step workflows
   const messagesEndRef = useRef(null);
 
   // Get current messages based on mode
-  const currentMessages = mode === 'canvas' ? canvasMessages : askMessages;
-  const setCurrentMessages = mode === 'canvas' ? setCanvasMessages : setAskMessages;
+  const currentMessages = mode === 'canvas' ? canvasMessages 
+    : mode === 'ask' ? askMessages 
+    : drawMessages;
+  
+  const setCurrentMessages = mode === 'canvas' ? setCanvasMessages 
+    : mode === 'ask' ? setAskMessages 
+    : setDrawMessages;
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -90,7 +105,8 @@ export function AgentChatPanel({
   // Clear conversation handler for current mode only
   const handleClearConversation = () => {
     if (currentMessages.length > 0) {
-      const confirmed = window.confirm(`Clear all ${mode === 'canvas' ? 'Canvas' : 'Ask'} mode conversation? This cannot be undone.`);
+      const modeLabel = mode === 'canvas' ? 'Canvas' : mode === 'ask' ? 'Ask' : 'Draw';
+      const confirmed = window.confirm(`Clear all ${modeLabel} mode conversation? This cannot be undone.`);
       if (confirmed) {
         setCurrentMessages([]);
         setError(null);
@@ -98,14 +114,113 @@ export function AgentChatPanel({
     }
   };
 
+  // Handle Draw mode submission
+  const handleDrawSubmit = async (userInput) => {
+    // Add user message
+    const newMessages = [...drawMessages, { 
+      type: 'user', 
+      content: userInput,
+      timestamp: new Date(),
+      mode: 'draw'
+    }];
+    setDrawMessages(newMessages);
+    
+    try {
+      // Create agent
+      const agent = createTldrawAgent(apiKey);
+      
+      // Get dataset and analysis from canvas context
+      const editor = canvasContext?.editor;
+      const dataset = canvasContext?.dataset;
+      const datasetAnalysis = canvasContext?.datasetAnalysis;  // NEW
+      
+      // Enhanced context with AI analysis
+      const enhancedContext = getEnhancedCanvasContext(
+        editor, 
+        canvasContext.nodes, 
+        dataset,
+        datasetAnalysis  // NEW - Pass AI analysis
+      );
+      
+      console.log('🎨 Draw mode with AI semantic context:', enhancedContext);
+      
+      // Generate drawing actions with full context
+      const result = await agent.generateDrawingActions(userInput, enhancedContext);
+      
+      if (result.success) {
+        // Execute actions on canvas
+        if (editor && result.actions.length > 0) {
+          const createdShapeIds = executeDrawingActions(result.actions, editor);
+          console.log(`✅ Created ${createdShapeIds.length} shapes on canvas`);
+        }
+        
+        // Add assistant response
+        const assistantMessage = {
+          type: 'agent',
+          content: result.explanation || 'Drawing created!',
+          actions: result.actions,
+          timestamp: new Date(),
+          mode: 'draw'
+        };
+        
+        setDrawMessages([...newMessages, assistantMessage]);
+        
+        // Track token usage with cost calculation
+        if (onTokenUsage && result.tokensUsed) {
+          console.log('📊 Token usage from agent:', result.tokensUsed);
+          console.log('📊 Debug usage object:', result._debugUsage);
+          
+          // Calculate cost based on Gemini pricing
+          // Gemini 2.5 Flash: $0.075 per 1M input tokens, $0.30 per 1M output tokens
+          const inputCost = (result.tokensUsed.input / 1000000) * 0.075;
+          const outputCost = (result.tokensUsed.output / 1000000) * 0.30;
+          const estimatedCost = inputCost + outputCost;
+          
+          const usageData = {
+            inputTokens: result.tokensUsed.input,
+            outputTokens: result.tokensUsed.output,
+            totalTokens: result.tokensUsed.total,
+            estimatedCost: estimatedCost,
+            mode: 'draw'
+          };
+          
+          console.log('📊 Sending to token tracker:', usageData);
+          
+          onTokenUsage(usageData);
+        } else {
+          console.warn('⚠️ No token usage data available:', {
+            hasOnTokenUsage: !!onTokenUsage,
+            hasTokensUsed: !!result.tokensUsed,
+            result: result
+          });
+        }
+      } else {
+        throw new Error(result.error || 'Failed to generate drawing');
+      }
+    } catch (err) {
+      console.error('Draw mode error:', err);
+      setError(err.message);
+      setDrawMessages([...newMessages, {
+        type: 'error',
+        content: `❌ Error: ${err.message}`,
+        timestamp: new Date(),
+        mode: 'draw'
+      }]);
+    }
+  };
+
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     
     if (!input.trim() || loading) return;
     
-    if (!datasetId) {
-      setError('Please upload a dataset first');
-      return;
+    // Draw mode doesn't require dataset
+    if (mode !== 'draw') {
+      if (!datasetId) {
+        setError('Please upload a dataset first');
+        return;
+      }
     }
     
     if (!apiKey) {
@@ -116,15 +231,6 @@ export function AgentChatPanel({
     const userMessage = input.trim();
     setInput('');
     setError(null);
-
-    // Add user message to current mode's chat
-    setCurrentMessages(prev => [...prev, {
-      type: 'user',
-      content: userMessage,
-      timestamp: new Date(),
-      mode
-    }]);
-
     setLoading(true);
     
     // Track AI feature usage
@@ -132,15 +238,45 @@ export function AgentChatPanel({
       canvasContext.trackAIUsed();
     }
 
+    // Handle Draw mode separately
+    if (mode === 'draw') {
+      await handleDrawSubmit(userMessage);
+      setLoading(false);
+      return;
+    }
+
+    // Add user message to current mode's chat (Canvas or Ask mode)
+    setCurrentMessages(prev => [...prev, {
+      type: 'user',
+      content: userMessage,
+      timestamp: new Date(),
+      mode
+    }]);
+
     try {
-      // Get canvas snapshot
+      // Get enhanced canvas context with charts, KPIs, tables, and annotations
+      const enhancedContext = getEnhancedCanvasContext(
+        canvasContext.editor,
+        canvasContext.nodes
+      );
+      
+      // For backward compatibility, also get traditional canvas state
       const canvasState = getCanvasSnapshot(
         canvasContext.editor,
         canvasContext.nodes
       );
+      
+      // Merge enhanced context into canvas state
+      const enrichedCanvasState = {
+        ...canvasState,
+        charts: enhancedContext.charts,
+        kpis: enhancedContext.kpis,
+        tables: enhancedContext.tables,
+        annotations: enhancedContext.annotations
+      };
 
       console.log(`🤖 [${mode.toUpperCase()} MODE] Sending query:`, userMessage);
-      console.log('📸 Canvas state:', canvasState);
+      console.log('📸 Enhanced canvas context:', enhancedContext);
 
       // Call agent API with mode
       const response = await fetch(`${canvasContext.API}/agent-query`, {
@@ -148,7 +284,7 @@ export function AgentChatPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           user_query: userMessage,
-          canvas_state: canvasState,
+          canvas_state: enrichedCanvasState,
           dataset_id: datasetId,
           api_key: apiKey,
           model: 'gemini-2.5-flash',
@@ -220,11 +356,24 @@ export function AgentChatPanel({
 
       // Execute actions immediately
       console.log('⚡ Executing actions:', validated.actions);
+      
+      // Show progress indicator for multi-step workflows (3+ actions)
+      if (validated.actions.length > 3) {
+        setExecutionProgress({
+          current: 0,
+          total: validated.actions.length,
+          currentAction: 'Starting workflow...'
+        });
+      }
+      
       const results = await executeActions(validated.actions, {
         ...canvasContext,
         currentQuery: userMessage,
         mode
       });
+      
+      // Clear progress indicator
+      setExecutionProgress(null);
 
       console.log('📦 Action results:', results);
 
@@ -286,6 +435,7 @@ export function AgentChatPanel({
     } catch (err) {
       console.error('❌ Agent query failed:', err);
       setError(err.message);
+      setExecutionProgress(null); // Clear progress on error
       
       // Add error message to current mode's chat
       setCurrentMessages(prev => [...prev, {
@@ -326,6 +476,16 @@ export function AgentChatPanel({
             >
               Ask
             </button>
+            <button
+              onClick={() => setMode('draw')}
+              className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                mode === 'draw'
+                  ? 'bg-green-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              Draw
+            </button>
           </div>
           
           {/* Clear Button - Right Side */}
@@ -333,7 +493,7 @@ export function AgentChatPanel({
             <button
               onClick={handleClearConversation}
               className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-              title={`Clear ${mode === 'canvas' ? 'Canvas' : 'Ask'} conversation`}
+              title={`Clear ${mode === 'canvas' ? 'Canvas' : mode === 'ask' ? 'Ask' : 'Draw'} conversation`}
             >
               <Trash2 className="w-4 h-4" />
             </button>
@@ -357,7 +517,7 @@ export function AgentChatPanel({
                   <p className="text-gray-600">• "Create a chart for capacity by sprint"</p>
                 </div>
               </>
-            ) : (
+            ) : mode === 'ask' ? (
               <>
                 <p className="text-2xl mb-2">💬</p>
                 <p className="text-base font-semibold mb-2">Ask Mode</p>
@@ -367,6 +527,19 @@ export function AgentChatPanel({
                   <p className="text-gray-600">• "Which two sprints performed best?"</p>
                   <p className="text-gray-600">• "What is the average capacity?"</p>
                   <p className="text-gray-600">• "Find products with profit &gt; $1000"</p>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-2xl mb-2">✏️</p>
+                <p className="text-base font-semibold mb-2">Draw Mode</p>
+                <p className="text-sm">Enhance dashboards with annotations and layouts</p>
+                <div className="mt-6 text-left max-w-md mx-auto space-y-2 text-xs">
+                  <p className="font-medium text-gray-700">Try asking:</p>
+                  <p className="text-gray-600">• "Add a title 'Q4 Performance Dashboard'"</p>
+                  <p className="text-gray-600">• "Create a 3-section layout for KPIs"</p>
+                  <p className="text-gray-600">• "Draw an arrow highlighting the peak"</p>
+                  <p className="text-gray-600">• "Add a callout box with insights"</p>
                 </div>
               </>
             )}
@@ -390,6 +563,32 @@ export function AgentChatPanel({
                 <div 
                   className="h-full bg-purple-600 rounded-full transition-all duration-500"
                   style={{ width: `${((progressStep + 1) / PROGRESS_MESSAGES[mode].length) * 100}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Multi-step workflow progress indicator */}
+        {executionProgress && (
+          <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
+            <div className="relative">
+              <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-blue-900">
+                {executionProgress.currentAction}
+              </p>
+              <div className="flex items-center justify-between mt-1 text-xs text-blue-600">
+                <span>Processing actions...</span>
+                <span className="font-medium">
+                  {executionProgress.current}/{executionProgress.total}
+                </span>
+              </div>
+              <div className="mt-1.5 h-1.5 bg-blue-200 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-blue-600 rounded-full transition-all duration-300"
+                  style={{ width: `${(executionProgress.current / executionProgress.total) * 100}%` }}
                 />
               </div>
             </div>
@@ -459,7 +658,9 @@ export function AgentChatPanel({
               placeholder={
                 mode === 'canvas'
                   ? "Ask me to create charts..."
-                  : "Ask a question about your data..."
+                  : mode === 'ask'
+                  ? "Ask a question about your data..."
+                  : "Describe layout, annotation, or title to add..."
               }
               className="w-full px-4 py-3 pr-12 bg-transparent resize-none rounded-2xl focus:outline-none text-sm"
               rows={1}
@@ -675,4 +876,33 @@ function MessageBubble({ message }) {
       </div>
     </div>
   );
+}
+
+/**
+ * Calculate bounds for a group of nodes
+ * Helper function for zooming to organized content
+ */
+function calculateBounds(nodes) {
+  if (nodes.length === 0) {
+    return { x: 0, y: 0, w: 800, h: 600 };
+  }
+  
+  const positions = nodes.map(node => ({
+    x: node.position.x,
+    y: node.position.y,
+    w: node.data?.width || 800,
+    h: node.data?.height || 400
+  }));
+  
+  const minX = Math.min(...positions.map(p => p.x));
+  const minY = Math.min(...positions.map(p => p.y));
+  const maxX = Math.max(...positions.map(p => p.x + p.w));
+  const maxY = Math.max(...positions.map(p => p.y + p.h));
+  
+  return {
+    x: minX - 50,
+    y: minY - 50,
+    w: maxX - minX + 100,
+    h: maxY - minY + 100
+  };
 }

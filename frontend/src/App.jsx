@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import EChartsWrapper from './charts/EChartsWrapper';
 import TLDrawCanvas from './components/canvas/TLDrawCanvas';
-import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, ShareModal, Toast } from './components/ui';
+import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, ShareModal, Toast, DatasetSelector } from './components/ui';
 import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus, LogOut } from 'lucide-react';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
@@ -2303,13 +2303,17 @@ function ChartActionsPanel({
         throw new Error('Chart shape not found in canvas. Please ensure you are using TLDraw mode.');
       }
       
-      // Calculate position for sticky note (to the right of chart)
-      const stickyX = chartShape.x + chartShape.props.w + 50;
+      // Calculate position for insights textbox (to the right of chart, similar to table positioning)
+      const chartWidth = chartShape.props.w || 800;
+      const insightsOffset = 50; // Space between chart and insights
+      const stickyX = chartShape.x + chartWidth + insightsOffset;
       const stickyY = chartShape.y;
       
       // Prepare insights text (prefer generic_insights, fallback to insight)
       const insightsContent = result.generic_insights || result.insight || 'No insights generated';
-      const insightsText = `AI Generated\n\n${insightsContent}`;
+      
+      // Get chart title for the insights header
+      const chartTitle = selectedChart.data?.title || chartShape.props?.title || 'Chart';
       
       // Create TLDraw textbox for insights
       const { createShapeId } = await import('@tldraw/tldraw');
@@ -2317,7 +2321,7 @@ function ChartActionsPanel({
       
       // Define textbox dimensions
       const textboxWidth = 300;
-      const textboxHeight = 200;
+      const textboxHeight = 400;
       
       tldrawEditorRef.current.createShape({
         id: textboxId,
@@ -2327,12 +2331,14 @@ function ChartActionsPanel({
         props: {
           w: textboxWidth,
           h: textboxHeight,
-          text: insightsText,
-          fontSize: 12
+          text: insightsContent,
+          fontSize: 14,
+          isAIInsights: true,
+          chartTitle: chartTitle
         }
       });
       
-      console.log('✅ Chart insights generated and displayed in textbox');
+      console.log(`✅ Chart insights generated for "${chartTitle}" at position:`, { x: stickyX, y: stickyY });
       
       // Track AI insight generation for session analytics
       trackAIInsight();
@@ -2992,17 +2998,82 @@ function AppWrapper({ user, onLogout }) {
     trackCanvasObjects 
   } = useSessionTracking();
   
-  const [datasetId, setDatasetId] = useState(null);
-  const [csvFileName, setCsvFileName] = useState('');
-  const [availableDimensions, setAvailableDimensions] = useState([]);
-  const [availableMeasures, setAvailableMeasures] = useState([]);
+  // Multi-dataset state management
+  const [datasets, setDatasets] = useState([]);
+  // Each dataset: { id, filename, dimensions, measures, rows, analysis, uploadedAt }
+  const [activeDatasetId, setActiveDatasetId] = useState(null);
   
-  // Dataset analysis state
-  const [datasetAnalysis, setDatasetAnalysis] = useState(null);
+  // Derived values from active dataset
+  const activeDataset = useMemo(() => 
+    datasets.find(d => d.id === activeDatasetId), 
+    [datasets, activeDatasetId]
+  );
+  
+  // Backwards-compatible derived values
+  const datasetId = activeDatasetId;
+  const csvFileName = activeDataset?.filename || '';
+  const availableDimensions = activeDataset?.dimensions || [];
+  const availableMeasures = activeDataset?.measures || [];
+  const datasetAnalysis = activeDataset?.analysis || null;
+  
+  // Dataset analysis state (loading/error state still separate)
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState(null);
   const [editingMetadata, setEditingMetadata] = useState(false);
   const [metadataDraft, setMetadataDraft] = useState(null);
+  
+  // Helper function to update a specific dataset's properties
+  const updateDataset = useCallback((datasetId, updates) => {
+    setDatasets(prev => prev.map(d => 
+      d.id === datasetId ? { ...d, ...updates } : d
+    ));
+  }, []);
+  
+  // Helper to update active dataset's analysis
+  const setDatasetAnalysis = useCallback((analysis) => {
+    if (activeDatasetId) {
+      updateDataset(activeDatasetId, { analysis });
+    }
+  }, [activeDatasetId, updateDataset]);
+  
+  // Helper to remove a dataset
+  const removeDataset = useCallback(async (datasetIdToRemove) => {
+    try {
+      // Call backend to delete
+      await fetch(`${API}/datasets/${datasetIdToRemove}`, { method: 'DELETE' });
+      
+      // Remove from local state
+      setDatasets(prev => prev.filter(d => d.id !== datasetIdToRemove));
+      
+      // If removing the active dataset, switch to another one or clear
+      if (datasetIdToRemove === activeDatasetId) {
+        setDatasets(prev => {
+          const remaining = prev.filter(d => d.id !== datasetIdToRemove);
+          if (remaining.length > 0) {
+            setActiveDatasetId(remaining[0].id);
+          } else {
+            setActiveDatasetId(null);
+          }
+          return remaining;
+        });
+      }
+      
+      console.log(`🗑️ Dataset ${datasetIdToRemove} removed`);
+    } catch (error) {
+      console.error('Failed to remove dataset:', error);
+    }
+  }, [activeDatasetId]);
+  
+  // Helper to switch active dataset
+  const switchDataset = useCallback((newDatasetId) => {
+    setActiveDatasetId(newDatasetId);
+    // Reset selections when switching
+    setSelectedDimension('');
+    setSelectedMeasure('');
+    setEditingMetadata(false);
+    setMetadataDraft(null);
+    console.log(`📊 Switched to dataset: ${newDatasetId}`);
+  }, []);
   
   // Chart suggestion state
   const [goalText, setGoalText] = useState('');
@@ -3126,19 +3197,21 @@ function AppWrapper({ user, onLogout }) {
           }
           
           if (chartShape) {
-            // Create textbox to the right of chart
-            const stickyX = chartShape.x + (chartShape.props?.w || 800) + 50;
+            // Create textbox to the right of chart (adjacent positioning similar to table)
+            const chartWidth = chartShape.props?.w || 800;
+            const insightsOffset = 50; // Space between chart and insights
+            const stickyX = chartShape.x + chartWidth + insightsOffset;
             const stickyY = chartShape.y;
+            
+            // Get chart title for the insights header
+            const chartTitle = node.data?.title || chartShape.props?.title || 'Chart';
             
             const { createShapeId } = await import('@tldraw/tldraw');
             const textboxId = createShapeId();
             
             // Define textbox dimensions
             const textboxWidth = 300;
-            const textboxHeight = 200;
-            
-            // Add "AI Generated" header to insights
-            const insightsText = `AI Generated\n\n${node.data.preloadedInsights.contextInsights}`;
+            const textboxHeight = 400;
             
             editor.createShape({
               id: textboxId,
@@ -3148,12 +3221,14 @@ function AppWrapper({ user, onLogout }) {
               props: {
                 w: textboxWidth,
                 h: textboxHeight,
-                text: insightsText,
-                fontSize: 12
+                text: node.data.preloadedInsights.contextInsights,
+                fontSize: 14,
+                isAIInsights: true,
+                chartTitle: chartTitle
               }
             });
             
-            console.log(`📝 Created textbox for chart ${node.id}`);
+            console.log(`📝 Created textbox for "${chartTitle}" at position:`, { x: stickyX, y: stickyY });
             createdStickyNotes.current.add(node.id);
           } else {
             console.warn(`⚠️ Could not find chart shape for node ${node.id}`);
@@ -3166,6 +3241,31 @@ function AppWrapper({ user, onLogout }) {
     
     return () => clearTimeout(timeoutId);
   }, [nodes]);
+  
+  // Auto-remove highlight flag after animation completes (2 seconds)
+  useEffect(() => {
+    if (!tldrawEditorRef?.current) return;
+    
+    const timer = setTimeout(() => {
+      const shapes = tldrawEditorRef.current.getCurrentPageShapes();
+      const highlightedShapes = shapes.filter(s => s.props?.isNewlyCreated);
+      
+      if (highlightedShapes.length > 0) {
+        highlightedShapes.forEach(shape => {
+          tldrawEditorRef.current.updateShape({
+            id: shape.id,
+            type: shape.type,
+            props: {
+              ...shape.props,
+              isNewlyCreated: false
+            }
+          });
+        });
+      }
+    }, 2000);
+    
+    return () => clearTimeout(timer);
+  }, [nodes, tldrawEditorRef]); // Trigger when nodes change
   
   // AI-assisted merge state
   const [mergePanelOpen, setMergePanelOpen] = useState(false);
@@ -3659,19 +3759,20 @@ function AppWrapper({ user, onLogout }) {
 
   // Get the center of the current viewport in canvas coordinates
   const getViewportCenter = useCallback(() => {
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
+    if (!tldrawEditorRef?.current) {
+      // Fallback to window center if editor not ready
+      return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    }
     
-    // Calculate center in screen coordinates
-    const centerScreenX = viewportWidth / 2;
-    const centerScreenY = viewportHeight / 2;
+    // Get the actual viewport bounds in page coordinates
+    const viewport = tldrawEditorRef.current.getViewportPageBounds();
     
-    // Return the center coordinates
+    // Calculate center of visible viewport
     return {
-      x: centerScreenX,
-      y: centerScreenY,
+      x: viewport.x + viewport.w / 2,
+      y: viewport.y + viewport.h / 2
     };
-  }, []);
+  }, [tldrawEditorRef]);
 
   const onNodesChange = useCallback(
     (changes) => {
@@ -3836,6 +3937,12 @@ function AppWrapper({ user, onLogout }) {
       console.log('📊 handleShowTable called with chartId:', chartId);
       console.log('📊 Current nodes:', nodes.map(n => ({ id: n.id, type: n.type })));
       
+      // Validate TLDraw editor reference
+      if (!tldrawEditorRef?.current) {
+        alert('⚠️ Canvas editor not ready. Please try again.');
+        return;
+      }
+      
       // Use setNodes with functional update to get current nodes
       setNodes(currentNodes => {
         console.log('📊 Inside setNodes, currentNodes:', currentNodes.map(n => ({ id: n.id, type: n.type })));
@@ -3882,11 +3989,31 @@ function AppWrapper({ user, onLogout }) {
           aggregation: chartNode.data.agg
         });
         
-        // Calculate position for table node (to the right of chart with offset)
+        // Get the chart shape from TLDraw to calculate position (similar to insights)
+        let chartShape = tldrawEditorRef.current.getShape(chartId);
+        
+        if (!chartShape) {
+          // If direct lookup fails, search through all shapes
+          const allShapes = tldrawEditorRef.current.getCurrentPageShapes();
+          chartShape = allShapes.find(shape => 
+            shape.id === chartId || 
+            shape.id.includes(chartId) ||
+            (shape.type === 'chart' && shape.props?.title === chartNode.data?.title)
+          );
+        }
+        
+        if (!chartShape) {
+          console.error('❌ Chart shape not found in TLDraw');
+          alert('Chart shape not found in canvas');
+          return currentNodes;
+        }
+        
+        // Calculate position for table (to the right of chart, adjacent positioning like insights)
+        const chartWidth = chartShape.props.w || 800;
+        const tableOffset = 50; // Space between chart and table (same as insights)
         const tablePosition = {
-          x: chartNode.position.x + (chartNode.data.strategy === 'same-dimension-different-measures' || 
-              chartNode.data.strategy === 'same-measure-different-dimensions-stacked' ? 520 : 400),
-          y: chartNode.position.y
+          x: chartShape.x + chartWidth + tableOffset,
+          y: chartShape.y
         };
         
         // Create table node
@@ -3900,11 +4027,15 @@ function AppWrapper({ user, onLogout }) {
             headers: headers,
             rows: rows,
             totalRows: rows.length,
-            sourceChartId: chartId
+            sourceChartId: chartId,
+            width: 300,  // Set explicit width
+            height: 400  // Set explicit height
           },
           draggable: true,
           selectable: true
         };
+        
+        console.log('📊 Creating table at position:', tablePosition, 'with size:', { w: 300, h: 400 });
         
         // Add table node to canvas
         return [...currentNodes, newTableNode];
@@ -3919,7 +4050,7 @@ function AppWrapper({ user, onLogout }) {
       console.error('Failed to show table:', error);
       alert('Failed to show table: ' + error.message);
     }
-  }, [trackTableCreated]);
+  }, [nodes, tldrawEditorRef, trackTableCreated]);
 
   /**
    * Handle AI Query Shortcut from Contextual Toolbar
@@ -3954,6 +4085,36 @@ function AppWrapper({ user, onLogout }) {
     setTimeout(() => {
       setScrollToAI(true);
     }, 300);
+  }, [nodes]);
+
+  /**
+   * Handle Chart Actions Shortcut from Contextual Toolbar
+   * Opens the chart actions panel without scrolling (general chart options)
+   */
+  const handleChartActionsShortcut = useCallback((chartId) => {
+    console.log('🎛️ Chart Actions shortcut triggered for chart:', chartId);
+    console.log('🎛️ Current nodes:', nodes.map(n => ({ id: n.id, type: n.type })));
+    
+    // Find the chart node
+    const chartNode = nodes.find(n => n.id === chartId);
+    if (!chartNode) {
+      console.error('❌ Chart node not found:', chartId);
+      console.error('❌ Available node IDs:', nodes.map(n => n.id));
+      return;
+    }
+    
+    // Set the selected chart for actions
+    setSelectedChartForActions(chartNode);
+    
+    // Close all other panels first (just like the sidebar toggle buttons do)
+    setUploadPanelOpen(false);
+    setVariablesPanelOpen(false);
+    setMergePanelOpen(false);
+    setInstructionsPanelOpen(false);
+    setSettingsPanelOpen(false);
+    
+    // Open the chart actions panel (without scrolling to AI section)
+    setChartActionsPanelOpen(true);
   }, [nodes]);
 
   /**
@@ -4032,13 +4193,17 @@ function AppWrapper({ user, onLogout }) {
         throw new Error('Chart shape not found in canvas.');
       }
       
-      // Calculate position for textbox (to the right of chart)
-      const textboxX = chartShape.x + chartShape.props.w + 50;
+      // Calculate position for insights textbox (to the right of chart, adjacent positioning)
+      const chartWidth = chartShape.props.w || 800;
+      const insightsOffset = 50; // Space between chart and insights
+      const textboxX = chartShape.x + chartWidth + insightsOffset;
       const textboxY = chartShape.y;
       
       // Prepare insights text
       const insightsContent = result.generic_insights || result.insight || 'No insights generated';
-      const insightsText = `AI Generated\n\n${insightsContent}`;
+      
+      // Get chart title for the insights header
+      const chartTitle = chartNode.data?.title || chartShape.props?.title || 'Chart';
       
       // Create TLDraw textbox for insights
       const { createShapeId } = await import('@tldraw/tldraw');
@@ -4051,13 +4216,15 @@ function AppWrapper({ user, onLogout }) {
         y: textboxY,
         props: {
           w: 300,
-          h: 200,
-          text: insightsText,
-          fontSize: 12
+          h: 400,
+          text: insightsContent,
+          fontSize: 14,
+          isAIInsights: true,
+          chartTitle: chartTitle
         }
       });
       
-      console.log('✅ Chart insights generated from toolbar shortcut');
+      console.log(`✅ Chart insights generated from toolbar for "${chartTitle}" at position:`, { x: textboxX, y: textboxY });
       
       // Track AI insight generation for session analytics
       trackAIInsight();
@@ -4206,7 +4373,8 @@ function AppWrapper({ user, onLogout }) {
         apiKey: apiKey || '',
         model: selectedModel || 'gemini-2.5-flash',
         width: 320,
-        height: 160
+        height: 160,
+        isNewlyCreated: true
       }
     }));
     
@@ -5028,7 +5196,8 @@ function AppWrapper({ user, onLogout }) {
           agg: chart.agg || 'sum',
           datasetId: nodeDatasetId,
           table: chart.table || [],
-          filters: chart.filters || {} // Store filters for persistence
+          filters: chart.filters || {}, // Store filters for persistence
+          isNewlyCreated: true
         }
       }));
       
@@ -5078,6 +5247,92 @@ function AppWrapper({ user, onLogout }) {
     setMergeContextText('');
   }, [mergeContextText, pendingMergeCharts, performAIAssistedMerge]);
 
+  /**
+   * Create Dataset Table
+   * Creates an interactive table showing the full uploaded dataset
+   */
+  const createDatasetTable = useCallback(async (datasetId, filename, dimensions, measures, totalRows) => {
+    try {
+      console.log('📊 Creating dataset table for:', datasetId);
+      
+      // Get all column names (dimensions + measures)
+      const allColumns = [...dimensions, ...measures];
+      
+      if (allColumns.length === 0) {
+        console.warn('No columns available for dataset table');
+        return;
+      }
+      
+      // Create a simple aggregation to get all rows (group by all columns)
+      // This effectively gives us the raw data without any aggregation
+      const response = await fetch(`${API}/charts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dataset_id: datasetId,
+          dimensions: allColumns, // Use all columns as dimensions
+          measures: [],  // No measures needed
+          agg: 'count'  // Aggregation doesn't matter since we're not measuring anything
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to fetch dataset: ${errorText}`);
+      }
+      
+      const chartData = await response.json();
+      const tableData = chartData.table || [];
+      
+      if (tableData.length === 0) {
+        console.warn('No data in dataset table');
+        return;
+      }
+      
+      // Extract headers from the first row
+      const headers = Object.keys(tableData[0]);
+      
+      // Convert table data to rows format
+      const tableRows = tableData.map(row => 
+        headers.map(header => row[header])
+      );
+      
+      // Position table at viewport center
+      const position = getViewportCenter();
+      
+      // Create table node
+      const tableId = `dataset-table-${datasetId}-${Date.now()}`;
+      const newTableNode = {
+        id: tableId,
+        type: 'table',
+        position: position,
+        data: {
+          title: `${filename} - Full Dataset`,
+          headers: headers,
+          rows: tableRows,
+          totalRows: totalRows,
+          width: 800,  // Larger width for dataset tables
+          height: 600   // Larger height for dataset tables
+        },
+        draggable: true,
+        selectable: true
+      };
+      
+      setNodes(nds => [...nds, newTableNode]);
+      
+      console.log(`✅ Dataset table created with ${tableRows.length} rows visible`);
+      
+      // Track table creation
+      trackTableCreated();
+      
+    } catch (error) {
+      console.error('Failed to create dataset table:', error);
+      console.error('Error details:', error.message);
+      // Don't alert - this is a non-critical enhancement
+      console.warn('Dataset table creation failed, but upload succeeded');
+    }
+  }, [getViewportCenter, trackTableCreated]);
+
   const uploadCSV = async (file) => {
     try {
       const fd = new FormData();
@@ -5089,24 +5344,40 @@ function AppWrapper({ user, onLogout }) {
       }
       
       const meta = await res.json();
-      setDatasetId(meta.dataset_id);
-      setCsvFileName(file.name); // Store the filename
-      setAvailableDimensions(meta.dimensions || []);
-      setAvailableMeasures(meta.measures || []);
+      
+      // Create new dataset object
+      const newDataset = {
+        id: meta.dataset_id,
+        filename: file.name,
+        dimensions: meta.dimensions || [],
+        measures: meta.measures || [],
+        rows: meta.rows,
+        analysis: null,
+        uploadedAt: new Date().toISOString()
+      };
+      
+      // Add to datasets array
+      setDatasets(prev => [...prev, newDataset]);
+      
+      // Auto-select the new dataset
+      setActiveDatasetId(meta.dataset_id);
+      
       // Clear previous selections
       setSelectedDimension('');
       setSelectedMeasure('');
       
-      // Clear previous analysis
-      setDatasetAnalysis(null);
+      // Clear analysis state for new dataset
       setAnalysisError(null);
       setEditingMetadata(false);
       setMetadataDraft(null);
       
-      console.log('CSV uploaded successfully:', meta);
+      console.log('📁 Dataset added:', newDataset);
+      console.log(`📊 Total datasets: ${datasets.length + 1}`);
+      
+      // Create a dataset table on the canvas
+      createDatasetTable(meta.dataset_id, file.name, meta.dimensions, meta.measures, meta.rows);
     } catch (error) {
       console.error('Failed to upload CSV:', error);
-      setCsvFileName(''); // Clear filename on error
       alert(`Failed to upload CSV: ${error.message}`);
     }
   };
@@ -5429,6 +5700,7 @@ function AppWrapper({ user, onLogout }) {
             table: chart.table || [],
             ai_generated: true,
             ai_method: method,
+            isNewlyCreated: true,
             ai_reasoning: suggestion.reasoning,
             user_goal: goalText,  // Store original user query for AI-assisted merging
             filters: chart.filters || {} // Store filters for persistence
@@ -5741,7 +6013,8 @@ function AppWrapper({ user, onLogout }) {
             measures: [selectedMeasure],
             datasetId: datasetId, // Store dataset ID for aggregation updates
             table: chart.table || [], // Add table data for chart type switching
-            filters: chart.filters || {} // Store filters for persistence
+            filters: chart.filters || {}, // Store filters for persistence
+            isNewlyCreated: true
           } 
         }));
         
@@ -5840,7 +6113,8 @@ function AppWrapper({ user, onLogout }) {
             table: chart.table || tableData,
             onAggChange: updateChartAgg,
             isHistogram: true,  // Mark as histogram for special handling
-            originalMeasure: selectedMeasure  // Store the real measure for semantic merging
+            originalMeasure: selectedMeasure,  // Store the real measure for semantic merging
+            isNewlyCreated: true
           } 
         }));
         
@@ -5895,7 +6169,8 @@ function AppWrapper({ user, onLogout }) {
             measures: ['count'],  // Store count as measure 
             table: chart.table || [],  // Add table data for chart type switching
             datasetId: datasetId, // Store dataset ID for aggregation updates
-            onAggChange: updateChartAgg 
+            onAggChange: updateChartAgg,
+            isNewlyCreated: true
           } 
         }));
         
@@ -6012,6 +6287,7 @@ function AppWrapper({ user, onLogout }) {
         onAIQueryShortcut={handleAIQueryShortcut}
         onChartInsightShortcut={handleChartInsightShortcut}
         onShowTableShortcut={handleShowTable}
+        onChartActionsShortcut={handleChartActionsShortcut}
         apiKeyConfigured={!!(apiKey && apiKey.trim())}
         fitView
         style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
@@ -6250,39 +6526,46 @@ function AppWrapper({ user, onLogout }) {
         >
           <div className="p-4">
             <div className="space-y-4">
+              {/* Dataset Selector - Shows all uploaded datasets */}
+              {datasets.length > 0 && (
+                <div className="border border-gray-200 rounded-lg overflow-hidden bg-white">
+                  <DatasetSelector 
+                    datasets={datasets}
+                    activeDatasetId={activeDatasetId}
+                    onSelect={switchDataset}
+                    onRemove={removeDataset}
+                  />
+                </div>
+              )}
+              
               {/* File Upload Section */}
               <div className="pt-2">
                 <FileUpload 
                   accept=".csv,.xlsx,.xls" 
                   onFileChange={(file) => uploadCSV(file)}
                 >
-                  {datasetId ? 'Replace File' : 'Choose CSV or XLSX File'}
+                  {datasets.length > 0 ? 'Add Another Dataset' : 'Choose CSV or XLSX File'}
                 </FileUpload>
                 
-                {(csvFileName || datasetId) && (
-                  <div className="mt-2 border border-gray-200 rounded-lg p-3 bg-gray-50/30">
-                    {csvFileName && (
-                      <div className="text-sm text-gray-600 flex items-center gap-2 mb-2">
-                        <File size={16} />
-                        {csvFileName}
-                      </div>
-                    )}
+                {/* Active Dataset Info */}
+                {activeDataset && (
+                  <div className="mt-2 border border-blue-200 rounded-lg p-3 bg-blue-50/30">
+                    <div className="text-sm text-gray-600 flex items-center gap-2 mb-2">
+                      <File size={16} />
+                      <span className="font-medium">Active:</span> {csvFileName}
+                    </div>
                     
-                    {datasetId && (
-                      <>
-                        <Badge variant="outline" className="w-fit mb-2">
-                          Dataset: {datasetId.substring(0, 8)}...
-                        </Badge>
-                        <div className="flex gap-1 flex-wrap">
-                          <Badge variant="secondary" className="text-xs">
-                            {availableDimensions.length} dimensions
-                          </Badge>
-                          <Badge variant="secondary" className="text-xs">
-                            {availableMeasures.length} measures
-                          </Badge>
-                        </div>
-                      </>
-                    )}
+                    <div className="flex gap-1 flex-wrap">
+                      <Badge variant="outline" className="w-fit">
+                        {activeDataset.rows?.toLocaleString() || '?'} rows
+                      </Badge>
+                      <Badge variant="secondary" className="text-xs">
+                        {availableDimensions.length} dimensions
+                      </Badge>
+                      <Badge variant="secondary" className="text-xs">
+                        {availableMeasures.length} measures
+                      </Badge>
+                    </div>
                   </div>
                 )}
               </div>
@@ -6677,6 +6960,8 @@ function AppWrapper({ user, onLogout }) {
                 datasetId,
                 apiKey,
                 figureFromPayload,
+                dataset: activeDataset?.dataframe,  // NEW - Pass dataset for Draw mode
+                datasetAnalysis: datasetAnalysis,   // NEW - Pass AI-generated metadata
                 // Session tracking functions
                 trackChartCreatedByAI,  // Canvas AI creates charts using AI
                 trackTableCreated,

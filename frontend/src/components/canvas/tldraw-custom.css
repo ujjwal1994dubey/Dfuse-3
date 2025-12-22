@@ -75,3 +75,24 @@
   font-size: 12px !important;
 }
 
+/* New shape highlight animation */
+@keyframes shapeHighlight {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 235, 59, 0.7);
+    border-color: rgba(255, 235, 59, 0.9);
+  }
+  50% {
+    box-shadow: 0 0 20px 10px rgba(255, 235, 59, 0.4);
+    border-color: rgba(255, 235, 59, 0.7);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 235, 59, 0);
+    border-color: transparent;
+  }
+}
+
+.shape-highlight-new {
+  animation: shapeHighlight 2s ease-out;
+  position: relative;
+}
+

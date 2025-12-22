@@ -27,6 +27,7 @@ const TLDrawCanvas = ({
   onAIQueryShortcut,
   onChartInsightShortcut,
   onShowTableShortcut,
+  onChartActionsShortcut,
   apiKeyConfigured,
   onEditorMount
 }) => {
@@ -47,6 +48,7 @@ const TLDrawCanvas = ({
         hasAIQuery: !!onAIQueryShortcut,
         hasInsights: !!onChartInsightShortcut,
         hasShowTable: !!onShowTableShortcut,
+        hasChartActions: !!onChartActionsShortcut,
         apiKeyConfigured
       });
       
@@ -56,6 +58,7 @@ const TLDrawCanvas = ({
           onAIQueryShortcut={onAIQueryShortcut}
           onChartInsightShortcut={onChartInsightShortcut}
           onShowTableShortcut={onShowTableShortcut}
+          onChartActionsShortcut={onChartActionsShortcut}
           apiKeyConfigured={apiKeyConfigured}
         />
       );
@@ -64,7 +67,7 @@ const TLDrawCanvas = ({
     return {
       InFrontOfTheCanvas: ContextualToolbarComponent
     };
-  }, [onAIQueryShortcut, onChartInsightShortcut, onShowTableShortcut, apiKeyConfigured]);
+  }, [onAIQueryShortcut, onChartInsightShortcut, onShowTableShortcut, onChartActionsShortcut, apiKeyConfigured]);
 
   // Watch for new nodes being added AND existing nodes being updated
   useEffect(() => {
@@ -284,7 +287,7 @@ function importNodesToTLDraw(editor, nodes) {
     } else if (node.type === 'table') {
       shapeType = 'table';
       shapeProps = {
-        w: node.data.width || 600,
+        w: node.data.width || 300,
         h: node.data.height || 400,
         title: node.data.title || '',
         headers: node.data.headers || [],

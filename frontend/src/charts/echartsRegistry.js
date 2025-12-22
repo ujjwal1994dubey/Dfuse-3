@@ -170,23 +170,48 @@ export const ECHARTS_TYPES = {
     id: 'line',
     label: 'Line Chart',
     icon: TrendingUp,
-    isSupported: (dims, measures) => dims === 1 && measures === 1,
+    isSupported: (dims, measures) => dims === 1 && measures >= 1 && measures <= 5,
     createOption: (data, payload) => {
       const xKey = payload.dimensions[0];
-      const yKey = payload.measures[0];
+      const measureKeys = payload.measures;
       
       const categories = data.map(r => truncateText(r[xKey]));
-      const values = data.map(r => r[yKey] || 0);
       const fullLabels = data.map(r => String(r[xKey]));
+      
+      // Create series for each measure
+      const series = measureKeys.map((measure, idx) => ({
+        name: measure,
+        type: 'line',
+        data: data.map(r => r[measure] || 0),
+        smooth: false,
+        lineStyle: { 
+          color: DEFAULT_ECHARTS_COLORS.categorical[idx % DEFAULT_ECHARTS_COLORS.categorical.length], 
+          width: 3 
+        },
+        itemStyle: { 
+          color: DEFAULT_ECHARTS_COLORS.categorical[idx % DEFAULT_ECHARTS_COLORS.categorical.length] 
+        },
+        symbol: 'circle',
+        symbolSize: 6
+      }));
       
       return {
         tooltip: {
           trigger: 'axis',
           formatter: (params) => {
             const dataIndex = params[0].dataIndex;
-            return `${fullLabels[dataIndex]}<br/>${yKey}: ${params[0].value}`;
+            let tooltip = `<strong>${fullLabels[dataIndex]}</strong><br/>`;
+            params.forEach(param => {
+              tooltip += `${param.marker} ${param.seriesName}: ${param.value}<br/>`;
+            });
+            return tooltip;
           }
         },
+        legend: measureKeys.length > 1 ? {
+          data: measureKeys,
+          top: 5,
+          textStyle: { fontSize: 11, color: '#6B7280' }
+        } : undefined,
         dataZoom: [
           {
             type: 'inside',
@@ -201,7 +226,7 @@ export const ECHARTS_TYPES = {
         grid: {
           left: '80px',
           right: '30px',
-          top: '20px',
+          top: measureKeys.length > 1 ? '50px' : '20px',
           bottom: '80px',
           containLabel: false
         },
@@ -224,20 +249,12 @@ export const ECHARTS_TYPES = {
           axisLabel: { fontSize: 11, color: '#4B5563' },
           axisLine: { lineStyle: { color: '#E5E7EB' } },
           splitLine: { lineStyle: { color: '#E5E7EB' } },
-          name: yKey || 'Value',
+          name: measureKeys.length === 1 ? measureKeys[0] : 'Value',
           nameLocation: 'middle',
           nameGap: 50,
           nameTextStyle: { fontSize: 12, color: '#4B5563' }
         },
-        series: [{
-          type: 'line',
-          data: values,
-          smooth: false,
-          lineStyle: { color: DEFAULT_ECHARTS_COLORS.quantitative[0], width: 3 },
-          itemStyle: { color: DEFAULT_ECHARTS_COLORS.quantitative[0] },
-          symbol: 'circle',
-          symbolSize: 6
-        }]
+        series: series
       };
     }
   },
@@ -844,14 +861,14 @@ export const canConvertChartType = (fromType, toType, dims, measures) => {
  * Compatibility Matrix for Quick Reference
  * 
  * Group 1 (1D + 1M): bar ↔ pie ↔ line
- * Group 2 (1D + 2M): scatter ↔ grouped_bar ↔ dual_axis
+ * Group 2 (1D + 2M): scatter ↔ grouped_bar ↔ dual_axis ↔ line
  * Group 3 (2D + 1M): stacked_bar ↔ bubble
- * Group 4 (1D + 3-5M): multi_series_bar ↔ grouped_bar ↔ dual_axis (when 2M only)
+ * Group 4 (1D + 3-5M): multi_series_bar ↔ line
  */
 export const COMPATIBILITY_GROUPS = {
   'GROUP_1': ['bar', 'pie', 'line'],
-  'GROUP_2': ['scatter', 'grouped_bar', 'dual_axis'],
+  'GROUP_2': ['scatter', 'grouped_bar', 'dual_axis', 'line'],
   'GROUP_3': ['stacked_bar', 'bubble'],
-  'GROUP_4': ['multi_series_bar', 'grouped_bar', 'dual_axis']
+  'GROUP_4': ['multi_series_bar', 'grouped_bar', 'dual_axis', 'line']
 };
 

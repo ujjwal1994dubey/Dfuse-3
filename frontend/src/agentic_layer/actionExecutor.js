@@ -3,8 +3,12 @@
  * Executes agent actions by creating charts and insights on the canvas
  */
 
-import { ACTION_TYPES, AGENT_CONFIG } from './types';
-import { getEChartsDefaultType } from '../charts/echartsRegistry';
+import { ACTION_TYPES, AGENT_CONFIG, ACTION_WEIGHTS } from './types';
+import { getEChartsDefaultType, ECHARTS_TYPES } from '../charts/echartsRegistry';
+import { LayoutManager, arrangeKPIDashboard } from './layoutManager';
+import { organizeCanvas, calculateBounds } from './canvasOrganizer';
+import { executeDrawingActions } from './tldrawAgent';
+import { rateLimiter } from './rateLimiter';
 
 /**
  * Execute multiple actions in sequence
@@ -14,15 +18,18 @@ import { getEChartsDefaultType } from '../charts/echartsRegistry';
  */
 export async function executeActions(actions, context) {
   const results = [];
-  
-  // Track KPI index for positioning multiple KPIs in a row
   let kpiIndex = 0;
   
-  for (const action of actions) {
+  // Classify actions by API requirement
+  const localActions = actions.filter(a => ACTION_WEIGHTS[a.type] === 'local');
+  const apiActions = actions.filter(a => ACTION_WEIGHTS[a.type] !== 'local');
+  
+  console.log(`📋 Action Plan: ${localActions.length} local, ${apiActions.length} API-required`);
+  
+  // Execute local actions first (fast, no rate limiting)
+  for (const action of localActions) {
     try {
-      console.log(`🤖 Executing action: ${action.type}`, action);
-      
-      // Pass kpiIndex for KPI positioning
+      console.log(`⚡ Executing local action: ${action.type}`);
       const contextWithIndex = action.type === ACTION_TYPES.CREATE_KPI 
         ? { ...context, kpiIndex: kpiIndex++ }
         : context;
@@ -35,7 +42,7 @@ export async function executeActions(actions, context) {
         message: getSuccessMessage(action, result)
       });
     } catch (error) {
-      console.error(`❌ Action execution failed:`, error);
+      console.error(`❌ Local action failed:`, error);
       results.push({ 
         success: false, 
         action, 
@@ -43,6 +50,53 @@ export async function executeActions(actions, context) {
         message: `Failed: ${error.message}`
       });
     }
+  }
+  
+  // Execute API actions with rate limiting
+  if (apiActions.length > 0) {
+    console.log(`🔄 Processing ${apiActions.length} API action(s) with rate limiting...`);
+    
+    for (let i = 0; i < apiActions.length; i++) {
+      const action = apiActions[i];
+      
+      try {
+        console.log(`🤖 Executing API action ${i + 1}/${apiActions.length}: ${action.type}`);
+        
+        // Show metrics before action
+        const metrics = rateLimiter.getMetrics();
+        console.log(`📊 Current state: ${metrics.rpm} RPM, ${metrics.daily} today, ${metrics.currentBackoff}ms backoff`);
+        
+        const contextWithIndex = action.type === ACTION_TYPES.CREATE_KPI 
+          ? { ...context, kpiIndex: kpiIndex++ }
+          : context;
+        
+        // Execute with rate limiting
+        const result = await rateLimiter.executeWithRateLimit(
+          action.type,
+          () => executeAction(action, contextWithIndex)
+        );
+        
+        results.push({ 
+          success: true, 
+          action, 
+          result,
+          message: getSuccessMessage(action, result)
+        });
+        
+      } catch (error) {
+        console.error(`❌ API action failed:`, error);
+        results.push({ 
+          success: false, 
+          action, 
+          error: error.message,
+          message: `Failed: ${error.message}`
+        });
+      }
+    }
+    
+    // Final metrics
+    const finalMetrics = rateLimiter.getMetrics();
+    console.log(`✅ Batch complete. Final state: ${finalMetrics.rpm} RPM, ${finalMetrics.daily} today`);
   }
   
   return results;
@@ -65,6 +119,22 @@ async function executeAction(action, context) {
       return await aiQueryAction(action, context);
     case ACTION_TYPES.SHOW_TABLE:
       return await showTableAction(action, context);
+    case ACTION_TYPES.CREATE_DASHBOARD:
+      return await createDashboardAction(action, context);
+    case ACTION_TYPES.ARRANGE_ELEMENTS:
+      return arrangeElementsAction(action, context);
+    case ACTION_TYPES.ORGANIZE_CANVAS:
+      return organizeCanvasAction(action, context);
+    case ACTION_TYPES.SEMANTIC_GROUPING:
+      return await semanticGroupingAction(action, context);
+    case ACTION_TYPES.CREATE_SHAPE:
+      return createShapeAction(action, context);
+    case ACTION_TYPES.CREATE_ARROW:
+      return createArrowAction(action, context);
+    case ACTION_TYPES.CREATE_TEXT:
+      return createTextAction(action, context);
+    case ACTION_TYPES.HIGHLIGHT_ELEMENT:
+      return highlightElementAction(action, context);
     default:
       throw new Error(`Unknown action type: ${action.type}`);
   }
@@ -95,18 +165,31 @@ async function createChartAction(action, context) {
   const chart = await response.json();
   const position = calculatePosition(action.position, action, context);
   
-  // Determine chart type
+  // Determine chart type with validation
   const defaultChartType = getEChartsDefaultType(
     action.dimensions.length,
     action.measures.length
   );
-  const chartTypeId = action.chartType || defaultChartType.id;
+  
+  // Validate that the requested chart type is compatible
+  let chartTypeId = action.chartType || defaultChartType.id;
+  
+  // Check if requested chart type is supported for this data shape
+  const requestedType = ECHARTS_TYPES[chartTypeId.toUpperCase()];
+  if (requestedType && !requestedType.isSupported(action.dimensions.length, action.measures.length)) {
+    console.warn(`⚠️ Requested chart type "${chartTypeId}" doesn't support ${action.dimensions.length}D + ${action.measures.length}M. Using default: ${defaultChartType.id}`);
+    chartTypeId = defaultChartType.id;
+  }
   
   // Use figureFromPayload to properly format chart data for ECharts
   const figure = figureFromPayload ? figureFromPayload(chart, chartTypeId) : {
     data: chart.data || [],
     layout: chart.layout || {}
   };
+  
+  // Use custom size if provided, otherwise use defaults
+  const chartWidth = action.width || AGENT_CONFIG.DEFAULT_CHART_WIDTH;
+  const chartHeight = action.height || AGENT_CONFIG.DEFAULT_CHART_HEIGHT;
   
   // Add chart to canvas using existing pattern
   const chartId = chart.chart_id;
@@ -127,13 +210,14 @@ async function createChartAction(action, context) {
       datasetId: datasetId,
       selected: false,
       filters: chart.filters || {},
-      width: AGENT_CONFIG.DEFAULT_CHART_WIDTH,
-      height: AGENT_CONFIG.DEFAULT_CHART_HEIGHT,
+      width: chartWidth,
+      height: chartHeight,
       // Provenance metadata
       createdBy: 'agent',
       createdByQuery: context.currentQuery || null,
       creationReasoning: action.reasoning || null,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      isNewlyCreated: true
     }
   }));
   
@@ -144,11 +228,16 @@ async function createChartAction(action, context) {
     trackChartCreatedByAI();
   }
   
+  console.log(`✅ Chart created:`, chartId, 'at position', position, 'type:', chartTypeId, 'size:', `${chartWidth}x${chartHeight}`);
+  
   return { 
     chartId, 
     position,
     dimensions: action.dimensions,
-    measures: action.measures
+    measures: action.measures,
+    chartType: chartTypeId,
+    width: chartWidth,
+    height: chartHeight
   };
 }
 
@@ -158,7 +247,7 @@ async function createChartAction(action, context) {
  * Falls back to /ai-calculate-metric endpoint only if no pre-computed value
  */
 async function createKPIAction(action, context) {
-  const { API, datasetId, apiKey, setNodes, getViewportCenter, kpiIndex = 0 } = context;
+  const { API, datasetId, apiKey, setNodes, getViewportCenter, kpiIndex = 0, useAbsolutePosition = false } = context;
   
   let value, formattedValue, explanation;
   
@@ -203,15 +292,26 @@ async function createKPIAction(action, context) {
     explanation = result.explanation || '';
   }
   
-  // Calculate position - offset each KPI horizontally
-  const center = getViewportCenter();
-  const position = {
-    x: center.x + (kpiIndex * AGENT_CONFIG.KPI_HORIZONTAL_SPACING),
-    y: center.y
-  };
+  // Calculate position
+  let position;
+  if (useAbsolutePosition) {
+    // Dashboard mode: Use the pre-calculated position from layout manager
+    position = getViewportCenter();
+  } else {
+    // Individual KPI mode: Calculate position with horizontal offset
+    const center = getViewportCenter();
+    position = {
+      x: center.x + (kpiIndex * AGENT_CONFIG.KPI_HORIZONTAL_SPACING),
+      y: center.y
+    };
+  }
   
   // Generate a nice title from the query
   const title = generateKPITitle(action.query, explanation);
+  
+  // Use custom size if provided, otherwise use defaults
+  const kpiWidth = action.width || AGENT_CONFIG.DEFAULT_KPI_WIDTH;
+  const kpiHeight = action.height || AGENT_CONFIG.DEFAULT_KPI_HEIGHT;
   
   const kpiId = `kpi-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   
@@ -232,24 +332,27 @@ async function createKPIAction(action, context) {
       isLoading: false,
       datasetId: datasetId,
       error: '',
-      width: AGENT_CONFIG.DEFAULT_KPI_WIDTH,
-      height: AGENT_CONFIG.DEFAULT_KPI_HEIGHT,
+      width: kpiWidth,
+      height: kpiHeight,
       // Provenance metadata
       createdBy: 'agent',
       createdByQuery: context.currentQuery || null,
       creationReasoning: action.reasoning || null,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      isNewlyCreated: true
     }
   }));
   
-  console.log(`✅ KPI created:`, kpiId, 'at position', position, 'value:', formattedValue);
+  console.log(`✅ KPI created:`, kpiId, 'at position', position, 'value:', formattedValue, 'size:', `${kpiWidth}x${kpiHeight}`);
   
   return {
     kpiId,
     position,
     query: action.query,
     value: value,
-    formattedValue: formattedValue
+    formattedValue: formattedValue,
+    width: kpiWidth,
+    height: kpiHeight
   };
 }
 
@@ -323,6 +426,10 @@ function createInsightAction(action, context) {
   const position = calculatePosition(action.position, action, context);
   const insightId = `insight-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   
+  // Use custom size if provided, otherwise use defaults
+  const insightWidth = action.width || 220;
+  const insightHeight = action.height || 220;
+  
   // Add text box to canvas
   setNodes(nodes => nodes.concat({
     id: insightId,
@@ -332,8 +439,8 @@ function createInsightAction(action, context) {
     selectable: false,
     data: {
       text: action.text,
-      width: 220,
-      height: 220,
+      width: insightWidth,
+      height: insightHeight,
       fontSize: 14,
       isNew: false,
       // Provenance metadata
@@ -344,12 +451,14 @@ function createInsightAction(action, context) {
     }
   }));
   
-  console.log(`✅ Insight created:`, insightId, 'at position', position);
+  console.log(`✅ Insight created:`, insightId, 'at position', position, 'size:', `${insightWidth}x${insightHeight}`);
   
   return { 
     insightId, 
     position,
-    text: action.text
+    text: action.text,
+    width: insightWidth,
+    height: insightHeight
   };
 }
 
@@ -409,10 +518,14 @@ function findNodeById(nodeId, nodes) {
  * Generate AI insights for an existing chart
  */
 async function generateChartInsightsAction(action, context) {
-  const { API, apiKey, setNodes, nodes, trackAIInsight } = context;
+  const { API, apiKey, nodes, trackAIInsight, editor } = context;
   
   if (!apiKey) {
     throw new Error('API key is required for generating insights');
+  }
+  
+  if (!editor) {
+    throw new Error('TLDraw editor is required to create insights');
   }
   
   // Find the chart
@@ -440,36 +553,61 @@ async function generateChartInsightsAction(action, context) {
   
   const result = await response.json();
   
-  // Create insight text box with AI-generated insights
-  const position = calculatePosition(action.position, action, { ...context, referenceChartId: action.chartId });
-  const insightId = `insight-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  // Get the chart shape from TLDraw
+  const chartShapeId = `shape:${action.chartId}`;
+  let chartShape = editor.getShape(chartShapeId);
   
-  // Format insights as bullet points
-  const insightText = result.insight || result.generic_insights || 'No insights available';
+  if (!chartShape) {
+    // Try without the 'shape:' prefix
+    chartShape = editor.getShape(action.chartId);
+  }
   
-  setNodes(nodes => nodes.concat({
-    id: insightId,
+  if (!chartShape) {
+    // Search through all shapes for matching chart
+    const allShapes = editor.getCurrentPageShapes();
+    chartShape = allShapes.find(shape => 
+      shape.id === action.chartId || 
+      shape.id.includes(action.chartId) ||
+      (shape.type === 'chart' && shape.props?.title === chartNode.data?.title)
+    );
+  }
+  
+  if (!chartShape) {
+    throw new Error('Chart shape not found in canvas.');
+  }
+  
+  // Calculate position for insights textbox (adjacent to chart, similar to Option 1)
+  const chartWidth = chartShape.props.w || 800;
+  const insightsOffset = 50; // Space between chart and insights
+  const textboxX = chartShape.x + chartWidth + insightsOffset;
+  const textboxY = chartShape.y;
+  
+  // Prepare insights text
+  const insightsContent = result.generic_insights || result.insight || 'No insights generated';
+  
+  // Get chart title for the insights header
+  const chartTitle = chartNode.data?.title || 'Chart';
+  
+  // Create TLDraw textbox for insights (using Option 1 approach)
+  const { createShapeId } = await import('@tldraw/tldraw');
+  const textboxId = createShapeId();
+  
+  editor.createShape({
+    id: textboxId,
     type: 'textbox',
-    position,
-    draggable: true,
-    selectable: false,
-    data: {
-      text: `💡 Chart Insights:\n\n${insightText}`,
-      width: 300,
-      height: 250,
+    x: textboxX,
+    y: textboxY,
+    props: {
+      w: 300,
+      h: 400,
+      text: insightsContent,
       fontSize: 14,
-      isNew: false,
-      aiGenerated: true,
-      sourceChartId: action.chartId,
-      // Provenance metadata
-      createdBy: 'agent',
-      createdByQuery: context.currentQuery || null,
-      relatedChartId: action.chartId,
-      createdAt: new Date().toISOString()
+      isAIInsights: true,
+      chartTitle: chartTitle // Store chart title for display
     }
-  }));
+  });
   
-  console.log(`✅ Generated insights for chart:`, action.chartId, 'at position', position);
+  console.log(`✅ Generated insights for chart: ${chartTitle} at position:`, { x: textboxX, y: textboxY });
   
   // Track AI insight generation for session analytics
   if (trackAIInsight) {
@@ -477,9 +615,10 @@ async function generateChartInsightsAction(action, context) {
   }
   
   return {
-    insightId,
-    text: insightText,
-    position
+    insightId: textboxId,
+    text: insightsContent,
+    chartTitle: chartTitle,
+    position: { x: textboxX, y: textboxY }
   };
 }
 
@@ -631,6 +770,10 @@ async function showTableAction(action, context) {
     y: chartNode.position.y
   };
   
+  // Use custom size if provided (for future dashboard table support)
+  const tableWidth = action.width || 300;
+  const tableHeight = action.height || 400;
+  
   const tableId = `table-${action.chartId}-${Date.now()}`;
   
   setNodes(nodes => nodes.concat({
@@ -644,14 +787,14 @@ async function showTableAction(action, context) {
       headers,
       rows,
       totalRows: rows.length,
-      width: 600,
-      height: 400
+      width: tableWidth,
+      height: tableHeight
     }
   }));
   
-  console.log(`✅ Created table for chart:`, action.chartId, 'at position', tablePosition);
+  console.log(`✅ Created table for chart:`, action.chartId, 'at position', tablePosition, 'size:', `${tableWidth}x${tableHeight}`);
   
-  // Track table creation for session analytics
+  // Track table creation for session analytics  
   if (trackTableCreated) {
     trackTableCreated();
   }
@@ -659,7 +802,540 @@ async function showTableAction(action, context) {
   return {
     tableId,
     rowCount: rows.length,
-    position: tablePosition
+    position: tablePosition,
+    width: tableWidth,
+    height: tableHeight
+  };
+}
+
+/**
+ * Create a complete dashboard with multiple coordinated elements
+ */
+async function createDashboardAction(action, context) {
+  const { setNodes, getViewportCenter, editor, nodes } = context;
+  
+  console.log('📊 Creating dashboard:', action.dashboardType || 'general');
+  
+  // Create layout manager
+  const layoutManager = new LayoutManager(editor, nodes);
+  
+  // Determine layout strategy
+  const strategy = action.layoutStrategy || 'grid';
+  const elements = action.elements || [];
+  
+  console.log(`📐 Using ${strategy} layout for ${elements.length} elements`);
+  
+  // Calculate positions using layout manager
+  const layoutPlan = layoutManager.arrangeDashboard(elements, strategy);
+  
+  // Get viewport center as anchor point
+  const anchor = getViewportCenter();
+  
+  // Add dashboard title and subtitle
+  const dashboardTitle = action.dashboardType 
+    ? `${action.dashboardType.charAt(0).toUpperCase() + action.dashboardType.slice(1)} Dashboard`
+    : 'Dashboard Overview';
+  const dashboardSubtitle = `Generated on ${new Date().toLocaleDateString()} • ${elements.length} visualizations`;
+  
+  // Create title text box
+  const titleId = `dashboard-title-${Date.now()}`;
+  setNodes(nodes => nodes.concat({
+    id: titleId,
+    type: 'textbox',
+    position: { x: anchor.x, y: anchor.y - 110 }, // Reduced gap: -110 instead of -150
+    draggable: true,
+    selectable: false,
+    data: {
+      text: `# ${dashboardTitle}\n\n${dashboardSubtitle}`,
+      width: 1200,
+      height: 90, // Slightly smaller height
+      fontSize: 16,
+      isNew: false,
+      isDashboardTitle: true,
+      createdBy: 'agent',
+      createdAt: new Date().toISOString()
+    }
+  }));
+  
+  // Create all elements with coordinated positions
+  const createdElements = [];
+  
+  for (const element of layoutPlan) {
+    const absolutePosition = {
+      x: anchor.x + element.position.x,
+      y: anchor.y + element.position.y
+    };
+    
+    if (element.type === 'chart') {
+      // Create chart using existing logic
+      const chartAction = {
+        type: 'create_chart',
+        dimensions: element.dimensions,
+        measures: element.measures,
+        chartType: element.chartType,
+        position: 'center',
+        reasoning: element.reasoning,
+        width: element.size?.w,
+        height: element.size?.h
+      };
+      
+      try {
+        const result = await createChartAction(chartAction, {
+          ...context,
+          getViewportCenter: () => absolutePosition
+        });
+        createdElements.push(result);
+      } catch (error) {
+        console.error(`❌ Failed to create chart in dashboard:`, error);
+      }
+    } else if (element.type === 'kpi') {
+      // Create KPI with absolute positioning
+      const kpiAction = {
+        type: 'create_kpi',
+        query: element.query,
+        value: element.value,
+        formatted_value: element.formatted_value,
+        position: 'center',
+        reasoning: element.reasoning,
+        width: element.size?.w,
+        height: element.size?.h
+      };
+      
+      try {
+        const result = await createKPIAction(kpiAction, {
+          ...context,
+          getViewportCenter: () => absolutePosition,
+          useAbsolutePosition: true  // Flag to use exact position from layout
+        });
+        createdElements.push(result);
+      } catch (error) {
+        console.error(`❌ Failed to create KPI in dashboard:`, error);
+      }
+    } else if (element.type === 'insight') {
+      // Create insight
+      const insightAction = {
+        type: 'create_insight',
+        text: element.text || '',
+        position: 'center',
+        reasoning: element.reasoning,
+        width: element.size?.w,
+        height: element.size?.h
+      };
+      
+      try {
+        const result = createInsightAction(insightAction, {
+          ...context,
+          getViewportCenter: () => absolutePosition
+        });
+        createdElements.push(result);
+      } catch (error) {
+        console.error(`❌ Failed to create insight in dashboard:`, error);
+      }
+    }
+    
+    // Add small delay for visual effect (progressive rendering)
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  
+  console.log(`✅ Dashboard created: ${createdElements.length} elements + title`);
+  
+  // NEW: Auto-generate insights for charts
+  const shouldGenerateInsights = action.includeInsights !== false && AGENT_CONFIG.AUTO_GENERATE_INSIGHTS;
+  const chartElements = createdElements.filter(el => el.type === 'chart' && el.chartId);
+  let chartsToAnalyze = []; // Define outside if block for return statement
+  
+  if (shouldGenerateInsights && chartElements.length > 0) {
+    // Respect max insights limit
+    const maxInsights = Math.min(
+      chartElements.length,
+      AGENT_CONFIG.MAX_INSIGHTS_PER_DASHBOARD
+    );
+    
+    console.log(`💡 Auto-generating insights for ${maxInsights}/${chartElements.length} chart(s)...`);
+    
+    // Find created chart nodes
+    chartsToAnalyze = chartElements.slice(0, maxInsights);
+    
+    // Generate insights with parallel batch processing for faster execution
+    const batchSize = AGENT_CONFIG.INSIGHT_BATCH_SIZE || 2;
+    console.log(`📦 Processing insights in batches of ${batchSize} for parallel execution`);
+    
+    for (let i = 0; i < chartsToAnalyze.length; i += batchSize) {
+      const batch = chartsToAnalyze.slice(i, i + batchSize);
+      const batchNumber = Math.floor(i / batchSize) + 1;
+      const totalBatches = Math.ceil(chartsToAnalyze.length / batchSize);
+      
+      console.log(`   📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} insights)`);
+      
+      try {
+        // Process batch in parallel with rate limiting
+        await Promise.all(batch.map((chart, idx) => {
+          const chartIndex = i + idx + 1;
+          console.log(`   💡 Generating insight ${chartIndex}/${maxInsights} for: ${chart.title || chart.chartId}`);
+          
+          const insightAction = {
+            type: ACTION_TYPES.GENERATE_CHART_INSIGHTS,
+            chartId: chart.chartId,
+            position: 'right_of_chart'
+          };
+          
+          // Execute with rate limiting (handles delay automatically)
+          return rateLimiter.executeWithRateLimit(
+            ACTION_TYPES.GENERATE_CHART_INSIGHTS,
+            () => generateChartInsightsAction(insightAction, context)
+          ).then(() => {
+            console.log(`   ✅ Insight generated for chart ${chartIndex}`);
+          }).catch(error => {
+            console.error(`   ❌ Failed to generate insight for chart ${chartIndex}:`, error);
+            // Continue with other insights in batch
+          });
+        }));
+        
+        console.log(`   ✅ Batch ${batchNumber}/${totalBatches} complete`);
+        
+      } catch (error) {
+        console.error(`   ❌ Batch ${batchNumber} failed:`, error);
+        // Continue with next batch
+      }
+    }
+    
+    console.log('✅ Dashboard insights generation complete!');
+  }
+  
+  return {
+    dashboardId: titleId,
+    elementsCreated: createdElements.length + 1, // +1 for title
+    layout: strategy,
+    elements: createdElements,
+    insights: chartsToAnalyze.length,
+    title: dashboardTitle,
+    message: `Created ${action.dashboardType || 'general'} dashboard with ${createdElements.length} elements${chartsToAnalyze.length ? ` and ${chartsToAnalyze.length} insights` : ''}`
+  };
+}
+
+/**
+ * Rearrange existing elements using intelligent layout
+ */
+function arrangeElementsAction(action, context) {
+  const { nodes, setNodes, editor } = context;
+  
+  if (!editor) {
+    throw new Error('Editor not available for arrangement');
+  }
+  
+  const layoutManager = new LayoutManager(editor, nodes);
+  
+  // Get elements to arrange
+  const elementIds = action.elementIds || nodes.map(n => n.id);
+  const elementsToArrange = nodes.filter(n => elementIds.includes(n.id));
+  
+  console.log(`🔄 Arranging ${elementsToArrange.length} elements with ${action.strategy} strategy`);
+  
+  // Determine strategy
+  const strategy = action.strategy || 'optimize';
+  
+  let layoutPlan;
+  if (strategy === 'optimize') {
+    // Detect best strategy based on element types and count
+    const chartCount = elementsToArrange.filter(n => n.type === 'chart').length;
+    const kpiCount = elementsToArrange.filter(n => n.type === 'kpi').length;
+    
+    if (kpiCount > 2 && chartCount > 0) {
+      console.log('📊 Detected KPI dashboard pattern');
+      layoutPlan = arrangeKPIDashboard(elementsToArrange);
+    } else if (chartCount === 2) {
+      console.log('📊 Using comparison layout');
+      layoutPlan = layoutManager.arrangeComparison(elementsToArrange);
+    } else {
+      console.log('📊 Using grid layout');
+      layoutPlan = layoutManager.arrangeGrid(elementsToArrange);
+    }
+  } else if (strategy === 'kpi-dashboard') {
+    layoutPlan = arrangeKPIDashboard(elementsToArrange);
+  } else {
+    layoutPlan = layoutManager.arrangeDashboard(elementsToArrange, strategy);
+  }
+  
+  // Get current viewport center as anchor
+  const viewport = editor.getViewportPageBounds();
+  const anchor = {
+    x: viewport.x + 50,
+    y: viewport.y + 50
+  };
+  
+  // Apply new positions
+  const updatedNodes = nodes.map(node => {
+    const plannedElement = layoutPlan.find(p => p.id === node.id);
+    if (plannedElement) {
+      return {
+        ...node,
+        position: {
+          x: anchor.x + plannedElement.position.x,
+          y: anchor.y + plannedElement.position.y
+        }
+      };
+    }
+    return node;
+  });
+  
+  setNodes(updatedNodes);
+  
+  console.log(`✅ Arranged ${layoutPlan.length} elements`);
+  
+  return {
+    arrangedCount: layoutPlan.length,
+    strategy: strategy === 'optimize' ? 'auto-detected' : strategy
+  };
+}
+
+/**
+ * Organize canvas using rule-based layout (0 API calls)
+ */
+function organizeCanvasAction(action, context) {
+  const { nodes, setNodes, editor } = context;
+  
+  console.log('🔄 Organizing canvas with rule-based layout (0 API calls)');
+  
+  const result = organizeCanvas(nodes, editor);
+  
+  // Batch update all positions
+  setNodes(result.updatedNodes);
+  
+  // Pan to show organized canvas
+  if (editor && result.updatedNodes.length > 0) {
+    const bounds = calculateBounds(result.updatedNodes);
+    editor.zoomToBounds(bounds, { animation: { duration: 500 } });
+  }
+  
+  console.log(`✅ Organized ${result.updatedNodes.length} elements using ${result.strategy} layout`);
+  
+  return {
+    organized: true,
+    strategy: result.strategy,
+    count: result.updatedNodes.length,
+    explanation: result.explanation
+  };
+}
+
+/**
+ * Semantic grouping action - calls backend for classification if needed
+ */
+async function semanticGroupingAction(action, context) {
+  const { nodes, setNodes, editor, API, apiKey } = context;
+  
+  console.log(`🔍 Semantic grouping: "${action.grouping_intent}"`);
+  
+  // For now, we'll use heuristics (can add API classification later)
+  const { organizeByHeuristics } = await import('./canvasOrganizer');
+  
+  const result = organizeByHeuristics(
+    nodes,
+    action.grouping_intent,
+    editor
+  );
+  
+  // Update node positions
+  setNodes(result.updatedNodes);
+  
+  // Zoom to show grouped content
+  if (editor && result.updatedNodes.length > 0) {
+    const bounds = calculateBounds(result.updatedNodes);
+    editor.zoomToBounds(bounds, { animation: { duration: 500 } });
+  }
+  
+  console.log(`✅ Created ${result.groups.length} semantic groups`);
+  
+  return {
+    grouped: true,
+    groupCount: result.groups.length,
+    groups: result.groups,
+    explanation: result.explanation
+  };
+}
+
+/**
+ * Drawing actions - use tldraw primitives
+ */
+function createShapeAction(action, context) {
+  const { editor } = context;
+  
+  if (!editor) {
+    throw new Error('Editor not available');
+  }
+  
+  const shapeType = action.shapeType || 'rectangle';
+  const color = action.color || 'red';
+  
+  // Get viewport center for positioning
+  const viewport = editor.getViewportPageBounds();
+  const centerX = viewport.x + viewport.width / 2;
+  const centerY = viewport.y + viewport.height / 2;
+  
+  // Convert to tldraw action format (expected by executeDrawingActions)
+  // NOTE: createTldrawShape expects 'rectangle', 'ellipse', etc. NOT 'geo'
+  const drawingAction = {
+    type: 'create_shape',
+    shape: shapeType, // Use 'rectangle', 'ellipse', 'line' directly
+    props: {
+      x: centerX - 200,
+      y: centerY - 100,
+      w: 400,
+      h: 200,
+      color: color,
+      fill: action.style === 'solid' ? 'solid' : 'none',
+      dash: action.style === 'dashed' ? 'dashed' : 'solid'
+    }
+  };
+  
+  // Execute using tldraw agent
+  const shapeIds = executeDrawingActions([drawingAction], editor);
+  
+  console.log(`✅ Created ${shapeType} shape, IDs: ${shapeIds.join(', ')}`);
+  
+  return {
+    created: true,
+    shapeType: shapeType,
+    shapeIds: shapeIds,
+    count: shapeIds.length
+  };
+}
+
+function createArrowAction(action, context) {
+  const { editor } = context;
+  
+  if (!editor) {
+    throw new Error('Editor not available');
+  }
+  
+  // Get viewport center
+  const viewport = editor.getViewportPageBounds();
+  const centerX = viewport.x + viewport.width / 2;
+  const centerY = viewport.y + viewport.height / 2;
+  
+  // Convert to tldraw action format
+  const drawingAction = {
+    type: 'create_shape',
+    shape: 'arrow',
+    props: {
+      x: centerX - 200,
+      y: centerY,
+      w: 400,
+      h: 0,
+      start: { x: 0, y: 0 },
+      end: { x: 400, y: 0 },
+      color: 'black',
+      arrowheadStart: 'none',
+      arrowheadEnd: 'arrow',
+      text: action.label || ''
+    }
+  };
+  
+  const shapeIds = executeDrawingActions([drawingAction], editor);
+  
+  console.log(`✅ Created arrow, IDs: ${shapeIds.join(', ')}`);
+  
+  return {
+    created: true,
+    shapeIds: shapeIds,
+    count: shapeIds.length
+  };
+}
+
+function createTextAction(action, context) {
+  const { editor } = context;
+  
+  if (!editor) {
+    throw new Error('Editor not available');
+  }
+  
+  const fontSize = action.fontSize === 'large' ? 48 : 
+                   action.fontSize === 'small' ? 16 : 24;
+  
+  // Get viewport center
+  const viewport = editor.getViewportPageBounds();
+  const centerX = viewport.x + viewport.width / 2;
+  const centerY = viewport.y + viewport.height / 2;
+  
+  // Position based on requested position
+  let y = centerY;
+  if (action.position === 'top') {
+    y = viewport.y + 100;
+  } else if (action.position === 'bottom') {
+    y = viewport.y + viewport.height - 100;
+  }
+  
+  // Convert to tldraw action format
+  const drawingAction = {
+    type: 'create_shape',
+    shape: 'text',
+    props: {
+      x: centerX - 200,
+      y: y,
+      w: 400,
+      h: 100,
+      text: action.text,
+      size: fontSize === 48 ? 'xl' : fontSize === 16 ? 's' : 'm',
+      color: 'black',
+      font: 'sans',
+      align: 'middle'
+    }
+  };
+  
+  const shapeIds = executeDrawingActions([drawingAction], editor);
+  
+  console.log(`✅ Created text: "${action.text}", IDs: ${shapeIds.join(', ')}`);
+  
+  return {
+    created: true,
+    text: action.text,
+    shapeIds: shapeIds,
+    count: shapeIds.length
+  };
+}
+
+function highlightElementAction(action, context) {
+  const { editor, nodes } = context;
+  
+  if (!editor) {
+    throw new Error('Editor not available');
+  }
+  
+  // Find target element
+  const targetNode = nodes.find(n => n.id === action.targetId);
+  
+  if (!targetNode) {
+    throw new Error(`Element ${action.targetId} not found`);
+  }
+  
+  const highlightType = action.highlightType || 'box';
+  const color = action.color || 'yellow';
+  
+  // Create highlight shape around target
+  const drawingAction = {
+    type: 'create_shape',
+    shape: 'rectangle', // Use 'rectangle' not 'geo'
+    props: {
+      x: targetNode.position.x - 20,
+      y: targetNode.position.y - 20,
+      w: (targetNode.data?.width || 800) + 40,
+      h: (targetNode.data?.height || 400) + 40,
+      color: color,
+      fill: highlightType === 'background' ? 'semi' : 'none',
+      dash: highlightType === 'box' ? 'dashed' : 'solid',
+      opacity: 0.5
+    }
+  };
+  
+  const shapeIds = executeDrawingActions([drawingAction], editor);
+  
+  console.log(`✅ Highlighted element: ${action.targetId}, IDs: ${shapeIds.join(', ')}`);
+  
+  return {
+    highlighted: true,
+    targetId: action.targetId,
+    highlightType: highlightType,
+    shapeIds: shapeIds,
+    count: shapeIds.length
   };
 }
 
@@ -680,6 +1356,22 @@ function getSuccessMessage(action, result) {
       return `✅ Answered: "${action.query.substring(0, 50)}${action.query.length > 50 ? '...' : ''}"`;
     case ACTION_TYPES.SHOW_TABLE:
       return `✅ Created data table (${result.rowCount} rows)`;
+    case ACTION_TYPES.CREATE_DASHBOARD:
+      return `✅ Created "${result.title || 'dashboard'}" with ${result.elementsCreated} elements`;
+    case ACTION_TYPES.ARRANGE_ELEMENTS:
+      return `✅ Arranged ${result.arrangedCount} elements using ${result.strategy} layout`;
+    case ACTION_TYPES.ORGANIZE_CANVAS:
+      return `✅ Organized ${result.count} elements using ${result.strategy} layout`;
+    case ACTION_TYPES.SEMANTIC_GROUPING:
+      return `✅ Created ${result.groupCount} semantic groups`;
+    case ACTION_TYPES.CREATE_SHAPE:
+      return result.count > 0 ? `✅ Created ${result.shapeType}` : `⚠️ Failed to create ${result.shapeType}`;
+    case ACTION_TYPES.CREATE_ARROW:
+      return result.count > 0 ? `✅ Created arrow` : `⚠️ Failed to create arrow`;
+    case ACTION_TYPES.CREATE_TEXT:
+      return result.count > 0 ? `✅ Added text: "${result.text}"` : `⚠️ Failed to create text`;
+    case ACTION_TYPES.HIGHLIGHT_ELEMENT:
+      return result.count > 0 ? `✅ Highlighted element` : `⚠️ Failed to highlight element`;
     default:
       return '✅ Action completed';
   }

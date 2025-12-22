@@ -28,7 +28,9 @@ export class ChartShape extends BaseBoxShapeUtil {
     selected: T.boolean,
     // AI-related
     aiInsights: T.any,
-    aiQuery: T.string
+    aiQuery: T.string,
+    // Highlight animation
+    isNewlyCreated: T.boolean
   };
 
   getDefaultProps() {
@@ -46,7 +48,8 @@ export class ChartShape extends BaseBoxShapeUtil {
       datasetId: '',
       selected: false,
       aiInsights: null,
-      aiQuery: ''
+      aiQuery: '',
+      isNewlyCreated: false
     };
   }
 
@@ -58,8 +61,9 @@ export class ChartShape extends BaseBoxShapeUtil {
     });
   }
 
+  // Enable arrow bindings - allows arrows to connect and stick to chart shapes
   canBind() {
-    return false;
+    return true;
   }
 
   isAspectRatioLocked() {
@@ -109,12 +113,17 @@ export class ChartShape extends BaseBoxShapeUtil {
         chartData,
         chartLayout,
         title,
-        filters
+        filters,
+        datasetId,
+        isNewlyCreated
       } = shape.props;
 
       // Check if this chart is filtered
       const isFiltered = filters && Object.keys(filters).length > 0;
       const isSourceChart = globalFilter.sourceChartId === shape.id;
+      
+      // Add animation class if newly created
+      const highlightClass = isNewlyCreated ? 'shape-highlight-new' : '';
       
       return (
         <HTMLContainer
@@ -127,6 +136,7 @@ export class ChartShape extends BaseBoxShapeUtil {
           }}
         >
           <div
+            className={highlightClass}
             style={{
               width: '100%',
               height: '100%',
@@ -141,7 +151,7 @@ export class ChartShape extends BaseBoxShapeUtil {
               overflow: 'hidden'
             }}
           >
-            {/* Chart Header - title + filter badge */}
+            {/* Chart Header - title + badges */}
             <div style={{
               padding: '12px 16px',
               borderBottom: '1px solid #e5e7eb',
@@ -152,18 +162,38 @@ export class ChartShape extends BaseBoxShapeUtil {
               flexShrink: 0,
               cursor: 'move'
             }}>
-              <h3 style={{
-                fontSize: '14px',
-                fontWeight: '600',
-                color: '#1f2937',
-                margin: 0,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                flex: 1
-              }}>
-                {title || 'Untitled Chart'}
-              </h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
+                <h3 style={{
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  color: '#1f2937',
+                  margin: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}>
+                  {title || 'Untitled Chart'}
+                </h3>
+                
+                {/* Dataset Badge - Shows which dataset this chart is from */}
+                {datasetId && (
+                  <span 
+                    style={{
+                      fontSize: '10px',
+                      color: '#6b7280',
+                      backgroundColor: '#f3f4f6',
+                      padding: '1px 6px',
+                      borderRadius: '3px',
+                      fontFamily: 'monospace',
+                      whiteSpace: 'nowrap',
+                      flexShrink: 0
+                    }}
+                    title={`Dataset: ${datasetId}`}
+                  >
+                    {datasetId.substring(0, 6)}
+                  </span>
+                )}
+              </div>
               
               {/* Filter Badge - Shows multiple values if applicable */}
               {isFiltered && globalFilter.activeDimension && globalFilter.activeValues?.length > 0 && (
@@ -246,10 +276,6 @@ export class ChartShape extends BaseBoxShapeUtil {
     return true;
   }
 
-  // Keep aspect ratio optional
-  isAspectRatioLocked() {
-    return false;
-  }
 
   // Allow rotation
   canRotate() {

@@ -28,7 +28,8 @@ export class KPIShape extends BaseBoxShapeUtil {
     datasetId: T.string,       // required for API call
     error: T.string,           // error message if calculation failed
     apiKey: T.string,          // Gemini API key
-    model: T.string            // Gemini model
+    model: T.string,           // Gemini model
+    isNewlyCreated: T.boolean  // Highlight animation
   };
 
   getDefaultProps() {
@@ -45,7 +46,8 @@ export class KPIShape extends BaseBoxShapeUtil {
       datasetId: '',
       error: '',
       apiKey: '',
-      model: 'gemini-2.5-flash'
+      model: 'gemini-2.5-flash',
+      isNewlyCreated: false
     };
   }
 
@@ -84,8 +86,12 @@ export class KPIShape extends BaseBoxShapeUtil {
         datasetId,
         error,
         apiKey,
-        model
+        model,
+        isNewlyCreated
       } = shape.props;
+      
+      // Add animation class if newly created
+      const highlightClass = isNewlyCreated ? 'shape-highlight-new' : '';
 
       // Sync localQuery with shape props when entering edit mode
       useEffect(() => {
@@ -223,6 +229,7 @@ export class KPIShape extends BaseBoxShapeUtil {
             }}
           >
             <div
+              className={highlightClass}
               style={{
                 width: '100%',
                 height: '100%',
@@ -364,6 +371,7 @@ export class KPIShape extends BaseBoxShapeUtil {
           }}
         >
           <div
+            className={highlightClass}
             style={{
               width: '100%',
               height: '100%',

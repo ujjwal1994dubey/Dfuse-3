@@ -980,6 +980,47 @@ Use the actual data provided above."""
             # Build canvas state summary
             canvas_summary = self._summarize_canvas_state(canvas_state)
             
+            # Add spatial analysis context if available
+            spatial_context = ""
+            if canvas_state.get('spatial_analysis'):
+                analysis = canvas_state['spatial_analysis']
+                spatial_context = f"""
+📍 SPATIAL CANVAS ANALYSIS:
+- Density: {analysis.get('density', 0):.1%} occupied
+- Spatial clusters: {analysis.get('clusters', 0)} detected
+- Available space: {analysis.get('available_space', 'unknown')}
+- Optimal placement: {analysis.get('optimal_region', 'center')}
+- Chart relationships: {analysis.get('relationships', 0)} detected
+- Suggested layout: {analysis.get('suggested_layout', 'grid')}
+- Groupings: {analysis.get('groupings', 0)} logical groups
+"""
+                print(f"✨ Using spatial analysis context")
+            
+            # Add annotation context if available
+            annotation_context = ""
+            annotations = canvas_state.get('annotations', [])
+            if annotations and len(annotations) > 0:
+                annotation_context = "\n✏️ USER-DRAWN ANNOTATIONS:\n"
+                annotation_context += "The canvas has user-drawn shapes indicating desired placement:\n"
+                for ann in annotations:
+                    bounds = ann.get('bounds', {})
+                    shape_type = ann.get('shapeType', 'shape')
+                    text = ann.get('text', '')
+                    annotation_context += f"- {shape_type} at ({bounds.get('x', 0):.0f}, {bounds.get('y', 0):.0f})"
+                    annotation_context += f" size {bounds.get('width', 0):.0f}x{bounds.get('height', 0):.0f}"
+                    if text:
+                        annotation_context += f' labeled "{text}"'
+                    annotation_context += "\n"
+                annotation_context += """
+PLACEMENT RULES FOR ANNOTATIONS:
+- If user says "create chart IN [section/box]": Place chart centered within that rectangle
+- If user says "create chart NEXT TO [element]": Offset by standard spacing (850px horizontal, 450px vertical)
+- If multiple empty rectangles exist: Treat as dashboard sections, fill sequentially
+- Rectangle centers can be used as target positions for new visualizations
+"""
+                print(f"✨ Using annotation context: {len(annotations)} annotations")
+
+            
             # Get chart count for prompt
             charts = canvas_state.get('charts', [])
             chart_count = len(charts)
@@ -988,7 +1029,43 @@ Use the actual data provided above."""
             if mode == "ask":
                 mode_instructions = """🔵 ASK MODE: Generate ONLY ai_query actions. No charts/tables/insights/KPIs. Answer questions directly via ai_query."""
             else:
-                mode_instructions = """🟣 CANVAS MODE: Generate visual artifacts (create_chart, create_kpi, create_insight, show_table, generate_chart_insights). NO ai_query - create visualizations instead."""
+                mode_instructions = """🟣 CANVAS MODE: Generate data visualizations ONLY.
+
+DATA VISUALIZATION ACTIONS:
+- create_chart: Generate a new data visualization
+- create_kpi: Create a metric card with pre-computed value
+- create_insight: Add textual insight about data
+- show_table: Display data table for existing chart
+- generate_chart_insights: AI-powered analysis of existing chart
+- create_dashboard: Multi-element coordinated layout (3+ items)
+- arrange_elements: Rearrange specific elements with layout strategy (grid, hero, flow, comparison, kpi-dashboard)
+
+DECISION LOGIC:
+- "show X by Y", "create chart" → create_chart
+- "organize in [layout]", "arrange [strategy]" → arrange_elements (specify strategy: grid/hero/flow/comparison)
+- "compare A vs B" → create_dashboard with comparison layout
+- "create dashboard" → create_dashboard
+
+DO NOT generate drawing actions (create_shape, create_arrow, create_text, highlight_element, semantic_grouping).
+For drawing/annotation requests, tell user to switch to Draw mode.
+
+SPATIAL LAYOUT INTELLIGENCE:
+When creating 3+ visualizations:
+1. Use create_dashboard action with elements array
+2. Choose appropriate layout strategy:
+   - 'grid': Equal-sized charts in rows/columns (default for 3-6 charts)
+   - 'hero': One large chart + smaller supporting (2-4 charts, one primary)
+   - 'flow': Left-to-right narrative sequence (time-series or story)
+   - 'comparison': Side-by-side for comparing metrics (2-4 charts)
+   - 'kpi-dashboard': KPIs top row + charts below (3+ KPIs + charts)
+3. All elements get coordinated positions automatically
+
+LAYOUT RULES:
+- Related charts should be grouped together
+- KPIs typically go in top row
+- Main insights near their source charts
+- Maintain visual hierarchy (important content top-left)
+- When user specifies layout like "horizontal flow" or "side by side", use arrange_elements with matching strategy"""
             
             # Build agent prompt - BALANCED for reliability + token efficiency
             dimensions_list = [col for col in dataset.columns if dataset[col].dtype == 'object']
@@ -1021,10 +1098,12 @@ Use the actual data provided above."""
             m1_sum = measure_stats.get(m1, {}).get('sum', 0)
             m2_avg = measure_stats.get(m2, {}).get('mean', 0)
             
-            prompt = f"""You are an AI data analysis agent. Generate 1-3 actions based on user query.
+            prompt = f"""You are an AI data analysis agent with spatial reasoning capabilities. Generate 1-5 actions based on user query.
 
 {mode_instructions}
 {enhanced_context}
+{spatial_context}
+{annotation_context}
 CANVAS STATE ({chart_count} charts):
 {canvas_summary}
 
@@ -1036,11 +1115,18 @@ Measures (numeric - use for values): {measures_list}
 USER QUERY: "{query}"
 
 ACTION SELECTION (choose based on query intent):
-- "show", "create", "visualize", "chart", "plot" → create_chart
-- "calculate", "total", "average", "sum", "count", "kpi", "metric" → create_kpi
-- "which", "what", "how many", "find", "tell me", "compare", "top", "best" → ai_query  
-- "explain", "why", "insights" (for existing chart) → generate_chart_insights
-- "show data", "table" (for existing chart) → show_table
+- Single viz: "show X by Y" → create_chart
+- Multiple viz: "show overview", "create dashboard", "analyze X" → create_dashboard
+- Calculations: "calculate", "total", "average", "kpi" → create_kpi
+- Questions: "which", "what", "how many", "find" → ai_query (ASK MODE ONLY)
+- Insights: "explain", "why", "insights" (existing chart) → generate_chart_insights
+- Data: "show data", "table" (existing chart) → show_table
+- Arrange with strategy: "organize in [layout]", "arrange [strategy]" → arrange_elements
+- Group: "group by X", "organize by Y" → semantic_grouping
+- Drawing: "create arrow", "draw line", "create rectangle" → create_shape or create_arrow
+- Highlighting: "highlight X", "put a box around", "emphasize" → highlight_element
+- Text: "add title", "create label", "add text" → create_text
+- Delete: NOT SUPPORTED → suggest manual deletion + reorganize
 
 CHART TYPE SELECTION (based on dimensions + measures count):
 - 1 dimension + 1 measure → chartType: "bar", "pie", or "line"
@@ -1051,10 +1137,17 @@ CHART TYPE SELECTION (based on dimensions + measures count):
 ACTION SCHEMAS:
 1. create_chart: {{"type": "create_chart", "dimensions": ["dim"], "measures": ["measure"], "chartType": "bar", "position": "center", "reasoning": "why"}}
 2. create_kpi: {{"type": "create_kpi", "query": "description", "value": 12345.67, "formatted_value": "12,345.67", "explanation": "brief explanation", "position": "center", "reasoning": "why"}}
-3. ai_query: {{"type": "ai_query", "query": "analytical question", "position": "center", "reasoning": "why"}}
-4. create_insight: {{"type": "create_insight", "text": "insight text", "position": "center", "reasoning": "why"}}
-5. generate_chart_insights: {{"type": "generate_chart_insights", "chartId": "existing-id", "position": "center", "reasoning": "why"}}
-6. show_table: {{"type": "show_table", "chartId": "existing-id", "reasoning": "why"}}
+3. create_dashboard: {{"type": "create_dashboard", "dashboardType": "sales|executive|operations|analysis|general", "layoutStrategy": "grid|hero|flow|comparison|kpi-dashboard", "elements": [{{"type": "chart|kpi|insight", "dimensions": ["dim"], "measures": ["meas"], "chartType": "bar", "reasoning": "why"}}], "reasoning": "overall reasoning"}}
+4. ai_query: {{"type": "ai_query", "query": "analytical question", "position": "center", "reasoning": "why"}}
+5. create_insight: {{"type": "create_insight", "text": "insight text", "position": "center", "reasoning": "why"}}
+6. generate_chart_insights: {{"type": "generate_chart_insights", "chartId": "existing-id", "position": "center", "reasoning": "why"}}
+7. show_table: {{"type": "show_table", "chartId": "existing-id", "reasoning": "why"}}
+8. arrange_elements: {{"type": "arrange_elements", "elementIds": ["id1", "id2"], "strategy": "grid|hero|flow|comparison|optimize", "reasoning": "why"}}
+9. semantic_grouping: {{"type": "semantic_grouping", "grouping_intent": "funnel stage|region|metric type", "create_zones": true, "reasoning": "why"}}
+10. create_shape: {{"type": "create_shape", "shapeType": "rectangle|circle|line", "target": "chart-id or position", "color": "red|blue|green|yellow", "style": "solid|dashed", "reasoning": "why"}}
+11. create_arrow: {{"type": "create_arrow", "from": "element-id", "to": "element-id or position", "label": "optional text", "reasoning": "why"}}
+12. create_text: {{"type": "create_text", "text": "content", "position": "center|top|bottom", "fontSize": "large|medium|small", "reasoning": "why"}}
+13. highlight_element: {{"type": "highlight_element", "targetId": "chart-id", "highlightType": "box|background|glow", "color": "red|yellow|blue", "reasoning": "why"}}
 
 KPI CALCULATION RULES:
 - For create_kpi, you MUST compute the value from MEASURE STATISTICS above
@@ -1083,6 +1176,9 @@ EXAMPLE 5 - "which items have highest sales" (analytical question → ai_query):
 EXAMPLE 6 - "calculate total profit and average revenue" (KPI with pre-computed values):
 {{"actions": [{{"type": "create_kpi", "query": "Total {m1}", "value": {m1_sum}, "formatted_value": "{m1_sum:,.2f}", "explanation": "Sum of all {m1} values", "position": "center", "reasoning": "Sum aggregation"}}, {{"type": "create_kpi", "query": "Average {m2}", "value": {m2_avg}, "formatted_value": "{m2_avg:,.2f}", "explanation": "Mean of {m2} values", "position": "center", "reasoning": "Average aggregation"}}], "reasoning": "Two KPI metrics with pre-computed values"}}
 
+EXAMPLE 7 - "create a sales dashboard" (multi-element dashboard):
+{{"actions": [{{"type": "create_dashboard", "dashboardType": "sales", "layoutStrategy": "kpi-dashboard", "elements": [{{"type": "kpi", "query": "Total {m1}", "value": {m1_sum}, "formatted_value": "{m1_sum:,.2f}", "reasoning": "Key metric"}}, {{"type": "kpi", "query": "Average {m2}", "value": {m2_avg}, "formatted_value": "{m2_avg:,.2f}", "reasoning": "Key metric"}}, {{"type": "chart", "dimensions": ["{dim1}"], "measures": ["{m1}"], "chartType": "bar", "reasoning": "Main breakdown"}}, {{"type": "chart", "dimensions": ["{dim1}"], "measures": ["{m2}"], "chartType": "line", "reasoning": "Trend analysis"}}], "reasoning": "Complete sales dashboard with KPIs and charts"}}], "reasoning": "Coordinated dashboard creation"}}
+
 CRITICAL RULES:
 1. create_chart MUST have at least 1 dimension AND at least 1 measure from the lists above
 2. Use EXACT column names from Dimensions/Measures lists - do not invent column names
@@ -1094,8 +1190,65 @@ CRITICAL RULES:
             print("📝 Sending prompt to Gemini...")
             response, token_usage = self.run_gemini_with_usage(prompt)
             
+            # Log raw Gemini response
+            print("\n" + "="*80)
+            print("🤖 GEMINI RAW RESPONSE:")
+            print("="*80)
+            print(response[:500] + "..." if len(response) > 500 else response)
+            print("="*80 + "\n")
+            
             print("🔍 Parsing response...")
             actions_data = self._parse_agent_response(response)
+            
+            # Log parsed JSON for dashboard queries
+            if actions_data and 'actions' in actions_data:
+                actions = actions_data.get('actions', [])
+                
+                # Log ALL actions in Canvas mode
+                print("\n" + "📦"*40)
+                print("🔍 PARSED ACTIONS JSON:")
+                print("📦"*40)
+                import json
+                print(json.dumps(actions_data, indent=2))
+                print("📦"*40 + "\n")
+                
+                # Special detailed logging for dashboard queries
+                for action in actions:
+                    if action.get('type') == 'create_dashboard':
+                        print("\n" + "🎯"*40)
+                        print("📊 DASHBOARD ACTION DETECTED!")
+                        print("🎯"*40)
+                        print(f"Dashboard Type: {action.get('dashboardType', 'N/A')}")
+                        print(f"Layout Strategy: {action.get('layoutStrategy', 'N/A')}")
+                        print(f"Number of Elements: {len(action.get('elements', []))}")
+                        print("\nElements Breakdown:")
+                        elements = action.get('elements', [])
+                        kpis = [e for e in elements if e.get('type') == 'kpi']
+                        charts = [e for e in elements if e.get('type') == 'chart']
+                        insights = [e for e in elements if e.get('type') == 'insight']
+                        print(f"  - KPIs: {len(kpis)}")
+                        print(f"  - Charts: {len(charts)}")
+                        print(f"  - Insights: {len(insights)}")
+                        
+                        # Show each element type
+                        if kpis:
+                            print("\n  📈 KPI Details:")
+                            for i, kpi in enumerate(kpis, 1):
+                                print(f"    {i}. {kpi.get('query', 'N/A')}: {kpi.get('formatted_value', kpi.get('value', 'N/A'))}")
+                        
+                        if charts:
+                            print("\n  📊 Chart Details:")
+                            for i, chart in enumerate(charts, 1):
+                                dims = ', '.join(chart.get('dimensions', []))
+                                meas = ', '.join(chart.get('measures', []))
+                                print(f"    {i}. {chart.get('chartType', 'bar')}: {meas} by {dims}")
+                        
+                        print("\n📋 Full Dashboard JSON:")
+                        print("-"*80)
+                        print(json.dumps(action, indent=2))
+                        print("-"*80)
+                        print("🎯"*40 + "\n")
+                        break
             
             # Add token usage
             actions_data["token_usage"] = token_usage
@@ -1229,6 +1382,25 @@ CRITICAL RULES:
                     action["dimensions"] = []
                 if "measures" not in action or not isinstance(action["measures"], list):
                     action["measures"] = []
+                
+                # CRITICAL: Ensure dimensions and measures contain only strings (not dicts)
+                # This prevents "unhashable type: 'dict'" errors when using set() operations
+                try:
+                    action["dimensions"] = [
+                        str(d) if not isinstance(d, str) else d 
+                        for d in action["dimensions"] 
+                        if d is not None
+                    ]
+                    action["measures"] = [
+                        str(m) if not isinstance(m, str) else m 
+                        for m in action["measures"] 
+                        if m is not None
+                    ]
+                except Exception as e:
+                    print(f"⚠️ Error normalizing dimensions/measures: {e}")
+                    print(f"   dimensions: {action.get('dimensions')}")
+                    print(f"   measures: {action.get('measures')}")
+                    continue
                 
                 # CRITICAL: Skip charts with empty dimensions or measures
                 # This prevents validation errors from the frontend Zod schema

@@ -78,7 +78,8 @@ function convertChartNodeToShape(node, baseShape) {
       datasetId: node.data?.datasetId || '',
       selected: node.data?.selected || false,
       aiInsights: node.data?.aiInsights || null,
-      aiQuery: node.data?.aiQuery || ''
+      aiQuery: node.data?.aiQuery || '',
+      isNewlyCreated: node.data?.isNewlyCreated || false
     }
   };
 }
@@ -93,7 +94,8 @@ function convertTextBoxNodeToShape(node, baseShape) {
       w: node.data?.width || 200,
       h: node.data?.height || 100,
       text: node.data?.text || '',
-      fontSize: node.data?.fontSize || 14
+      fontSize: node.data?.fontSize || 14,
+      isAIInsights: node.data?.isAIInsights || false
     }
   };
 }
@@ -105,12 +107,13 @@ function convertTableNodeToShape(node, baseShape) {
   return {
     ...baseShape,
     props: {
-      w: node.data?.width || 600,
+      w: node.data?.width || 300,
       h: node.data?.height || 400,
       title: node.data?.title || '',
       headers: node.data?.headers || [],
       rows: node.data?.rows || [],
-      totalRows: node.data?.totalRows || 0
+      totalRows: node.data?.totalRows || 0,
+      isNewlyCreated: node.data?.isNewlyCreated || false
     }
   };
 }
@@ -195,7 +198,8 @@ function convertChartShapeToNode(shape, baseNode) {
       width: props.w || 800,
       height: props.h || 400,
       aiInsights: props.aiInsights || null,
-      aiQuery: props.aiQuery || ''
+      aiQuery: props.aiQuery || '',
+      isNewlyCreated: props.isNewlyCreated || false
     }
   };
 }
@@ -212,7 +216,8 @@ function convertTextBoxShapeToNode(shape, baseNode) {
       text: props.text || '',
       fontSize: props.fontSize || 14,
       width: props.w || 200,
-      height: props.h || 100
+      height: props.h || 100,
+      isAIInsights: props.isAIInsights || false
     }
   };
 }
@@ -231,7 +236,8 @@ function convertTableShapeToNode(shape, baseNode) {
       rows: props.rows || [],
       totalRows: props.totalRows || 0,
       width: props.w || 600,
-      height: props.h || 400
+      height: props.h || 400,
+      isNewlyCreated: props.isNewlyCreated || false
     }
   };
 }

@@ -804,7 +804,13 @@ def _same_dim_diff_measures(spec1, spec2):
     
     Example: Both charts show data by "State" but one shows "Revenue", other shows "Population"
     """
-    return spec1["dimensions"] == spec2["dimensions"] and set(spec1["measures"]) != set(spec2["measures"]) and len(spec1["dimensions"]) > 0
+    try:
+        # Ensure all items are hashable (strings) before using set()
+        measures1 = [str(m) if not isinstance(m, str) else m for m in spec1.get("measures", [])]
+        measures2 = [str(m) if not isinstance(m, str) else m for m in spec2.get("measures", [])]
+        return spec1["dimensions"] == spec2["dimensions"] and set(measures1) != set(measures2) and len(spec1["dimensions"]) > 0
+    except (TypeError, KeyError):
+        return False
 
 
 def _same_measure_diff_dims(spec1, spec2):
@@ -821,8 +827,14 @@ def _same_measure_diff_dims(spec1, spec2):
     if _is_measure_histogram(spec1) or _is_measure_histogram(spec2):
         return False
     
-    common_measures = set(spec1["measures"]).intersection(set(spec2["measures"]))
-    return (len(common_measures) == 1) and (spec1["dimensions"] != spec2["dimensions"]) and (len(spec1["dimensions"]) > 0 or len(spec2["dimensions"]) > 0)
+    try:
+        # Ensure all items are hashable (strings) before using set()
+        measures1 = [str(m) if not isinstance(m, str) else m for m in spec1.get("measures", [])]
+        measures2 = [str(m) if not isinstance(m, str) else m for m in spec2.get("measures", [])]
+        common_measures = set(measures1).intersection(set(measures2))
+        return (len(common_measures) == 1) and (spec1["dimensions"] != spec2["dimensions"]) and (len(spec1["dimensions"]) > 0 or len(spec2["dimensions"]) > 0)
+    except (TypeError, KeyError):
+        return False
 
 
 def _is_measure_histogram(chart: Dict[str, Any]) -> bool:
@@ -933,6 +945,83 @@ async def upload_dataset(file: UploadFile = File(...)):
     except Exception as e:
         print(f"❌ Upload failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@app.delete("/datasets/{dataset_id}")
+async def delete_dataset(dataset_id: str):
+    """
+    Dataset Deletion Endpoint
+    Removes a dataset and its associated metadata from memory.
+    Also removes any charts that were created from this dataset.
+    
+    Args:
+        dataset_id: UUID of the dataset to delete
+    
+    Returns:
+        success: bool
+        message: Confirmation message
+        charts_removed: Number of associated charts removed
+    """
+    if dataset_id not in DATASETS:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    try:
+        # Remove dataset from memory
+        del DATASETS[dataset_id]
+        
+        # Remove associated metadata
+        if dataset_id in DATASET_METADATA:
+            del DATASET_METADATA[dataset_id]
+        
+        # Remove associated charts
+        charts_to_remove = [
+            chart_id for chart_id, chart in CHARTS.items() 
+            if chart.get('dataset_id') == dataset_id
+        ]
+        for chart_id in charts_to_remove:
+            del CHARTS[chart_id]
+        
+        print(f"🗑️ Dataset {dataset_id} deleted successfully")
+        print(f"   Charts removed: {len(charts_to_remove)}")
+        
+        return {
+            "success": True,
+            "message": f"Dataset {dataset_id} removed successfully",
+            "charts_removed": len(charts_to_remove)
+        }
+        
+    except Exception as e:
+        print(f"❌ Failed to delete dataset {dataset_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+
+
+@app.get("/datasets")
+async def list_datasets():
+    """
+    List All Datasets Endpoint
+    Returns a list of all uploaded datasets with basic metadata.
+    Useful for the frontend dataset selector.
+    
+    Returns:
+        datasets: List of dataset summaries (id, filename, rows, columns count)
+    """
+    dataset_list = []
+    for dataset_id, df in DATASETS.items():
+        metadata = DATASET_METADATA.get(dataset_id, {})
+        categorized = _categorize_columns(df)
+        
+        dataset_list.append({
+            "id": dataset_id,
+            "filename": metadata.get("filename", "Unknown"),
+            "rows": len(df),
+            "columns": len(df.columns),
+            "dimensions": categorized["dimensions"],
+            "measures": categorized["measures"],
+            "has_analysis": dataset_id in DATASET_METADATA and DATASET_METADATA[dataset_id].get("success", False),
+            "upload_timestamp": metadata.get("upload_timestamp")
+        })
+    
+    return {"datasets": dataset_list}
 
 
 def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.5-flash") -> Dict[str, Any]:

@@ -97,6 +97,105 @@ export const ShowTableSchema = z.object({
 });
 
 /**
+ * Schema for create_dashboard action
+ * Creates a complete dashboard with multiple coordinated elements
+ */
+export const CreateDashboardActionSchema = z.object({
+  type: z.literal(ACTION_TYPES.CREATE_DASHBOARD),
+  dashboardType: z.enum(['sales', 'executive', 'operations', 'analysis', 'general']).optional(),
+  layoutStrategy: z.enum(['grid', 'hero', 'flow', 'comparison', 'kpi-dashboard']).optional(),
+  elements: z.array(z.object({
+    type: z.enum(['chart', 'kpi', 'insight']),
+    dimensions: z.array(z.string()).optional(),
+    measures: z.array(z.string()).optional(),
+    query: z.string().optional(),
+    value: z.number().optional(),
+    formatted_value: z.string().optional(),
+    text: z.string().optional(),
+    chartType: z.string().optional(),
+    reasoning: z.string()
+  })),
+  reasoning: z.string()
+});
+
+/**
+ * Schema for arrange_elements action
+ * Rearranges existing elements using intelligent layout
+ */
+export const ArrangeElementsActionSchema = z.object({
+  type: z.literal(ACTION_TYPES.ARRANGE_ELEMENTS),
+  elementIds: z.array(z.string()).optional(),
+  strategy: z.enum(['grid', 'hero', 'flow', 'comparison', 'optimize', 'kpi-dashboard']),
+  reasoning: z.string()
+});
+
+/**
+ * Schema for organize_canvas action
+ * Organizes canvas using rule-based layout (0 API calls)
+ */
+export const OrganizeCanvasSchema = z.object({
+  type: z.literal(ACTION_TYPES.ORGANIZE_CANVAS),
+  strategy: z.enum(['grid', 'hero', 'flow', 'comparison', 'kpi-dashboard', 'auto']).optional(),
+  reasoning: z.string()
+});
+
+/**
+ * Schema for semantic_grouping action
+ * Groups charts by semantic intent
+ */
+export const SemanticGroupingSchema = z.object({
+  type: z.literal(ACTION_TYPES.SEMANTIC_GROUPING),
+  grouping_intent: z.string().min(1, "Grouping intent required"), // e.g., "funnel stage", "region", "metric type"
+  create_zones: z.boolean().optional(),
+  reasoning: z.string()
+});
+
+/**
+ * Schema for create_shape action (drawing)
+ */
+export const CreateShapeSchema = z.object({
+  type: z.literal(ACTION_TYPES.CREATE_SHAPE),
+  shapeType: z.enum(['rectangle', 'circle', 'line']),
+  target: z.string().optional(), // target element or position
+  color: z.string().optional(),
+  style: z.enum(['solid', 'dashed']).optional(),
+  reasoning: z.string()
+});
+
+/**
+ * Schema for create_arrow action (drawing)
+ */
+export const CreateArrowSchema = z.object({
+  type: z.literal(ACTION_TYPES.CREATE_ARROW),
+  from: z.string(), // element id or position
+  to: z.string(), // element id or position
+  label: z.string().optional(),
+  reasoning: z.string()
+});
+
+/**
+ * Schema for create_text action (drawing)
+ */
+export const CreateTextSchema = z.object({
+  type: z.literal(ACTION_TYPES.CREATE_TEXT),
+  text: z.string().min(1, "Text content required"),
+  position: z.enum(['center', 'top', 'bottom']).optional(),
+  fontSize: z.enum(['large', 'medium', 'small']).optional(),
+  reasoning: z.string()
+});
+
+/**
+ * Schema for highlight_element action (drawing)
+ */
+export const HighlightElementSchema = z.object({
+  type: z.literal(ACTION_TYPES.HIGHLIGHT_ELEMENT),
+  targetId: z.string().min(1, "Target element ID required"),
+  highlightType: z.enum(['box', 'background', 'glow']).optional(),
+  color: z.string().optional(),
+  reasoning: z.string()
+});
+
+/**
  * Union schema for any agent action
  */
 export const AgentActionSchema = z.union([
@@ -105,7 +204,15 @@ export const AgentActionSchema = z.union([
   CreateKPIActionSchema,
   GenerateChartInsightsSchema,
   AIQuerySchema,
-  ShowTableSchema
+  ShowTableSchema,
+  CreateDashboardActionSchema,
+  ArrangeElementsActionSchema,
+  OrganizeCanvasSchema,
+  SemanticGroupingSchema,
+  CreateShapeSchema,
+  CreateArrowSchema,
+  CreateTextSchema,
+  HighlightElementSchema
 ]);
 
 /**
