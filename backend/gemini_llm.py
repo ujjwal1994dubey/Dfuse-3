@@ -921,6 +921,158 @@ Use the actual data provided above."""
                 "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
             }
     
+    def generate_transformation_plan(
+        self,
+        user_prompt: str,
+        chart_table: List[Dict],
+        dimensions: List[str],
+        measures: List[str],
+        chart_spec: Dict
+    ) -> Dict[str, Any]:
+        """
+        Chart Transformation Compiler
+        Generates structured transformation plan from natural language.
+        
+        Args:
+            user_prompt: Natural language transformation request
+            chart_table: Current chart table data
+            dimensions: Chart dimensions
+            measures: Chart measures
+            chart_spec: Chart metadata (sort_order, agg, etc.)
+        
+        Returns:
+            Dict containing:
+                - transformations: List of transformation operations
+                - visual_adjustments: Optional chart visualization changes
+                - sort_order: Optional new sort order
+                - reasoning: Explanation of transformation plan
+                - token_usage: Token metrics
+        """
+        try:
+            print(f"✨ Generating transformation plan for: '{user_prompt}'")
+            
+            # Get sample data for context
+            sample_size = min(10, len(chart_table))
+            sample_data = chart_table[:sample_size] if chart_table else []
+            
+            # Build transformation operation schemas
+            operation_schemas = """
+Available Transformation Operations:
+
+1. FILTER - Filter rows by condition
+   {
+     "type": "filter",
+     "condition": "column_name > value"  // pandas query syntax
+   }
+   Examples: "revenue > 100000", "category == 'Electronics'"
+
+2. ADD_COLUMN - Calculate new column
+   {
+     "type": "add_column",
+     "name": "new_column_name",
+     "formula": "column1 / column2"  // Python expression
+   }
+   Examples: "likes / impressions", "revenue - cost"
+
+3. NORMALIZE - Convert column to percentage/ratio
+   {
+     "type": "normalize",
+     "column": "column_name",
+     "method": "percentage" | "ratio" | "z_score"
+   }
+
+4. TOP_K - Keep only top/bottom K rows
+   {
+     "type": "top_k",
+     "k": 10,
+     "by": "column_name",
+     "order": "desc" | "asc"
+   }
+
+5. SORT - Change sort order
+   {
+     "type": "sort",
+     "sort_order": "dataset" | "ascending" | "descending" | "measure_desc" | "measure_asc"
+   }
+   - "dataset": Preserve original CSV order
+   - "ascending": Sort dimension A→Z
+   - "descending": Sort dimension Z→A
+   - "measure_desc": Sort by measure High→Low
+   - "measure_asc": Sort by measure Low→High
+"""
+            
+            # Create focused prompt
+            prompt = f"""You are a data transformation compiler. Generate a structured transformation plan from natural language.
+
+CHART CONTEXT:
+- Dimensions: {', '.join(dimensions) if dimensions else 'None'}
+- Measures: {', '.join(measures) if measures else 'None'}
+- Current Sort Order: {chart_spec.get('sort_order', 'dataset')}
+- Aggregation: {chart_spec.get('agg', 'sum')}
+- Number of Rows: {len(chart_table)}
+
+SAMPLE DATA (first {sample_size} rows):
+{sample_data}
+
+{operation_schemas}
+
+USER REQUEST: {user_prompt}
+
+Generate a transformation plan that accomplishes the user's request.
+
+Respond with ONLY valid JSON in this exact format:
+{{
+  "transformations": [
+    // Array of transformation operations in execution order
+  ],
+  "sort_order": "dataset" | "ascending" | "descending" | "measure_desc" | "measure_asc" (optional - only if sort should change),
+  "reasoning": "Brief explanation of transformation plan"
+}}
+
+IMPORTANT:
+- Use ONLY the transformation types listed above
+- For filters, use pandas query syntax
+- For formulas, use Python expressions with column names
+- Keep transformations simple and focused
+- Order matters - transformations execute sequentially
+"""
+            
+            response, token_usage = self.run_gemini_with_usage(prompt)
+            
+            # Parse JSON response
+            import json
+            
+            # Extract JSON from response (handle markdown code blocks)
+            json_str = response.strip()
+            if json_str.startswith('```json'):
+                json_str = json_str[7:]
+            if json_str.startswith('```'):
+                json_str = json_str[3:]
+            if json_str.endswith('```'):
+                json_str = json_str[:-3]
+            json_str = json_str.strip()
+            
+            result = json.loads(json_str)
+            
+            # Add token usage
+            result['token_usage'] = token_usage
+            
+            print(f"✅ Transformation plan generated:")
+            print(f"   Operations: {len(result.get('transformations', []))}")
+            print(f"   Reasoning: {result.get('reasoning', 'N/A')}")
+            
+            return result
+            
+        except Exception as e:
+            print(f"❌ Transformation plan generation failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "transformations": [],
+                "reasoning": f"Failed to generate transformation plan: {str(e)}",
+                "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+            }
+    
     def generate_agent_actions(
         self,
         query: str,

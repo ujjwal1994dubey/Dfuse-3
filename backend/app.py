@@ -336,6 +336,7 @@ class ChartCreate(BaseModel):
     table: Optional[List[Dict[str, Any]]] = None  # Pre-computed table for synthetic dimensions
     originalMeasure: Optional[str] = None  # Original measure for histograms (before binning)
     filters: Optional[Dict[str, List[str]]] = None  # Dimension filters for chart-level filtering
+    sort_order: Optional[str] = "dataset"  # Sort order for categorical data: "dataset", "ascending", "descending"
 
 class FuseRequest(BaseModel):
     chart1_id: str
@@ -373,6 +374,13 @@ class AIExploreRequest(BaseModel):
     dataset_id: Optional[str] = None  # Optional - for dataset-level queries
     user_query: str
     api_key: Optional[str] = None
+    model: str = "gemini-2.5-flash"
+
+class ChartTransformRequest(BaseModel):
+    """Request model for chart transformation"""
+    chart_id: str
+    user_prompt: str
+    api_key: str
     model: str = "gemini-2.5-flash"
 
 class MetricCalculationRequest(BaseModel):
@@ -705,7 +713,7 @@ def _clean_dataframe_for_json(df: pd.DataFrame) -> pd.DataFrame:
     
     return df_clean
 
-def _agg(df: pd.DataFrame, dimensions: List[str], measures: List[str], agg: str = "sum") -> pd.DataFrame:
+def _agg(df: pd.DataFrame, dimensions: List[str], measures: List[str], agg: str = "sum", sort_order: str = "dataset") -> pd.DataFrame:
     """
     Aggregation Helper
     Performs data aggregation across specified dimensions and measures.
@@ -716,6 +724,7 @@ def _agg(df: pd.DataFrame, dimensions: List[str], measures: List[str], agg: str 
         dimensions: List of columns to group by
         measures: List of numeric columns to aggregate
         agg: Aggregation method ('sum', 'avg', 'min', 'max', 'count')
+        sort_order: Sort order for dimension values ('dataset', 'ascending', 'descending')
     
     Returns:
         Aggregated DataFrame
@@ -724,6 +733,7 @@ def _agg(df: pd.DataFrame, dimensions: List[str], measures: List[str], agg: str 
         - count aggregation doesn't require measures
         - Maps 'avg' to pandas 'mean'
         - Handles both grouped and non-grouped aggregations
+        - Applies sorting based on sort_order parameter
     """
     # Map frontend aggregation names to pandas aggregation names
     agg_mapping = {
@@ -741,9 +751,13 @@ def _agg(df: pd.DataFrame, dimensions: List[str], measures: List[str], agg: str 
             if col not in df.columns:
                 raise HTTPException(status_code=400, detail=f"Column not found: {col}")
         if dimensions:
-            grouped = df.groupby(dimensions).size().reset_index(name="count")
+            grouped = df.groupby(dimensions, sort=False).size().reset_index(name="count")
         else:
             grouped = pd.DataFrame({"count": [len(df)]})
+        
+        # Apply sorting after aggregation (for count, use 'count' as measure)
+        if dimensions and sort_order != "dataset":
+            grouped = _apply_sort_order(grouped, dimensions[0], sort_order, measure_col="count")
         return grouped
 
     if not measures:
@@ -752,10 +766,90 @@ def _agg(df: pd.DataFrame, dimensions: List[str], measures: List[str], agg: str 
         if col not in df.columns:
             raise HTTPException(status_code=400, detail=f"Column not found: {col}")
     if dimensions:
-        grouped = df.groupby(dimensions)[measures].agg(pandas_agg).reset_index()
+        grouped = df.groupby(dimensions, sort=False)[measures].agg(pandas_agg).reset_index()
     else:
         grouped = df[measures].agg(pandas_agg).to_frame().T
+    
+    # Apply sorting after aggregation (use first measure for measure-based sorting)
+    if dimensions and sort_order != "dataset":
+        measure_col = measures[0] if measures else None
+        grouped = _apply_sort_order(grouped, dimensions[0], sort_order, measure_col)
+    
     return grouped
+
+
+def _apply_sort_order(df: pd.DataFrame, dimension_col: str, sort_order: str, measure_col: str = None) -> pd.DataFrame:
+    """
+    Apply sorting to aggregated DataFrame based on sort_order.
+    
+    Args:
+        df: Aggregated DataFrame
+        dimension_col: Name of the dimension column to sort by (for dimension-based sorting)
+        sort_order: Sort order ('dataset', 'ascending', 'descending', 'measure_desc', 'measure_asc')
+        measure_col: Name of the measure column to sort by (for measure-based sorting)
+    
+    Returns:
+        Sorted DataFrame
+    """
+    if sort_order == "ascending":
+        # Alphabetical ascending (A → Z)
+        return df.sort_values(by=dimension_col, ascending=True).reset_index(drop=True)
+    elif sort_order == "descending":
+        # Alphabetical descending (Z → A)
+        return df.sort_values(by=dimension_col, ascending=False).reset_index(drop=True)
+    elif sort_order == "measure_desc" and measure_col:
+        # Value descending (High → Low)
+        return df.sort_values(by=measure_col, ascending=False).reset_index(drop=True)
+    elif sort_order == "measure_asc" and measure_col:
+        # Value ascending (Low → High)
+        return df.sort_values(by=measure_col, ascending=True).reset_index(drop=True)
+    else:  # "dataset" - keep original order
+        return df
+
+
+def _calculate_chart_statistics(table: pd.DataFrame, measures: List[str]) -> Dict[str, Any]:
+    """
+    Calculate statistical metadata for chart measures.
+    Returns min, max, mean, median, std, quartiles for each measure.
+    Used to enable visual enhancements like mark lines, value-based coloring, and rich tooltips.
+    
+    Args:
+        table: Aggregated DataFrame containing measure columns
+        measures: List of measure column names to calculate statistics for
+    
+    Returns:
+        Dictionary mapping measure names to their statistical properties:
+        {
+            "measure_name": {
+                "min": float,
+                "max": float,
+                "mean": float,
+                "median": float,
+                "std": float,
+                "q25": float (25th percentile),
+                "q75": float (75th percentile),
+                "count": int,
+                "sum": float
+            }
+        }
+    """
+    stats = {}
+    for measure in measures:
+        if measure in table.columns and pd.api.types.is_numeric_dtype(table[measure]):
+            series = pd.to_numeric(table[measure], errors='coerce').dropna()
+            if len(series) > 0:
+                stats[measure] = {
+                    "min": float(series.min()),
+                    "max": float(series.max()),
+                    "mean": float(series.mean()),
+                    "median": float(series.median()),
+                    "std": float(series.std()) if len(series) > 1 else 0.0,
+                    "q25": float(series.quantile(0.25)),
+                    "q75": float(series.quantile(0.75)),
+                    "count": int(series.count()),
+                    "sum": float(series.sum())
+                }
+    return stats
 
 
 def _apply_filters(df: pd.DataFrame, filters: Dict[str, List[str]]) -> pd.DataFrame:
@@ -794,6 +888,192 @@ def _apply_filters(df: pd.DataFrame, filters: Dict[str, List[str]]) -> pd.DataFr
         filtered_df = filtered_df[filtered_df[dimension].isin(allowed_values)]
     
     return filtered_df
+
+
+def _apply_filter_transformation(df: pd.DataFrame, condition: str) -> pd.DataFrame:
+    """
+    Apply filter transformation using pandas query.
+    
+    Args:
+        df: DataFrame to filter
+        condition: Filter condition (e.g., "revenue > 100000")
+    
+    Returns:
+        Filtered DataFrame
+    """
+    try:
+        # Use pandas query for safe filtering
+        filtered_df = df.query(condition)
+        print(f"✅ Filter applied: {condition}, rows: {len(df)} → {len(filtered_df)}")
+        return filtered_df
+    except Exception as e:
+        print(f"❌ Filter failed: {condition}, error: {str(e)}")
+        raise ValueError(f"Invalid filter condition: {condition}. Error: {str(e)}")
+
+
+def _add_calculated_column(df: pd.DataFrame, name: str, formula: str) -> pd.DataFrame:
+    """
+    Add a calculated column using a formula.
+    
+    Args:
+        df: DataFrame to modify
+        name: Name of the new column
+        formula: Formula for calculation (e.g., "likes / impressions")
+    
+    Returns:
+        DataFrame with new column added
+    """
+    try:
+        # Create safe namespace with only DataFrame columns
+        safe_namespace = {col: df[col] for col in df.columns}
+        
+        # Add numpy functions for common calculations
+        import numpy as np
+        safe_namespace.update({
+            'abs': np.abs,
+            'round': np.round,
+            'floor': np.floor,
+            'ceil': np.ceil,
+            'sqrt': np.sqrt,
+            'log': np.log,
+            'exp': np.exp
+        })
+        
+        # Evaluate formula
+        result_df = df.copy()
+        result_df[name] = eval(formula, {"__builtins__": {}}, safe_namespace)
+        
+        print(f"✅ Column added: {name} = {formula}")
+        return result_df
+    except Exception as e:
+        print(f"❌ Add column failed: {name} = {formula}, error: {str(e)}")
+        raise ValueError(f"Invalid formula: {formula}. Error: {str(e)}")
+
+
+def _normalize_column(df: pd.DataFrame, column: str, method: str) -> pd.DataFrame:
+    """
+    Normalize a column using different methods.
+    
+    Args:
+        df: DataFrame to modify
+        column: Column to normalize
+        method: Normalization method ('percentage', 'ratio', 'z_score')
+    
+    Returns:
+        DataFrame with normalized column
+    """
+    try:
+        result_df = df.copy()
+        
+        if method == 'percentage':
+            # Convert to percentage of total
+            total = result_df[column].sum()
+            if total != 0:
+                result_df[column] = (result_df[column] / total) * 100
+            print(f"✅ Normalized to percentage: {column}")
+        
+        elif method == 'ratio':
+            # Convert to ratio (0-1)
+            total = result_df[column].sum()
+            if total != 0:
+                result_df[column] = result_df[column] / total
+            print(f"✅ Normalized to ratio: {column}")
+        
+        elif method == 'z_score':
+            # Standardize to z-scores
+            mean = result_df[column].mean()
+            std = result_df[column].std()
+            if std != 0:
+                result_df[column] = (result_df[column] - mean) / std
+            print(f"✅ Normalized to z-score: {column}")
+        
+        else:
+            raise ValueError(f"Unknown normalization method: {method}")
+        
+        return result_df
+    except Exception as e:
+        print(f"❌ Normalization failed: {column} ({method}), error: {str(e)}")
+        raise ValueError(f"Normalization failed for {column}: {str(e)}")
+
+
+def _apply_top_k(df: pd.DataFrame, k: int, by: str, order: str) -> pd.DataFrame:
+    """
+    Keep only top K rows.
+    
+    Args:
+        df: DataFrame to filter
+        k: Number of rows to keep
+        by: Column to sort by
+        order: Sort order ('asc' or 'desc')
+    
+    Returns:
+        DataFrame with top K rows
+    """
+    try:
+        if order == 'desc':
+            result_df = df.nlargest(k, by)
+        else:
+            result_df = df.nsmallest(k, by)
+        
+        print(f"✅ Top {k} applied: sorted by {by} ({order}), rows: {len(df)} → {len(result_df)}")
+        return result_df.reset_index(drop=True)
+    except Exception as e:
+        print(f"❌ Top K failed: {k} by {by}, error: {str(e)}")
+        raise ValueError(f"Top K operation failed: {str(e)}")
+
+
+def _apply_transformations(
+    df: pd.DataFrame, 
+    transformations: List[Dict[str, Any]], 
+    dimension_col: Optional[str] = None,
+    measure_col: Optional[str] = None
+) -> pd.DataFrame:
+    """
+    Apply a chain of transformations to a DataFrame.
+    
+    Args:
+        df: DataFrame to transform
+        transformations: List of transformation operations
+        dimension_col: Primary dimension column (for sorting)
+        measure_col: Primary measure column (for sorting)
+    
+    Returns:
+        Transformed DataFrame
+    """
+    result_df = df.copy()
+    
+    for i, transform in enumerate(transformations):
+        transform_type = transform.get('type', '')
+        print(f"🔄 Applying transformation {i+1}/{len(transformations)}: {transform_type}")
+        
+        try:
+            if transform_type == 'filter':
+                result_df = _apply_filter_transformation(result_df, transform['condition'])
+            
+            elif transform_type == 'add_column':
+                result_df = _add_calculated_column(result_df, transform['name'], transform['formula'])
+            
+            elif transform_type == 'normalize':
+                result_df = _normalize_column(result_df, transform['column'], transform['method'])
+            
+            elif transform_type == 'top_k':
+                result_df = _apply_top_k(result_df, transform['k'], transform['by'], transform['order'])
+            
+            elif transform_type == 'sort':
+                # Use existing sort function
+                sort_order = transform.get('sort_order', 'dataset')
+                if dimension_col:
+                    result_df = _apply_sort_order(result_df, dimension_col, sort_order, measure_col)
+                    print(f"✅ Sort applied: {sort_order}")
+            
+            else:
+                print(f"⚠️ Unknown transformation type: {transform_type}, skipping")
+        
+        except Exception as e:
+            print(f"❌ Transformation {i+1} failed: {str(e)}")
+            raise
+    
+    return result_df
 
 
 def _same_dim_diff_measures(spec1, spec2):
@@ -1338,7 +1618,7 @@ async def create_chart(spec: ChartCreate):
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     # Debug logging
-    print(f"📊 /charts endpoint received: dimensions={spec.dimensions}, measures={spec.measures}, agg={spec.agg}, table_provided={spec.table is not None}, filters={spec.filters}")
+    print(f"📊 /charts endpoint received: dimensions={spec.dimensions}, measures={spec.measures}, agg={spec.agg}, table_provided={spec.table is not None}, filters={spec.filters}, sort_order={spec.sort_order}")
     if spec.table is not None:
         print(f"   Table has {len(spec.table)} rows")
     
@@ -1356,7 +1636,7 @@ async def create_chart(spec: ChartCreate):
             df = _apply_filters(df, spec.filters)
             print(f"   Filtered from {original_rows} to {len(df)} rows")
         
-        table = _agg(df, spec.dimensions, spec.measures, spec.agg)
+        table = _agg(df, spec.dimensions, spec.measures, spec.agg, spec.sort_order or "dataset")
         
         # Clean NaN/Inf values before JSON serialization
         table_clean = _clean_dataframe_for_json(table)
@@ -1367,16 +1647,29 @@ async def create_chart(spec: ChartCreate):
     # Generate descriptive title if none provided
     auto_title = _generate_chart_title(spec.dimensions, spec.measures, spec.agg)
     
+    # Calculate statistical metadata for visual enhancements
+    measures_out = spec.measures if spec.measures else (["count"] if spec.agg == "count" else [])
+    if spec.table is not None:
+        # Convert records back to DataFrame for statistics calculation
+        table_df = pd.DataFrame(spec.table)
+    else:
+        table_df = table_clean
+    
+    chart_statistics = _calculate_chart_statistics(table_df, measures_out)
+    print(f"📈 Calculated statistics for {len(chart_statistics)} measures")
+    
     CHARTS[chart_id] = {
         "chart_id": chart_id,
         "dataset_id": spec.dataset_id,
         "dimensions": spec.dimensions,
-        "measures": (spec.measures if spec.measures else (["count"] if spec.agg == "count" else [])),
+        "measures": measures_out,
         "agg": spec.agg,
         "title": spec.title or auto_title,
         "table": table_records,
+        "statistics": chart_statistics,  # Statistical metadata for visual enhancements
         "originalMeasure": spec.originalMeasure,  # Store original measure for histograms
-        "filters": spec.filters or {}  # Store filters for persistence and reapplication
+        "filters": spec.filters or {},  # Store filters for persistence and reapplication
+        "sort_order": spec.sort_order or "dataset"  # Store sort order for persistence
     }
     return CHARTS[chart_id]
 
@@ -1697,13 +1990,20 @@ async def fuse(req: FuseRequest):
     if isinstance(fused_table, dict):
         # Already a dict (old heatmap case - shouldn't happen anymore)
         table_data = fused_table
+        table_df = pd.DataFrame(table_data)
     elif isinstance(fused_table, list):
         # Already a list of records (new stacked case)
         table_data = fused_table
+        table_df = pd.DataFrame(table_data)
     else:
         # DataFrame - clean NaN/Inf values before converting to records
         fused_table_clean = _clean_dataframe_for_json(fused_table)
         table_data = fused_table_clean.to_dict(orient="records")
+        table_df = fused_table_clean
+    
+    # Calculate statistical metadata for fused chart
+    chart_statistics = _calculate_chart_statistics(table_df, measures_out)
+    print(f"📈 Calculated statistics for fused chart: {len(chart_statistics)} measures")
     
     fused_payload = {
         "chart_id": chart_id,
@@ -1714,6 +2014,7 @@ async def fuse(req: FuseRequest):
         "title": title,
         "strategy": strategy,
         "table": table_data,
+        "statistics": chart_statistics,  # Statistical metadata for visual enhancements
     }
     CHARTS[chart_id] = fused_payload
     return fused_payload
@@ -2150,18 +2451,84 @@ async def ai_explore_data(request: AIExploreRequest):
     # Get dataset_id from either chart context or direct dataset_id
     dataset_id = None
     chart_context = None
+    analysis_data = None
+    scope_info = {
+        'type': 'global',
+        'rows': 0,
+        'description': 'Full dataset'
+    }
     
     if request.chart_id:
-        # Chart-specific query: use chart context
+        # Chart-specific query: use scoped context
         if request.chart_id not in CHARTS:
             raise HTTPException(status_code=404, detail="Chart not found")
         chart_context = CHARTS[request.chart_id]
         dataset_id = chart_context["dataset_id"]
-        print(f"🎯 Using chart context: {request.chart_id}")
+        
+        # Check if this is a derived/transformed chart
+        is_derived = chart_context.get('is_derived', False)
+        
+        if is_derived:
+            # For derived charts, use the chart's table directly
+            analysis_data = pd.DataFrame(chart_context['table'])
+            scope_info = {
+                'type': 'derived',
+                'rows': len(analysis_data),
+                'description': f"Transformed chart data: {chart_context.get('title', 'Untitled')}"
+            }
+            print(f"🎯 Derived chart query: analyzing {len(analysis_data)} rows from transformed table")
+        else:
+            # For regular charts, filter original dataset by chart's dimension values
+            full_dataset = DATASETS[dataset_id]
+            chart_table = pd.DataFrame(chart_context['table'])
+            dimensions = chart_context.get('dimensions', [])
+            
+            if dimensions and len(chart_table) > 0:
+                # Extract unique dimension values from chart
+                dimension_col = dimensions[0]
+                
+                if dimension_col in chart_table.columns:
+                    dimension_values = chart_table[dimension_col].unique()
+                    
+                    # Filter full dataset to only rows matching chart's dimensions
+                    if dimension_col in full_dataset.columns:
+                        analysis_data = full_dataset[
+                            full_dataset[dimension_col].isin(dimension_values)
+                        ]
+                        scope_info = {
+                            'type': 'scoped',
+                            'rows': len(analysis_data),
+                            'description': f"{len(dimension_values)} {dimension_col} values from chart",
+                            'chart_title': chart_context.get('title', 'Untitled')
+                        }
+                        print(f"🎯 Scoped query: analyzing {len(analysis_data)} rows " +
+                              f"(filtered to {len(dimension_values)} {dimension_col} values)")
+                    else:
+                        # Dimension column doesn't exist in dataset, fall back to full
+                        analysis_data = full_dataset
+                        scope_info['type'] = 'global'
+                        print(f"⚠️ Dimension '{dimension_col}' not in dataset, using full dataset")
+                else:
+                    # No valid dimension in chart table, use full dataset
+                    analysis_data = full_dataset
+                    scope_info['type'] = 'global'
+                    print(f"⚠️ No valid dimensions, using full dataset")
+            else:
+                # No dimensions or empty chart, use full dataset
+                analysis_data = full_dataset
+                scope_info['type'] = 'global'
+                print(f"📊 No dimensions to scope by, using full dataset")
+                
     elif request.dataset_id:
-        # Dataset-level query: use dataset directly
+        # Dataset-level query (no chart context)
         dataset_id = request.dataset_id
-        print(f"📊 Using dataset context: {dataset_id[:8]}...")
+        analysis_data = DATASETS[dataset_id]
+        scope_info = {
+            'type': 'global',
+            'rows': len(analysis_data),
+            'description': 'Full dataset'
+        }
+        print(f"📊 Global dataset query: {len(analysis_data)} rows")
     else:
         raise HTTPException(status_code=400, detail="Either chart_id or dataset_id must be provided")
     
@@ -2169,12 +2536,10 @@ async def ai_explore_data(request: AIExploreRequest):
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     try:
-        # Get the full original dataset
-        full_dataset = DATASETS[dataset_id]
-        
         print(f"🤖 AI Exploration started:")
         print(f"   Query: '{request.user_query}'")
-        print(f"   Dataset shape: {full_dataset.shape}")
+        print(f"   Scope: {scope_info['type']}")
+        print(f"   Analyzing: {len(analysis_data)} rows × {len(analysis_data.columns)} columns")
         print(f"   Model: {request.model}")
         print(f"   API Key: {'*' * (len(request.api_key or '')-8) + (request.api_key or '')[-8:] if (request.api_key or '') and len(request.api_key) > 8 else '***'}")
         
@@ -2193,8 +2558,8 @@ async def ai_explore_data(request: AIExploreRequest):
         else:
             print(f"📋 No dataset metadata found for {dataset_id[:8]}... - using basic analysis")
         
-        # Use pandas DataFrame agent for text-based results with enhanced context
-        ai_result = ai_formulator.get_text_analysis(request.user_query, full_dataset, dataset_id, dataset_metadata)
+        # Run AI analysis on scoped data
+        ai_result = ai_formulator.get_text_analysis(request.user_query, analysis_data, dataset_id, dataset_metadata)
         
         print(f"✅ AI Analysis completed successfully!")
         print(f"   Result length: {len(ai_result.get('answer', ''))}")
@@ -2207,7 +2572,8 @@ async def ai_explore_data(request: AIExploreRequest):
             "raw_analysis": ai_result.get("raw_analysis", ""),  # Original pandas output
             "is_refined": ai_result.get("is_refined", False),  # Whether insights were refined
             "query": request.user_query,
-            "dataset_info": f"Dataset: {full_dataset.shape[0]} rows, {full_dataset.shape[1]} columns",
+            "dataset_info": f"Dataset: {len(analysis_data)} rows, {len(analysis_data.columns)} columns",
+            "scope_info": scope_info,  # NEW: Scope metadata
             "code_steps": ai_result.get("code_steps", []),
             "reasoning_steps": ai_result.get("reasoning_steps", []),
             "tabular_data": ai_result.get("tabular_data", []),
@@ -2226,6 +2592,7 @@ async def ai_explore_data(request: AIExploreRequest):
             "answer": f"I encountered an error while processing your query: {error_message}",
             "query": request.user_query,
             "dataset_info": "",
+            "scope_info": scope_info,  # Include scope info in error response
             "code_steps": [],
             "reasoning_steps": [],
             "tabular_data": [],
@@ -3179,6 +3546,199 @@ Provide ONLY the bullet points, no headers or additional text."""
     print(f"📋 Cached chart insights for {request.chart_id}")
     
     return insights_result
+
+
+@app.post("/chart-transform")
+async def transform_chart(request: ChartTransformRequest):
+    """
+    Chart Transformation Endpoint
+    Transforms a chart's data using natural language instructions.
+    Creates a new derived chart with transformation lineage.
+    
+    Args:
+        request: ChartTransformRequest with chart_id, user_prompt, api_key, model
+    
+    Returns:
+        New chart with transformed data and lineage metadata
+    
+    Process:
+        1. Validate chart exists
+        2. Get chart table and metadata
+        3. Call LLM to generate transformation plan
+        4. Execute transformations deterministically
+        5. Apply/inherit sort_order
+        6. Create new derived chart
+        7. Return with lineage info
+    """
+    try:
+        print(f"✨ Chart transformation request received")
+        print(f"   Chart ID: {request.chart_id}")
+        print(f"   Prompt: {request.user_prompt}")
+        
+        # Validate chart exists
+        if request.chart_id not in CHARTS:
+            raise HTTPException(status_code=404, detail="Chart not found")
+        
+        # Validate API key
+        if not request.api_key:
+            raise HTTPException(status_code=400, detail="API key is required")
+        
+        # Get original chart
+        parent_chart = CHARTS[request.chart_id]
+        dataset_id = parent_chart['dataset_id']
+        
+        # Validate dataset exists
+        if dataset_id not in DATASETS:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        # Get chart data
+        chart_table = parent_chart['table']
+        dimensions = parent_chart['dimensions']
+        measures = parent_chart['measures']
+        parent_sort_order = parent_chart.get('sort_order', 'dataset')
+        parent_agg = parent_chart.get('agg', 'sum')
+        
+        print(f"📊 Parent chart:")
+        print(f"   Dimensions: {dimensions}")
+        print(f"   Measures: {measures}")
+        print(f"   Rows: {len(chart_table)}")
+        print(f"   Sort Order: {parent_sort_order}")
+        
+        # Call LLM to generate transformation plan
+        formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
+        
+        transformation_plan = formulator.generate_transformation_plan(
+            user_prompt=request.user_prompt,
+            chart_table=chart_table,
+            dimensions=dimensions,
+            measures=measures,
+            chart_spec={
+                'sort_order': parent_sort_order,
+                'agg': parent_agg
+            }
+        )
+        
+        transformations = transformation_plan.get('transformations', [])
+        reasoning = transformation_plan.get('reasoning', '')
+        token_usage = transformation_plan.get('token_usage', {})
+        
+        print(f"🔄 Transformation plan generated:")
+        print(f"   Operations: {len(transformations)}")
+        print(f"   Reasoning: {reasoning}")
+        
+        if not transformations:
+            raise HTTPException(status_code=400, detail="No transformations generated from prompt")
+        
+        # Convert chart table to DataFrame
+        df = pd.DataFrame(chart_table)
+        
+        # Determine dimension and measure columns for transformations
+        dimension_col = dimensions[0] if dimensions else None
+        measure_col = measures[0] if measures else None
+        
+        # Execute transformations
+        try:
+            transformed_df = _apply_transformations(
+                df,
+                transformations,
+                dimension_col,
+                measure_col
+            )
+        except Exception as e:
+            print(f"❌ Transformation execution failed: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Transformation failed: {str(e)}")
+        
+        # Determine final sort_order
+        new_sort_order = transformation_plan.get('sort_order', parent_sort_order)
+        
+        # Check if transformation invalidates sort_order
+        # (e.g., measure removed but was sorting by measure)
+        if new_sort_order in ['measure_desc', 'measure_asc']:
+            if not measure_col or measure_col not in transformed_df.columns:
+                print(f"⚠️ Sort order {new_sort_order} invalid after transformation, falling back to dataset")
+                new_sort_order = 'dataset'
+        
+        # Apply sort order if needed
+        if new_sort_order != 'dataset' and dimension_col:
+            transformed_df = _apply_sort_order(
+                transformed_df,
+                dimension_col,
+                new_sort_order,
+                measure_col
+            )
+        
+        # Check if dimensions/measures changed due to transformations
+        final_dimensions = [d for d in dimensions if d in transformed_df.columns]
+        final_measures = [m for m in measures if m in transformed_df.columns]
+        
+        # Add any new calculated columns as measures
+        new_columns = [col for col in transformed_df.columns if col not in dimensions and col not in measures]
+        if new_columns:
+            print(f"✨ New columns detected: {new_columns}")
+            final_measures.extend(new_columns)
+        
+        print(f"📋 Transformed data:")
+        print(f"   Rows: {len(df)} → {len(transformed_df)}")
+        print(f"   Dimensions: {final_dimensions}")
+        print(f"   Measures: {final_measures}")
+        print(f"   Sort Order: {new_sort_order}")
+        
+        # Clean and convert to records
+        transformed_df_clean = _clean_dataframe_for_json(transformed_df)
+        transformed_table = transformed_df_clean.to_dict(orient="records")
+        
+        # Generate new chart title
+        parent_title = parent_chart['title']
+        new_title = f"{parent_title} (transformed)"
+        
+        # Create new chart ID
+        new_chart_id = str(uuid.uuid4())
+        
+        # Store new chart with lineage metadata
+        CHARTS[new_chart_id] = {
+            "chart_id": new_chart_id,
+            "dataset_id": dataset_id,
+            "dimensions": final_dimensions,
+            "measures": final_measures,
+            "agg": parent_agg,
+            "title": new_title,
+            "table": transformed_table,
+            "sort_order": new_sort_order,
+            "filters": {},
+            # Lineage metadata
+            "parent_chart_id": request.chart_id,
+            "transformation_steps": transformations,
+            "user_prompt": request.user_prompt,
+            "is_derived": True
+        }
+        
+        print(f"✅ Derived chart created: {new_chart_id}")
+        print(f"   Parent: {request.chart_id}")
+        print(f"   Title: {new_title}")
+        
+        # Return new chart data
+        return {
+            "success": True,
+            "chart_id": new_chart_id,
+            "table": transformed_table,
+            "dimensions": final_dimensions,
+            "measures": final_measures,
+            "title": new_title,
+            "agg": parent_agg,
+            "sort_order": new_sort_order,
+            "parent_chart_id": request.chart_id,
+            "transformation_steps": transformations,
+            "reasoning": reasoning,
+            "token_usage": token_usage
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Chart transformation failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Transformation failed: {str(e)}")
 
 
 @app.post("/agent-query")

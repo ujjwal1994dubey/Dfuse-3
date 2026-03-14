@@ -206,6 +206,7 @@ async function createChartAction(action, context) {
       dimensions: action.dimensions,
       measures: action.measures,
       table: chart.table || [],
+      statistics: chart.statistics || {}, // Preserve statistics from backend
       agg: chart.agg || 'sum',
       datasetId: datasetId,
       selected: false,
@@ -682,15 +683,30 @@ async function aiQueryAction(action, context) {
   
   const result = await response.json();
   
+  // Format scope indicator for display
+  let scopeIndicator = '';
+  if (result.scope_info) {
+    const scope = result.scope_info;
+    if (scope.type === 'scoped') {
+      scopeIndicator = `📊 Analyzed: ${scope.chart_title} (${scope.rows} rows, ${scope.description})\n\n`;
+    } else if (scope.type === 'derived') {
+      scopeIndicator = `🔄 Analyzed: ${scope.description} (${scope.rows} rows)\n\n`;
+    } else if (scope.type === 'global') {
+      scopeIndicator = `🌍 Analyzed: Full dataset (${scope.rows} rows)\n\n`;
+    }
+  }
+  
   // In Ask Mode, return the result without creating canvas elements
   // In Canvas Mode, create a textbox on the canvas
   if (mode === 'ask') {
     console.log(`✅ AI Query answered (Ask Mode - no canvas element created)`);
+    console.log(`   Scope: ${result.scope_info?.type || 'unknown'}`);
     console.log(`   Is refined: ${result.is_refined || false}`);
     
     return {
       query: action.query,
       answer: result.answer,
+      scope_info: result.scope_info,              // Include scope info
       raw_analysis: result.raw_analysis || '',      // Original pandas output
       is_refined: result.is_refined || false,       // Whether insights were refined
       code_steps: result.code_steps || [],
@@ -702,7 +718,7 @@ async function aiQueryAction(action, context) {
       mode: 'ask'
     };
   } else {
-    // Canvas Mode: Create text box with answer
+    // Canvas Mode: Create text box with answer including scope indicator
     const position = calculatePosition(
       action.position, 
       { ...action, referenceChartId: action.chartId }, 
@@ -717,7 +733,7 @@ async function aiQueryAction(action, context) {
       draggable: true,
       selectable: false,
       data: {
-        text: `❓ ${action.query}\n\n💬 ${result.answer}`,
+        text: `${scopeIndicator}❓ ${action.query}\n\n💬 ${result.answer}`,
         width: 350,
         height: 250,
         fontSize: 14,
@@ -727,16 +743,19 @@ async function aiQueryAction(action, context) {
         createdBy: 'agent',
         createdByQuery: context.currentQuery || null,
         relatedChartId: chartIdToUse || null,
+        scopeInfo: result.scope_info || null,      // Store scope info
         createdAt: new Date().toISOString()
       }
     }));
     
     console.log(`✅ AI query answered:`, action.query, 'at position', position);
+    console.log(`   Scope: ${result.scope_info?.type || 'unknown'}`);
     
     return {
       insightId,
       query: action.query,
       answer: result.answer,
+      scope_info: result.scope_info,
       position,
       mode: 'canvas'
     };

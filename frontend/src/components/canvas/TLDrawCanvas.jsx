@@ -5,6 +5,8 @@ import { ChartShape } from './shapes/ChartShape';
 import { TextBoxShape } from './shapes/TextShape';
 import { TableShape } from './shapes/TableShape';
 import { KPIShape } from './shapes/KPIShape';
+import { TransformCardShape } from './shapes/TransformCardShape';
+import { QueryCardShape } from './shapes/QueryCardShape';
 import { convertEdgesToArrows, convertArrowsToEdges } from './util/stateConverter';
 import ChartContextualToolbar from './ChartContextualToolbar';
 import './tldraw-custom.css';
@@ -24,6 +26,8 @@ const TLDrawCanvas = ({
   onSelectionChange,
   onChartSelect,
   initialViewport,
+  onTransformShortcut,
+  onQueryShortcut,
   onAIQueryShortcut,
   onChartInsightShortcut,
   onShowTableShortcut,
@@ -38,13 +42,15 @@ const TLDrawCanvas = ({
   const previouslySelectedChartsRef = useRef(new Set()); // Track selected charts
 
   // Custom shape utilities
-  const shapeUtils = [ChartShape, TextBoxShape, TableShape, KPIShape];
+  const shapeUtils = [ChartShape, TextBoxShape, TableShape, KPIShape, TransformCardShape, QueryCardShape];
   
   // TLDraw components configuration - memoized to prevent unnecessary re-renders
   const components = useMemo(() => {
     // Contextual toolbar component
     const ContextualToolbarComponent = (props) => {
       console.log('🔧 ContextualToolbarComponent rendering with callbacks:', {
+        hasTransform: !!onTransformShortcut,
+        hasQuery: !!onQueryShortcut,
         hasAIQuery: !!onAIQueryShortcut,
         hasInsights: !!onChartInsightShortcut,
         hasShowTable: !!onShowTableShortcut,
@@ -55,6 +61,8 @@ const TLDrawCanvas = ({
       return (
         <ChartContextualToolbar
           {...props}
+          onTransformShortcut={onTransformShortcut}
+          onQueryShortcut={onQueryShortcut}
           onAIQueryShortcut={onAIQueryShortcut}
           onChartInsightShortcut={onChartInsightShortcut}
           onShowTableShortcut={onShowTableShortcut}
@@ -67,7 +75,7 @@ const TLDrawCanvas = ({
     return {
       InFrontOfTheCanvas: ContextualToolbarComponent
     };
-  }, [onAIQueryShortcut, onChartInsightShortcut, onShowTableShortcut, onChartActionsShortcut, apiKeyConfigured]);
+  }, [onTransformShortcut, onQueryShortcut, onAIQueryShortcut, onChartInsightShortcut, onShowTableShortcut, onChartActionsShortcut, apiKeyConfigured]);
 
   // Watch for new nodes being added AND existing nodes being updated
   useEffect(() => {

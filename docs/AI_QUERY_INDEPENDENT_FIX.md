@@ -273,3 +273,273 @@ Potential improvements:
 
 Users can now freely ask data questions at any time, with or without charts! 🎉
 
+---
+
+## Scoped Context Mode (Updated Feature)
+
+When AI query is invoked from a chart, it now uses **scoped context** to analyze only the data relevant to that chart, rather than the entire dataset. This makes queries more focused and accurate.
+
+### How Scoped Context Works
+
+The system now implements three different scope modes:
+
+#### 1. **Scoped Mode** (Regular Charts)
+When a regular (non-derived) chart is selected:
+- Extracts dimension values from the chart table (e.g., "Apple", "Samsung", "Sony")
+- Filters the **original dataset** to only rows matching those dimension values
+- AI can access **all columns** in the dataset, not just what's displayed in the chart
+- Example: Chart shows "Revenue by Top 5 Products" → AI analyzes only those 5 products but can access profit, cost, etc.
+
+```python
+# Backend logic
+dimensions = chart_context.get('dimensions', [])
+dimension_col = dimensions[0]
+dimension_values = chart_table[dimension_col].unique()
+analysis_data = full_dataset[full_dataset[dimension_col].isin(dimension_values)]
+```
+
+#### 2. **Derived Mode** (Transformed Charts)
+When a derived/transformed chart is selected:
+- Uses the chart's **table directly** (respects all transformations)
+- AI works with the transformed, filtered, calculated data as-is
+- Cannot access columns not in the transformed table
+- Example: Chart shows filtered + calculated data → AI analyzes the transformed result
+
+```python
+# Backend logic
+is_derived = chart_context.get('is_derived', False)
+if is_derived:
+    analysis_data = pd.DataFrame(chart_context['table'])
+```
+
+#### 3. **Global Mode** (No Chart Context)
+When no chart is selected or chart has no dimensions:
+- Uses the **full dataset** without any filtering
+- AI can access all rows and columns
+- Falls back to this mode if scoping isn't possible
+
+### UI Indicators
+
+Users now see clear indicators showing what data was analyzed:
+
+**In Chart Actions Panel:**
+```
+📊 Analyzed: Revenue by Category (5 rows, 5 Category values from chart)
+```
+
+**In Canvas Textbox:**
+```
+📊 Analyzed: Revenue by Top 5 Products (5 rows, 5 Product values from chart)
+
+Query: What's the profit margin for these products?
+
+Answer: Apple: 23%, Samsung: 18%, Sony: 15%...
+```
+
+**Scope Indicator Icons:**
+- 📊 **Scoped**: Chart-filtered dataset analysis
+- 🔄 **Derived**: Transformed chart data analysis
+- 🌍 **Global**: Full dataset analysis
+
+### Example Scenarios
+
+#### Scenario 1: Regular Chart with Scoped Context
+```
+Chart: "Revenue by Top 5 Products" (shows Apple, Samsung, Sony, LG, HP)
+User asks: "What's the profit margin for these products?"
+
+Backend:
+  1. Extracts products: ["Apple", "Samsung", "Sony", "LG", "HP"]
+  2. Filters dataset: df[df['Product'].isin(products)]
+  3. AI can now access: Product, Revenue, Cost, Profit, Margin (all columns)
+  4. Analyzes only 5 products but has full column access
+
+Result: "Apple: 23%, Samsung: 18%, Sony: 15%, LG: 12%, HP: 10%"
+Indicator: "📊 Analyzed: Revenue by Top 5 Products (5 rows, 5 Product values)"
+```
+
+#### Scenario 2: Derived Chart
+```
+Chart: Transformed "Revenue by Category (filtered > $100k)"
+User asks: "Which category has the highest growth?"
+
+Backend:
+  1. Detects is_derived = true
+  2. Uses chart table directly (already filtered/transformed)
+  3. Analyzes transformed data as-is
+
+Result: Based on the filtered/transformed table
+Indicator: "🔄 Analyzed: Revenue by Category (filtered) (5 rows)"
+```
+
+#### Scenario 3: No Chart Selected
+```
+User asks: "What's the overall average revenue?"
+
+Backend:
+  1. No chart_id provided
+  2. Uses full dataset
+  3. Global analysis
+
+Result: Average across all rows
+Indicator: "🌍 Analyzed: Full dataset (150 rows)"
+```
+
+### Benefits of Scoped Context
+
+#### ✅ More Accurate Results
+- Queries focus on the relevant subset of data
+- Reduces confusion from unrelated data
+- Answers are contextually appropriate
+
+#### ✅ Access to All Columns
+- Even though chart shows only Revenue
+- AI can still analyze Cost, Profit, Margin, etc.
+- Best of both worlds: focused scope + full column access
+
+#### ✅ Respects Transformations
+- Derived charts maintain their transformations
+- Filters, calculations, and aggregations are preserved
+- No data leakage from original dataset
+
+#### ✅ Clear User Feedback
+- Visual indicators show what was analyzed
+- Users understand the scope of the answer
+- Reduces "why did it include X?" questions
+
+### Backend Implementation
+
+**File**: `backend/app.py` - `/ai-explore` endpoint
+
+Key changes:
+```python
+# Scoped context logic
+if request.chart_id:
+    chart_context = CHARTS[request.chart_id]
+    is_derived = chart_context.get('is_derived', False)
+    
+    if is_derived:
+        # Use chart table for derived charts
+        analysis_data = pd.DataFrame(chart_context['table'])
+        scope_info = {'type': 'derived', 'rows': len(analysis_data), ...}
+    else:
+        # Filter dataset by chart dimensions
+        dimension_values = chart_table[dimension_col].unique()
+        analysis_data = full_dataset[full_dataset[dimension_col].isin(dimension_values)]
+        scope_info = {'type': 'scoped', 'rows': len(analysis_data), ...}
+
+# Return scope info in response
+return {
+    "answer": ai_result.get("answer"),
+    "scope_info": scope_info,  # NEW
+    ...
+}
+```
+
+### Frontend Implementation
+
+**File**: `frontend/src/App.jsx` - `handleAddToCanvas`
+
+Displays scope indicator:
+```javascript
+let scopeIndicator = '';
+if (aiResult.scope_info) {
+  const scope = aiResult.scope_info;
+  if (scope.type === 'scoped') {
+    scopeIndicator = `📊 Analyzed: ${scope.chart_title} (${scope.rows} rows, ${scope.description})\n\n`;
+  } else if (scope.type === 'derived') {
+    scopeIndicator = `🔄 Analyzed: ${scope.description} (${scope.rows} rows)\n\n`;
+  } else if (scope.type === 'global') {
+    scopeIndicator = `🌍 Analyzed: Full dataset (${scope.rows} rows)\n\n`;
+  }
+}
+```
+
+**File**: `frontend/src/agentic_layer/actionExecutor.js` - `aiQueryAction`
+
+Includes scope in canvas textboxes:
+```javascript
+setNodes(nodes => nodes.concat({
+  type: 'textbox',
+  data: {
+    text: `${scopeIndicator}❓ ${action.query}\n\n💬 ${result.answer}`,
+    scopeInfo: result.scope_info  // Store metadata
+  }
+}));
+```
+
+### Testing Scoped Context
+
+#### Test 1: Regular Chart Scoping
+```
+1. Create chart: "Revenue by Top 5 Categories"
+2. Click AI Query on the chart
+3. Ask: "What's the average profit for these categories?"
+Expected: 
+  ✅ Analyzes only 5 categories
+  ✅ Can access profit column even if not in chart
+  ✅ Shows "📊 Analyzed: Revenue by Top 5 Categories (5 rows)"
+```
+
+#### Test 2: Derived Chart Scoping
+```
+1. Create chart: "Revenue by Product"
+2. Transform it: "filter revenue > 100000"
+3. Click AI Query on derived chart
+4. Ask: "Which product has highest margin?"
+Expected:
+  ✅ Analyzes only filtered products
+  ✅ Works with transformed table
+  ✅ Shows "🔄 Analyzed: Transformed chart data"
+```
+
+#### Test 3: Global Fallback
+```
+1. Create chart with no dimensions (aggregate chart)
+2. Click AI Query
+3. Ask: "What's the total revenue?"
+Expected:
+  ✅ Falls back to full dataset
+  ✅ Shows "🌍 Analyzed: Full dataset"
+```
+
+#### Test 4: Column Access
+```
+1. Create chart: "Revenue by Region" (only shows Revenue)
+2. Dataset has: Region, Revenue, Cost, Profit, Margin
+3. Ask: "What's the profit margin by region?"
+Expected:
+  ✅ AI can access Profit and Margin columns
+  ✅ Calculates margin even though not in chart
+  ✅ Scoped to regions in the chart
+```
+
+### Backward Compatibility
+
+All existing functionality works:
+- ✅ Queries without chart context (global mode)
+- ✅ Chart-specific queries (now scoped)
+- ✅ Derived chart queries (uses transformed data)
+- ✅ Agent queries via agentic layer
+- ✅ Manual queries via Chart Actions Panel
+
+### Performance Notes
+
+- **Scoped queries are faster**: Smaller data subset to analyze
+- **No additional API calls**: Single request includes scope metadata
+- **Efficient filtering**: Uses pandas `.isin()` for fast filtering
+
+---
+
+## Updated Summary
+
+✅ **`ai_query` works independently**  
+✅ **Smart context detection (chart/dataset)**  
+✅ **Scoped analysis for focused results**  
+✅ **Access to all dataset columns**  
+✅ **Clear scope indicators for users**  
+✅ **Respects chart transformations**  
+✅ **Backwards compatible**  
+
+Users get accurate, contextual answers with clear visibility into what data was analyzed! 🎯
+

@@ -3,13 +3,25 @@ import {
   track,
   useEditor
 } from '@tldraw/tldraw';
-import { Sparkle, MessageCircleQuestion, Table, ChartColumn } from 'lucide-react';
+import { Sparkle, MessageCircleQuestion, Table, ChartColumn, Wand2, MessageSquare } from 'lucide-react';
 
 /**
  * Toolbar Actions Configuration
  * Scalable structure for adding/removing toolbar actions
  */
 const TOOLBAR_ACTIONS = [
+  {
+    id: 'transform',
+    label: 'Transform',
+    icon: Wand2,
+    tooltip: 'Transform chart data'
+  },
+  {
+    id: 'query',
+    label: 'Query',
+    icon: MessageSquare,
+    tooltip: 'Ask AI about this chart'
+  },
   {
     id: 'chart-insights',
     label: 'Insights',
@@ -42,13 +54,17 @@ const TOOLBAR_ACTIONS = [
  * Displays a contextual toolbar above selected chart shapes with quick-access actions.
  * Uses TLDraw's built-in contextual toolbar primitives for consistent UI/UX.
  * 
- * @param {Function} onAIQueryShortcut - Callback when AI Query button is clicked
+ * @param {Function} onTransformShortcut - Callback when Transform button is clicked
+ * @param {Function} onQueryShortcut - Callback when Query button is clicked (canvas card)
+ * @param {Function} onAIQueryShortcut - Callback when AI Query button is clicked (panel)
  * @param {Function} onChartInsightShortcut - Callback when Chart Insights button is clicked
  * @param {Function} onShowTableShortcut - Callback when Show Data Table button is clicked
  * @param {Function} onChartActionsShortcut - Callback when Chart Actions panel button is clicked
  * @param {boolean} apiKeyConfigured - Whether API key is configured (for disabling AI features)
  */
 const ChartContextualToolbar = track(({ 
+  onTransformShortcut,
+  onQueryShortcut,
   onAIQueryShortcut, 
   onChartInsightShortcut, 
   onShowTableShortcut,
@@ -105,6 +121,22 @@ const ChartContextualToolbar = track(({
     
     try {
       switch (actionId) {
+        case 'transform':
+          console.log('✨ Calling onTransformShortcut with node ID:', nodeId);
+          if (onTransformShortcut) {
+            onTransformShortcut(nodeId);
+          } else {
+            console.error('❌ onTransformShortcut is not defined');
+          }
+          break;
+        case 'query':
+          console.log('💬 Calling onQueryShortcut with node ID:', nodeId);
+          if (onQueryShortcut) {
+            onQueryShortcut(nodeId);
+          } else {
+            console.error('❌ onQueryShortcut is not defined');
+          }
+          break;
         case 'ai-query':
           console.log('📍 Calling onAIQueryShortcut with node ID:', nodeId);
           if (onAIQueryShortcut) {
@@ -157,7 +189,7 @@ const ChartContextualToolbar = track(({
    */
   const isActionDisabled = (actionId) => {
     // Disable AI-related actions if API key is not configured
-    if ((actionId === 'ai-query' || actionId === 'chart-insights') && !apiKeyConfigured) {
+    if ((actionId === 'ai-query' || actionId === 'chart-insights' || actionId === 'transform' || actionId === 'query') && !apiKeyConfigured) {
       return true;
     }
     // Disable insights button while loading
@@ -198,7 +230,7 @@ const ChartContextualToolbar = track(({
         // Ensure toolbar stays at fixed size regardless of canvas zoom
         transform: 'none',
         width: '48px', // Fixed width
-        minHeight: '188px' // Minimum height to contain 4 buttons
+        minHeight: '224px' // Minimum height to contain 5 buttons
       }}
       onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
