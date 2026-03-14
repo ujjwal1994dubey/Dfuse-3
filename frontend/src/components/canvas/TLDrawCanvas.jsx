@@ -5,6 +5,8 @@ import { ChartShape } from './shapes/ChartShape';
 import { TextBoxShape } from './shapes/TextShape';
 import { TableShape } from './shapes/TableShape';
 import { KPIShape } from './shapes/KPIShape';
+import { TransformCardShape } from './shapes/TransformCardShape';
+import { QueryCardShape } from './shapes/QueryCardShape';
 import { convertEdgesToArrows, convertArrowsToEdges } from './util/stateConverter';
 import ChartContextualToolbar from './ChartContextualToolbar';
 import './tldraw-custom.css';
@@ -24,9 +26,12 @@ const TLDrawCanvas = ({
   onSelectionChange,
   onChartSelect,
   initialViewport,
+  onTransformShortcut,
+  onQueryShortcut,
   onAIQueryShortcut,
   onChartInsightShortcut,
   onShowTableShortcut,
+  onChartActionsShortcut,
   apiKeyConfigured,
   onEditorMount
 }) => {
@@ -37,25 +42,31 @@ const TLDrawCanvas = ({
   const previouslySelectedChartsRef = useRef(new Set()); // Track selected charts
 
   // Custom shape utilities
-  const shapeUtils = [ChartShape, TextBoxShape, TableShape, KPIShape];
+  const shapeUtils = [ChartShape, TextBoxShape, TableShape, KPIShape, TransformCardShape, QueryCardShape];
   
   // TLDraw components configuration - memoized to prevent unnecessary re-renders
   const components = useMemo(() => {
     // Contextual toolbar component
     const ContextualToolbarComponent = (props) => {
       console.log('🔧 ContextualToolbarComponent rendering with callbacks:', {
+        hasTransform: !!onTransformShortcut,
+        hasQuery: !!onQueryShortcut,
         hasAIQuery: !!onAIQueryShortcut,
         hasInsights: !!onChartInsightShortcut,
         hasShowTable: !!onShowTableShortcut,
+        hasChartActions: !!onChartActionsShortcut,
         apiKeyConfigured
       });
       
       return (
         <ChartContextualToolbar
           {...props}
+          onTransformShortcut={onTransformShortcut}
+          onQueryShortcut={onQueryShortcut}
           onAIQueryShortcut={onAIQueryShortcut}
           onChartInsightShortcut={onChartInsightShortcut}
           onShowTableShortcut={onShowTableShortcut}
+          onChartActionsShortcut={onChartActionsShortcut}
           apiKeyConfigured={apiKeyConfigured}
         />
       );
@@ -64,7 +75,7 @@ const TLDrawCanvas = ({
     return {
       InFrontOfTheCanvas: ContextualToolbarComponent
     };
-  }, [onAIQueryShortcut, onChartInsightShortcut, onShowTableShortcut, apiKeyConfigured]);
+  }, [onTransformShortcut, onQueryShortcut, onAIQueryShortcut, onChartInsightShortcut, onShowTableShortcut, onChartActionsShortcut, apiKeyConfigured]);
 
   // Watch for new nodes being added AND existing nodes being updated
   useEffect(() => {
@@ -284,7 +295,7 @@ function importNodesToTLDraw(editor, nodes) {
     } else if (node.type === 'table') {
       shapeType = 'table';
       shapeProps = {
-        w: node.data.width || 600,
+        w: node.data.width || 300,
         h: node.data.height || 400,
         title: node.data.title || '',
         headers: node.data.headers || [],

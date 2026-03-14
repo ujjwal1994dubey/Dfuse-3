@@ -3,7 +3,7 @@ import {
   track,
   useEditor
 } from '@tldraw/tldraw';
-import { Sparkles, ReceiptText, Table } from 'lucide-react';
+import { Sparkle, MessageCircleQuestion, Table, ChartColumn, Wand2, MessageSquare } from 'lucide-react';
 
 /**
  * Toolbar Actions Configuration
@@ -11,22 +11,40 @@ import { Sparkles, ReceiptText, Table } from 'lucide-react';
  */
 const TOOLBAR_ACTIONS = [
   {
-    id: 'ai-query',
-    label: 'AI Query',
-    icon: Sparkles,
-    tooltip: 'Open AI query panel'
+    id: 'transform',
+    label: 'Transform',
+    icon: Wand2,
+    tooltip: 'Transform chart data'
+  },
+  {
+    id: 'query',
+    label: 'Query',
+    icon: MessageSquare,
+    tooltip: 'Ask AI about this chart'
   },
   {
     id: 'chart-insights',
     label: 'Insights',
-    icon: ReceiptText,
+    icon: Sparkle,
     tooltip: 'Generate quick chart insights'
+  },
+  {
+    id: 'ai-query',
+    label: 'AI Query',
+    icon: MessageCircleQuestion,
+    tooltip: 'Open AI query panel'
   },
   {
     id: 'show-table',
     label: 'Data Table',
     icon: Table,
     tooltip: 'Show data table'
+  },
+  {
+    id: 'chart-actions',
+    label: 'Chart Actions',
+    icon: ChartColumn,
+    tooltip: 'Open chart actions panel'
   }
 ];
 
@@ -36,15 +54,21 @@ const TOOLBAR_ACTIONS = [
  * Displays a contextual toolbar above selected chart shapes with quick-access actions.
  * Uses TLDraw's built-in contextual toolbar primitives for consistent UI/UX.
  * 
- * @param {Function} onAIQueryShortcut - Callback when AI Query button is clicked
+ * @param {Function} onTransformShortcut - Callback when Transform button is clicked
+ * @param {Function} onQueryShortcut - Callback when Query button is clicked (canvas card)
+ * @param {Function} onAIQueryShortcut - Callback when AI Query button is clicked (panel)
  * @param {Function} onChartInsightShortcut - Callback when Chart Insights button is clicked
  * @param {Function} onShowTableShortcut - Callback when Show Data Table button is clicked
+ * @param {Function} onChartActionsShortcut - Callback when Chart Actions panel button is clicked
  * @param {boolean} apiKeyConfigured - Whether API key is configured (for disabling AI features)
  */
 const ChartContextualToolbar = track(({ 
+  onTransformShortcut,
+  onQueryShortcut,
   onAIQueryShortcut, 
   onChartInsightShortcut, 
   onShowTableShortcut,
+  onChartActionsShortcut,
   apiKeyConfigured = true
 }) => {
   const editor = useEditor();
@@ -67,16 +91,17 @@ const ChartContextualToolbar = track(({
   /**
    * Get selection bounds for positioning the toolbar
    * Position on the right side of the chart with 12px spacing
+   * Uses fixed positioning to ensure toolbar stays at constant size regardless of zoom
    */
   const getToolbarPosition = () => {
     const bounds = editor.getSelectionRotatedScreenBounds();
     if (!bounds) return null;
     
-    // Position toolbar on the right side of the selection with 12px spacing
+    // Use screen coordinates for fixed positioning
+    // This ensures the toolbar doesn't scale with canvas zoom
     return {
-      left: bounds.x + bounds.width + 12,
-      top: bounds.y,
-      transform: 'none'
+      left: `${bounds.x + bounds.width + 12}px`,
+      top: `${bounds.y}px`
     };
   };
   
@@ -96,6 +121,22 @@ const ChartContextualToolbar = track(({
     
     try {
       switch (actionId) {
+        case 'transform':
+          console.log('✨ Calling onTransformShortcut with node ID:', nodeId);
+          if (onTransformShortcut) {
+            onTransformShortcut(nodeId);
+          } else {
+            console.error('❌ onTransformShortcut is not defined');
+          }
+          break;
+        case 'query':
+          console.log('💬 Calling onQueryShortcut with node ID:', nodeId);
+          if (onQueryShortcut) {
+            onQueryShortcut(nodeId);
+          } else {
+            console.error('❌ onQueryShortcut is not defined');
+          }
+          break;
         case 'ai-query':
           console.log('📍 Calling onAIQueryShortcut with node ID:', nodeId);
           if (onAIQueryShortcut) {
@@ -126,6 +167,14 @@ const ChartContextualToolbar = track(({
             console.error('❌ onShowTableShortcut is not defined');
           }
           break;
+        case 'chart-actions':
+          console.log('🎛️ Calling onChartActionsShortcut with node ID:', nodeId);
+          if (onChartActionsShortcut) {
+            onChartActionsShortcut(nodeId);
+          } else {
+            console.error('❌ onChartActionsShortcut is not defined');
+          }
+          break;
         default:
           console.warn(`Unknown action: ${actionId}`);
       }
@@ -140,7 +189,7 @@ const ChartContextualToolbar = track(({
    */
   const isActionDisabled = (actionId) => {
     // Disable AI-related actions if API key is not configured
-    if ((actionId === 'ai-query' || actionId === 'chart-insights') && !apiKeyConfigured) {
+    if ((actionId === 'ai-query' || actionId === 'chart-insights' || actionId === 'transform' || actionId === 'query') && !apiKeyConfigured) {
       return true;
     }
     // Disable insights button while loading
@@ -165,20 +214,23 @@ const ChartContextualToolbar = track(({
   return (
     <div
       style={{
-        position: 'absolute',
+        position: 'fixed',
         left: position.left,
         top: position.top,
-        transform: position.transform,
         display: 'flex',
         flexDirection: 'column',
-        gap: '2px',
-        padding: '4px',
-        backgroundColor: 'var(--color-surface-elevated)',
-        border: '1px solid var(--color-border)',
-        borderRadius: '8px',
-        boxShadow: 'var(--shadow-lg)',
+        gap: '4px',
+        padding: '6px',
+        backgroundColor: '#1a1a1a',
+        border: '1px solid #2a2a2a',
+        borderRadius: '10px',
+        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1)',
         zIndex: 1000,
-        pointerEvents: 'all'
+        pointerEvents: 'all',
+        // Ensure toolbar stays at fixed size regardless of canvas zoom
+        transform: 'none',
+        width: '48px', // Fixed width
+        minHeight: '224px' // Minimum height to contain 5 buttons
       }}
       onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
@@ -204,30 +256,33 @@ const ChartContextualToolbar = track(({
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              padding: '6px',
-              fontSize: '11px',
+              padding: '0',
+              fontSize: '0', // Remove any text influence
               cursor: disabled ? 'not-allowed' : 'pointer',
-              opacity: disabled ? 0.4 : 1,
+              opacity: disabled ? 0.3 : 1,
               backgroundColor: 'transparent',
               border: 'none',
-              borderRadius: '6px',
-              width: '32px',
-              height: '32px',
-              transition: 'all 0.15s ease',
-              color: 'var(--color-text)',
+              borderRadius: '7px',
+              width: '36px',
+              height: '36px',
+              flexShrink: 0, // Prevent button from shrinking
+              transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+              color: disabled ? '#6b6b6b' : '#ffffff',
               position: 'relative'
             }}
             onMouseEnter={(e) => {
               if (!disabled) {
-                e.currentTarget.style.backgroundColor = 'var(--color-surface-hover)';
+                e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.15)';
+                e.currentTarget.style.transform = 'scale(1.08)';
               }
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.backgroundColor = 'transparent';
+              e.currentTarget.style.transform = 'scale(1)';
             }}
           >
-            <span className={isLoading ? 'loading-spin' : ''} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <IconComponent size={16} strokeWidth={2} />
+            <span className={isLoading ? 'loading-spin' : ''} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px' }}>
+              <IconComponent size={20} strokeWidth={2} />
             </span>
           </button>
         );

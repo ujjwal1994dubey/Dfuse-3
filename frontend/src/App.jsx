@@ -1,10 +1,11 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import EChartsWrapper from './charts/EChartsWrapper';
 import TLDrawCanvas from './components/canvas/TLDrawCanvas';
-import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, ShareModal, Toast } from './components/ui';
+import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, ShareModal, Toast, DatasetSelector } from './components/ui';
 import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus, LogOut } from 'lucide-react';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
+import { applyUniversalEnhancements } from './charts/enhancementApplier';
 import { AgentChatPanel } from './agentic_layer';
 import { GlobalFilterProvider, useGlobalFilter } from './contexts/GlobalFilterContext';
 import { useAuth } from './contexts/AuthContext';
@@ -2052,11 +2053,13 @@ function ChartActionsPanel({
   updateTokenUsage,
   onChartTypeChange,
   onAggChange,
+  onSortOrderChange,
   onShowTable,
   tldrawEditorRef,
   onChartUpdate,
   scrollToAI,
-  setScrollToAI
+  setScrollToAI,
+  setNodes
 }) {
   // Session tracking for AI feature usage
   const { trackAIUsed, trackAIInsight, trackTokens } = useSessionTracking();
@@ -2082,8 +2085,18 @@ function ChartActionsPanel({
   // Update local state when selected chart changes
   useEffect(() => {
     if (selectedChart) {
-      // Reset AI results and button states when chart changes
-      setAiResult(null);
+      // Restore previous AI results if they exist, otherwise clear
+      const previousAiResult = selectedChart.data?.lastAiQueryResult;
+      const previousAiQuery = selectedChart.data?.lastAiQuery;
+      
+      if (previousAiResult) {
+        setAiResult(previousAiResult);
+        setAiQuery(previousAiQuery || '');
+      } else {
+        setAiResult(null);
+        setAiQuery('');
+      }
+      
       setShowTableClicked(false);
       setInsightsLoading(false);
       // Initialize filters from chart data
@@ -2158,12 +2171,45 @@ function ChartActionsPanel({
       }
       
       setAiResult(result);
+      
+      // Persist AI query result in chart node's data so it survives reselection
+      setNodes(currentNodes => 
+        currentNodes.map(node => 
+          node.id === selectedChart.id
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  lastAiQueryResult: result,
+                  lastAiQuery: aiQuery.trim()
+                }
+              }
+            : node
+        )
+      );
     } catch (error) {
       console.error('AI exploration failed:', error);
-      setAiResult({
+      const errorResult = {
         success: false,
         answer: `AI exploration failed: ${error.message}`
-      });
+      };
+      setAiResult(errorResult);
+      
+      // Persist error result as well
+      setNodes(currentNodes => 
+        currentNodes.map(node => 
+          node.id === selectedChart.id
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  lastAiQueryResult: errorResult,
+                  lastAiQuery: aiQuery.trim()
+                }
+              }
+            : node
+        )
+      );
     } finally {
       setAiLoading(false);
     }
@@ -2199,8 +2245,21 @@ function ChartActionsPanel({
         textboxY = viewport.y + viewport.h / 2 - 100;
       }
       
-      // Create textbox content
-      const textContent = `Query: ${aiQuery}\n\nAnswer:\n${aiResult.answer}`;
+      // Format scope indicator
+      let scopeIndicator = '';
+      if (aiResult.scope_info) {
+        const scope = aiResult.scope_info;
+        if (scope.type === 'scoped') {
+          scopeIndicator = `📊 Analyzed: ${scope.chart_title} (${scope.rows} rows, ${scope.description})\n\n`;
+        } else if (scope.type === 'derived') {
+          scopeIndicator = `🔄 Analyzed: ${scope.description} (${scope.rows} rows)\n\n`;
+        } else if (scope.type === 'global') {
+          scopeIndicator = `🌍 Analyzed: Full dataset (${scope.rows} rows)\n\n`;
+        }
+      }
+      
+      // Create textbox content with scope indicator
+      const textContent = `${scopeIndicator}Query: ${aiQuery}\n\nAnswer:\n${aiResult.answer}`;
       
       // Define textbox dimensions
       const textboxWidth = 400;
@@ -2303,13 +2362,17 @@ function ChartActionsPanel({
         throw new Error('Chart shape not found in canvas. Please ensure you are using TLDraw mode.');
       }
       
-      // Calculate position for sticky note (to the right of chart)
-      const stickyX = chartShape.x + chartShape.props.w + 50;
+      // Calculate position for insights textbox (to the right of chart, similar to table positioning)
+      const chartWidth = chartShape.props.w || 800;
+      const insightsOffset = 50; // Space between chart and insights
+      const stickyX = chartShape.x + chartWidth + insightsOffset;
       const stickyY = chartShape.y;
       
       // Prepare insights text (prefer generic_insights, fallback to insight)
       const insightsContent = result.generic_insights || result.insight || 'No insights generated';
-      const insightsText = `AI Generated\n\n${insightsContent}`;
+      
+      // Get chart title for the insights header
+      const chartTitle = selectedChart.data?.title || chartShape.props?.title || 'Chart';
       
       // Create TLDraw textbox for insights
       const { createShapeId } = await import('@tldraw/tldraw');
@@ -2317,7 +2380,7 @@ function ChartActionsPanel({
       
       // Define textbox dimensions
       const textboxWidth = 300;
-      const textboxHeight = 200;
+      const textboxHeight = 400;
       
       tldrawEditorRef.current.createShape({
         id: textboxId,
@@ -2327,12 +2390,14 @@ function ChartActionsPanel({
         props: {
           w: textboxWidth,
           h: textboxHeight,
-          text: insightsText,
-          fontSize: 12
+          text: insightsContent,
+          fontSize: 14,
+          isAIInsights: true,
+          chartTitle: chartTitle
         }
       });
       
-      console.log('✅ Chart insights generated and displayed in textbox');
+      console.log(`✅ Chart insights generated for "${chartTitle}" at position:`, { x: stickyX, y: stickyY });
       
       // Track AI insight generation for session analytics
       trackAIInsight();
@@ -2399,10 +2464,13 @@ function ChartActionsPanel({
       const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
       
       if (chartConfig) {
-        const option = chartConfig.createOption(chart.table, {
+        const enhancedPayload = {
           dimensions: chart.dimensions,
-          measures: chart.measures
-        });
+          measures: chart.measures,
+          statistics: chart.statistics || {}
+        };
+        let option = chartConfig.createOption(chart.table, enhancedPayload);
+        option = applyUniversalEnhancements(option, chartType.toUpperCase(), enhancedPayload.statistics, chart.table, enhancedPayload);
         
         // Update chart with filtered data
         if (onChartUpdate) {
@@ -2466,10 +2534,13 @@ function ChartActionsPanel({
       const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
       
       if (chartConfig) {
-        const option = chartConfig.createOption(chart.table, {
+        const enhancedPayload = {
           dimensions: chart.dimensions,
-          measures: chart.measures
-        });
+          measures: chart.measures,
+          statistics: chart.statistics || {}
+        };
+        let option = chartConfig.createOption(chart.table, enhancedPayload);
+        option = applyUniversalEnhancements(option, chartType.toUpperCase(), enhancedPayload.statistics, chart.table, enhancedPayload);
         
         // Update chart with unfiltered data
         if (onChartUpdate) {
@@ -2534,7 +2605,8 @@ function ChartActionsPanel({
   const currentAgg = selectedChart?.data?.agg || 'sum';
   
   // Determine if aggregation can be changed
-  const canChangeAgg = selectedChart && meas > 0 && dims > 0;
+  // Disable for derived/transformed charts since they operate on transformed data
+  const canChangeAgg = selectedChart && meas > 0 && dims > 0 && !selectedChart.data?.isDerived;
   
   return (
     <SlidingPanel 
@@ -2633,6 +2705,47 @@ function ChartActionsPanel({
                     </label>
                   ))}
                 </div>
+              </div>
+            )}
+            
+            {/* Show message when aggregation is disabled for derived charts */}
+            {selectedChart?.data?.isDerived && meas > 0 && dims > 0 && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                <p className="text-xs text-blue-700">
+                  <span className="font-semibold">ℹ️ Transformed Chart:</span> Aggregation cannot be changed for transformed charts as they operate on already-transformed data.
+                </p>
+              </div>
+            )}
+            
+            {/* Sort Order Section */}
+            {selectedChart?.data?.dimensions?.length === 1 && (
+              <div>
+                <label 
+                  className="block text-sm font-medium mb-3"
+                  style={{ color: 'var(--color-text)' }}
+                >
+                  Sort Order
+                </label>
+                <select 
+                  value={selectedChart?.data?.sortOrder || "dataset"}
+                  onChange={(e) => onSortOrderChange(selectedChart.id, e.target.value)}
+                  className="w-full px-3 py-2 border rounded"
+                  style={{ 
+                    borderColor: 'var(--color-border)',
+                    backgroundColor: 'var(--color-background)',
+                    color: 'var(--color-text)'
+                  }}
+                >
+                  <option value="dataset">Dataset Order</option>
+                  <optgroup label="Sort by Dimension">
+                    <option value="ascending">Dimension A → Z</option>
+                    <option value="descending">Dimension Z → A</option>
+                  </optgroup>
+                  <optgroup label="Sort by Value">
+                    <option value="measure_desc">Measure ↓ High → Low</option>
+                    <option value="measure_asc">Measure ↑ Low → High</option>
+                  </optgroup>
+                </select>
               </div>
             )}
             
@@ -2834,6 +2947,22 @@ function ChartActionsPanel({
                         : 'bg-red-50 border border-red-200'
                     }`}
                   >
+                    {/* Scope Indicator */}
+                    {aiResult.success && aiResult.scope_info && (
+                      <div className="mb-3 pb-3 border-b border-teal-200">
+                        <p className="text-xs font-medium text-teal-700">
+                          {aiResult.scope_info.type === 'scoped' && (
+                            <>📊 Analyzed: {aiResult.scope_info.chart_title} ({aiResult.scope_info.rows} rows, {aiResult.scope_info.description})</>
+                          )}
+                          {aiResult.scope_info.type === 'derived' && (
+                            <>🔄 Analyzed: {aiResult.scope_info.description} ({aiResult.scope_info.rows} rows)</>
+                          )}
+                          {aiResult.scope_info.type === 'global' && (
+                            <>🌍 Analyzed: Full dataset ({aiResult.scope_info.rows} rows)</>
+                          )}
+                        </p>
+                      </div>
+                    )}
                     <p style={{ color: aiResult.success ? '#0f766e' : '#991b1b', whiteSpace: 'pre-wrap' }}>
                       {aiResult.answer}
                     </p>
@@ -2992,17 +3121,82 @@ function AppWrapper({ user, onLogout }) {
     trackCanvasObjects 
   } = useSessionTracking();
   
-  const [datasetId, setDatasetId] = useState(null);
-  const [csvFileName, setCsvFileName] = useState('');
-  const [availableDimensions, setAvailableDimensions] = useState([]);
-  const [availableMeasures, setAvailableMeasures] = useState([]);
+  // Multi-dataset state management
+  const [datasets, setDatasets] = useState([]);
+  // Each dataset: { id, filename, dimensions, measures, rows, analysis, uploadedAt }
+  const [activeDatasetId, setActiveDatasetId] = useState(null);
   
-  // Dataset analysis state
-  const [datasetAnalysis, setDatasetAnalysis] = useState(null);
+  // Derived values from active dataset
+  const activeDataset = useMemo(() => 
+    datasets.find(d => d.id === activeDatasetId), 
+    [datasets, activeDatasetId]
+  );
+  
+  // Backwards-compatible derived values
+  const datasetId = activeDatasetId;
+  const csvFileName = activeDataset?.filename || '';
+  const availableDimensions = activeDataset?.dimensions || [];
+  const availableMeasures = activeDataset?.measures || [];
+  const datasetAnalysis = activeDataset?.analysis || null;
+  
+  // Dataset analysis state (loading/error state still separate)
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState(null);
   const [editingMetadata, setEditingMetadata] = useState(false);
   const [metadataDraft, setMetadataDraft] = useState(null);
+  
+  // Helper function to update a specific dataset's properties
+  const updateDataset = useCallback((datasetId, updates) => {
+    setDatasets(prev => prev.map(d => 
+      d.id === datasetId ? { ...d, ...updates } : d
+    ));
+  }, []);
+  
+  // Helper to update active dataset's analysis
+  const setDatasetAnalysis = useCallback((analysis) => {
+    if (activeDatasetId) {
+      updateDataset(activeDatasetId, { analysis });
+    }
+  }, [activeDatasetId, updateDataset]);
+  
+  // Helper to remove a dataset
+  const removeDataset = useCallback(async (datasetIdToRemove) => {
+    try {
+      // Call backend to delete
+      await fetch(`${API}/datasets/${datasetIdToRemove}`, { method: 'DELETE' });
+      
+      // Remove from local state
+      setDatasets(prev => prev.filter(d => d.id !== datasetIdToRemove));
+      
+      // If removing the active dataset, switch to another one or clear
+      if (datasetIdToRemove === activeDatasetId) {
+        setDatasets(prev => {
+          const remaining = prev.filter(d => d.id !== datasetIdToRemove);
+          if (remaining.length > 0) {
+            setActiveDatasetId(remaining[0].id);
+          } else {
+            setActiveDatasetId(null);
+          }
+          return remaining;
+        });
+      }
+      
+      console.log(`🗑️ Dataset ${datasetIdToRemove} removed`);
+    } catch (error) {
+      console.error('Failed to remove dataset:', error);
+    }
+  }, [activeDatasetId]);
+  
+  // Helper to switch active dataset
+  const switchDataset = useCallback((newDatasetId) => {
+    setActiveDatasetId(newDatasetId);
+    // Reset selections when switching
+    setSelectedDimension('');
+    setSelectedMeasure('');
+    setEditingMetadata(false);
+    setMetadataDraft(null);
+    console.log(`📊 Switched to dataset: ${newDatasetId}`);
+  }, []);
   
   // Chart suggestion state
   const [goalText, setGoalText] = useState('');
@@ -3126,19 +3320,21 @@ function AppWrapper({ user, onLogout }) {
           }
           
           if (chartShape) {
-            // Create textbox to the right of chart
-            const stickyX = chartShape.x + (chartShape.props?.w || 800) + 50;
+            // Create textbox to the right of chart (adjacent positioning similar to table)
+            const chartWidth = chartShape.props?.w || 800;
+            const insightsOffset = 50; // Space between chart and insights
+            const stickyX = chartShape.x + chartWidth + insightsOffset;
             const stickyY = chartShape.y;
+            
+            // Get chart title for the insights header
+            const chartTitle = node.data?.title || chartShape.props?.title || 'Chart';
             
             const { createShapeId } = await import('@tldraw/tldraw');
             const textboxId = createShapeId();
             
             // Define textbox dimensions
             const textboxWidth = 300;
-            const textboxHeight = 200;
-            
-            // Add "AI Generated" header to insights
-            const insightsText = `AI Generated\n\n${node.data.preloadedInsights.contextInsights}`;
+            const textboxHeight = 400;
             
             editor.createShape({
               id: textboxId,
@@ -3148,12 +3344,14 @@ function AppWrapper({ user, onLogout }) {
               props: {
                 w: textboxWidth,
                 h: textboxHeight,
-                text: insightsText,
-                fontSize: 12
+                text: node.data.preloadedInsights.contextInsights,
+                fontSize: 14,
+                isAIInsights: true,
+                chartTitle: chartTitle
               }
             });
             
-            console.log(`📝 Created textbox for chart ${node.id}`);
+            console.log(`📝 Created textbox for "${chartTitle}" at position:`, { x: stickyX, y: stickyY });
             createdStickyNotes.current.add(node.id);
           } else {
             console.warn(`⚠️ Could not find chart shape for node ${node.id}`);
@@ -3166,6 +3364,31 @@ function AppWrapper({ user, onLogout }) {
     
     return () => clearTimeout(timeoutId);
   }, [nodes]);
+  
+  // Auto-remove highlight flag after animation completes (2 seconds)
+  useEffect(() => {
+    if (!tldrawEditorRef?.current) return;
+    
+    const timer = setTimeout(() => {
+      const shapes = tldrawEditorRef.current.getCurrentPageShapes();
+      const highlightedShapes = shapes.filter(s => s.props?.isNewlyCreated);
+      
+      if (highlightedShapes.length > 0) {
+        highlightedShapes.forEach(shape => {
+          tldrawEditorRef.current.updateShape({
+            id: shape.id,
+            type: shape.type,
+            props: {
+              ...shape.props,
+              isNewlyCreated: false
+            }
+          });
+        });
+      }
+    }, 2000);
+    
+    return () => clearTimeout(timer);
+  }, [nodes, tldrawEditorRef]); // Trigger when nodes change
   
   // AI-assisted merge state
   const [mergePanelOpen, setMergePanelOpen] = useState(false);
@@ -3185,6 +3408,8 @@ function AppWrapper({ user, onLogout }) {
   const [chartActionsPanelOpen, setChartActionsPanelOpen] = useState(false);
   const [selectedChartForActions, setSelectedChartForActions] = useState(null);
   const [scrollToAI, setScrollToAI] = useState(false);
+  
+  // Transform prompt state
   const [instructionsPanelOpen, setInstructionsPanelOpen] = useState(() => {
     // Show instructions panel by default for first-time users
     const hasSeenInstructions = localStorage.getItem('dfuse_instructions_seen');
@@ -3318,7 +3543,8 @@ function AppWrapper({ user, onLogout }) {
               dimensions: chartNode.data.dimensions,
               measures: chartNode.data.measures,
               agg: chartNode.data.agg || 'sum',
-              filters: filterObj
+              filters: filterObj,
+              sort_order: chartNode.data.sortOrder || 'dataset' // Preserve sort order
             })
           });
           
@@ -3334,10 +3560,13 @@ function AppWrapper({ user, onLogout }) {
           const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
           
           if (chartConfig) {
-            const option = chartConfig.createOption(chart.table, {
+            const enhancedPayload = {
               dimensions: chart.dimensions,
-              measures: chart.measures
-            });
+              measures: chart.measures,
+              statistics: chart.statistics || {}
+            };
+            let option = chartConfig.createOption(chart.table, enhancedPayload);
+            option = applyUniversalEnhancements(option, chartType.toUpperCase(), enhancedPayload.statistics, chart.table, enhancedPayload);
             
             // Update the node with filtered data
             // Mark it with globalFilterActive flag to distinguish from local filters
@@ -3387,7 +3616,8 @@ function AppWrapper({ user, onLogout }) {
               dimensions: chartNode.data.dimensions,
               measures: chartNode.data.measures,
               agg: chartNode.data.agg || 'sum',
-              filters: {} // Empty filters = unfiltered
+              filters: {}, // Empty filters = unfiltered
+              sort_order: chartNode.data.sortOrder || 'dataset' // Preserve sort order
             })
           });
           
@@ -3403,10 +3633,13 @@ function AppWrapper({ user, onLogout }) {
           const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
           
           if (chartConfig) {
-            const option = chartConfig.createOption(chart.table, {
+            const enhancedPayload = {
               dimensions: chart.dimensions,
-              measures: chart.measures
-            });
+              measures: chart.measures,
+              statistics: chart.statistics || {}
+            };
+            let option = chartConfig.createOption(chart.table, enhancedPayload);
+            option = applyUniversalEnhancements(option, chartType.toUpperCase(), enhancedPayload.statistics, chart.table, enhancedPayload);
             
             // Update the node with unfiltered data
             setNodes(nds => nds.map(n => {
@@ -3659,19 +3892,20 @@ function AppWrapper({ user, onLogout }) {
 
   // Get the center of the current viewport in canvas coordinates
   const getViewportCenter = useCallback(() => {
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
+    if (!tldrawEditorRef?.current) {
+      // Fallback to window center if editor not ready
+      return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    }
     
-    // Calculate center in screen coordinates
-    const centerScreenX = viewportWidth / 2;
-    const centerScreenY = viewportHeight / 2;
+    // Get the actual viewport bounds in page coordinates
+    const viewport = tldrawEditorRef.current.getViewportPageBounds();
     
-    // Return the center coordinates
+    // Calculate center of visible viewport
     return {
-      x: centerScreenX,
-      y: centerScreenY,
+      x: viewport.x + viewport.w / 2,
+      y: viewport.y + viewport.h / 2
     };
-  }, []);
+  }, [tldrawEditorRef]);
 
   const onNodesChange = useCallback(
     (changes) => {
@@ -3836,6 +4070,12 @@ function AppWrapper({ user, onLogout }) {
       console.log('📊 handleShowTable called with chartId:', chartId);
       console.log('📊 Current nodes:', nodes.map(n => ({ id: n.id, type: n.type })));
       
+      // Validate TLDraw editor reference
+      if (!tldrawEditorRef?.current) {
+        alert('⚠️ Canvas editor not ready. Please try again.');
+        return;
+      }
+      
       // Use setNodes with functional update to get current nodes
       setNodes(currentNodes => {
         console.log('📊 Inside setNodes, currentNodes:', currentNodes.map(n => ({ id: n.id, type: n.type })));
@@ -3882,11 +4122,31 @@ function AppWrapper({ user, onLogout }) {
           aggregation: chartNode.data.agg
         });
         
-        // Calculate position for table node (to the right of chart with offset)
+        // Get the chart shape from TLDraw to calculate position (similar to insights)
+        let chartShape = tldrawEditorRef.current.getShape(chartId);
+        
+        if (!chartShape) {
+          // If direct lookup fails, search through all shapes
+          const allShapes = tldrawEditorRef.current.getCurrentPageShapes();
+          chartShape = allShapes.find(shape => 
+            shape.id === chartId || 
+            shape.id.includes(chartId) ||
+            (shape.type === 'chart' && shape.props?.title === chartNode.data?.title)
+          );
+        }
+        
+        if (!chartShape) {
+          console.error('❌ Chart shape not found in TLDraw');
+          alert('Chart shape not found in canvas');
+          return currentNodes;
+        }
+        
+        // Calculate position for table (to the right of chart, adjacent positioning like insights)
+        const chartWidth = chartShape.props.w || 800;
+        const tableOffset = 50; // Space between chart and table (same as insights)
         const tablePosition = {
-          x: chartNode.position.x + (chartNode.data.strategy === 'same-dimension-different-measures' || 
-              chartNode.data.strategy === 'same-measure-different-dimensions-stacked' ? 520 : 400),
-          y: chartNode.position.y
+          x: chartShape.x + chartWidth + tableOffset,
+          y: chartShape.y
         };
         
         // Create table node
@@ -3900,11 +4160,15 @@ function AppWrapper({ user, onLogout }) {
             headers: headers,
             rows: rows,
             totalRows: rows.length,
-            sourceChartId: chartId
+            sourceChartId: chartId,
+            width: 300,  // Set explicit width
+            height: 400  // Set explicit height
           },
           draggable: true,
           selectable: true
         };
+        
+        console.log('📊 Creating table at position:', tablePosition, 'with size:', { w: 300, h: 400 });
         
         // Add table node to canvas
         return [...currentNodes, newTableNode];
@@ -3919,7 +4183,7 @@ function AppWrapper({ user, onLogout }) {
       console.error('Failed to show table:', error);
       alert('Failed to show table: ' + error.message);
     }
-  }, [trackTableCreated]);
+  }, [nodes, tldrawEditorRef, trackTableCreated]);
 
   /**
    * Handle AI Query Shortcut from Contextual Toolbar
@@ -3955,6 +4219,291 @@ function AppWrapper({ user, onLogout }) {
       setScrollToAI(true);
     }, 300);
   }, [nodes]);
+
+  /**
+   * Handle Chart Actions Shortcut from Contextual Toolbar
+   * Opens the chart actions panel without scrolling (general chart options)
+   */
+  const handleChartActionsShortcut = useCallback((chartId) => {
+    console.log('🎛️ Chart Actions shortcut triggered for chart:', chartId);
+    console.log('🎛️ Current nodes:', nodes.map(n => ({ id: n.id, type: n.type })));
+    
+    // Find the chart node
+    const chartNode = nodes.find(n => n.id === chartId);
+    if (!chartNode) {
+      console.error('❌ Chart node not found:', chartId);
+      console.error('❌ Available node IDs:', nodes.map(n => n.id));
+      return;
+    }
+    
+    // Set the selected chart for actions
+    setSelectedChartForActions(chartNode);
+    
+    // Close all other panels first (just like the sidebar toggle buttons do)
+    setUploadPanelOpen(false);
+    setVariablesPanelOpen(false);
+    setMergePanelOpen(false);
+    setInstructionsPanelOpen(false);
+    setSettingsPanelOpen(false);
+    
+    // Open the chart actions panel (without scrolling to AI section)
+    setChartActionsPanelOpen(true);
+  }, [nodes]);
+
+  /**
+   * Handle Transform Shortcut from Contextual Toolbar
+   * Opens the transform prompt for the selected chart
+   */
+  const handleTransformShortcut = useCallback(async (chartId) => {
+    console.log('✨ Transform shortcut triggered for chart:', chartId);
+    
+    // Find the chart node
+    const chartNode = nodes.find(n => n.id === chartId);
+    if (!chartNode) {
+      console.error('❌ Chart node not found:', chartId);
+      return;
+    }
+    
+    // Validate API key
+    if (!apiKey?.trim()) {
+      alert('⚠️ Please configure your Gemini API key in Settings first.');
+      setSettingsPanelOpen(true);
+      return;
+    }
+    
+    // Get TLDraw editor
+    if (!tldrawEditorRef?.current) {
+      console.error('❌ TLDraw editor not available');
+      return;
+    }
+    
+    const editor = tldrawEditorRef.current;
+    
+    // Try different ID formats to find the chart shape
+    const possibleIds = [
+      chartId,
+      `shape:${chartId}`,
+      chartId.startsWith('shape:') ? chartId.substring(6) : `shape:${chartId}`
+    ];
+    
+    let chartShape = null;
+    for (const possibleId of possibleIds) {
+      chartShape = editor.getShape(possibleId);
+      if (chartShape) {
+        console.log('✅ Found chart shape with ID:', possibleId);
+        break;
+      }
+    }
+    
+    if (!chartShape) {
+      console.error('❌ Chart shape not found after trying all ID formats');
+      console.error('   Tried IDs:', possibleIds);
+      // Try to get all shapes and find the chart
+      const allShapes = editor.getCurrentPageShapes();
+      console.log('   All shapes:', allShapes.map(s => ({ id: s.id, type: s.type })));
+      
+      // Try to find by type and matching ID
+      chartShape = allShapes.find(shape => 
+        shape.type === 'chart' && (
+          shape.id === chartId || 
+          shape.id === `shape:${chartId}` ||
+          shape.id.includes(chartId)
+        )
+      );
+      
+      if (chartShape) {
+        console.log('✅ Found chart shape by searching all shapes:', chartShape.id);
+      } else {
+        alert('Could not find chart on canvas. Please try again.');
+        return;
+      }
+    }
+    
+    // Calculate position (to the right of the chart)
+    const cardX = chartShape.x + chartShape.props.w + 50;
+    const cardY = chartShape.y;
+    
+    // Generate contextual examples based on chart data
+    const examples = [];
+    const { dimensions, measures, isDerived, chartType } = chartNode.data;
+    
+    if (dimensions && dimensions.length > 0 && measures && measures.length > 0) {
+      const dim = dimensions[0];
+      const measure = measures[0];
+      
+      examples.push(`Keep only top 10 ${dim} by ${measure}`);
+      examples.push(`Filter where ${measure} > 1000`);
+      examples.push(`Sort by ${measure} descending`);
+    }
+    
+    // Additional examples for specific chart types
+    if (chartType === 'scatter') {
+      examples.push('Calculate ratio: measure1 / measure2');
+      examples.push('Filter outliers (remove extreme values)');
+    } else if (chartType === 'line' || chartType === 'area') {
+      examples.push('Show only last 12 periods');
+      examples.push('Calculate moving average');
+    }
+    
+    // Examples for derived charts
+    if (isDerived) {
+      examples.push('Further filter the transformed data');
+      examples.push('Convert to percentage of total');
+    }
+    
+    // Limit to 4 examples
+    const finalExamples = examples.slice(0, 4);
+    
+    // Create Transform Card shape on canvas
+    const { createShapeId } = await import('@tldraw/tldraw');
+    const cardId = createShapeId();
+    
+    editor.createShape({
+      id: cardId,
+      type: 'transform-card',
+      x: cardX,
+      y: cardY,
+      props: {
+        w: 350,
+        h: 340,
+        chartId: chartId,
+        chartTitle: chartNode.data.title || 'Untitled Chart',
+        dimensions: dimensions || [],
+        measures: measures || [],
+        isDerived: isDerived || false,
+        chartType: chartType || '',
+        examples: finalExamples,
+        prompt: '',
+        isLoading: false,
+        error: '',
+        datasetId: datasetId,
+        apiKey: apiKey,
+        model: selectedModel || 'gemini-2.5-flash'
+      }
+    });
+    
+    // Select and focus the new card
+    editor.select(cardId);
+    
+    console.log('✅ Transform card created for chart:', chartNode.data.title);
+  }, [nodes, apiKey, tldrawEditorRef, datasetId, selectedModel]);
+
+  /**
+   * Generate Query Examples
+   * Helper function to generate contextual question examples for Query Card
+   */
+  const generateQueryExamples = useCallback((chartData) => {
+    const { dimensions, measures, chartType } = chartData;
+    const examples = [];
+
+    const dim = dimensions?.[0];
+    const meas = measures?.[0];
+    const secondMeas = measures?.[1];
+
+    // Question-focused examples
+    if (meas && dim) {
+      examples.push(`Why does ${meas} vary across ${dim}?`);
+      examples.push(`What's the average ${meas} for each ${dim}?`);
+      examples.push(`Which ${dim} has the highest ${meas}?`);
+    }
+    
+    if (secondMeas && dim) {
+      examples.push(`How does ${meas} compare to ${secondMeas} by ${dim}?`);
+    }
+    
+    if (chartType === 'line' && dim) {
+      examples.push(`What's the trend in ${meas} over ${dim}?`);
+    }
+    
+    if (chartType === 'scatter') {
+      examples.push(`Are there any outliers in this data?`);
+    }
+    
+    // Generic questions
+    examples.push(`What insights can you find in this chart?`);
+
+    return Array.from(new Set(examples)).slice(0, 5);
+  }, []);
+
+  /**
+   * Handle Query Shortcut from Contextual Toolbar
+   * Creates a Query Card on the canvas for asking AI questions
+   */
+  const handleQueryShortcut = useCallback(async (chartId) => {
+    console.log('💬 Query shortcut triggered for chart:', chartId);
+
+    if (!apiKey?.trim()) {
+      alert('⚠️ Please configure your Gemini API key in Settings first.');
+      setSettingsPanelOpen(true);
+      return;
+    }
+
+    if (!tldrawEditorRef.current) {
+      console.error('❌ TLDraw editor not ready.');
+      return;
+    }
+    const editor = tldrawEditorRef.current;
+
+    // Find chart shape (robust ID search)
+    let chartShape = null;
+    const possibleIds = [
+      `shape:${chartId}`,
+      chartId,
+      chartId.startsWith('shape:') ? chartId : `shape:${chartId}`,
+    ];
+
+    for (const possibleId of possibleIds) {
+      chartShape = editor.getShape(possibleId);
+      if (chartShape) {
+        console.log(`✅ Found chart shape with ID: ${possibleId}`);
+        break;
+      }
+    }
+
+    if (!chartShape) {
+      console.error('❌ Chart shape not found for ID:', chartId, 'Attempted IDs:', possibleIds);
+      const allShapes = editor.getCurrentPageShapes();
+      console.error('❌ All shapes on canvas:', allShapes.map(s => ({ id: s.id, type: s.type })));
+      alert('❌ Could not find the chart on the canvas. Please try selecting it again.');
+      return;
+    }
+
+    const chartNode = nodes.find(n => n.id === chartId);
+    if (!chartNode) {
+      console.error('❌ Chart node not found in React state:', chartId);
+      return;
+    }
+
+    // Calculate position for Query Card (to the right of the chart)
+    const cardX = chartShape.x + chartShape.props.w + 50;
+    const cardY = chartShape.y;
+
+    // Generate contextual question examples
+    const examples = generateQueryExamples(chartNode.data);
+
+    // Create the QueryCardShape
+    const { createShapeId } = await import('@tldraw/tldraw');
+    const queryCardId = createShapeId();
+
+    editor.createShape({
+      id: queryCardId,
+      type: 'query-card',
+      x: cardX,
+      y: cardY,
+      props: {
+        chartId: chartNode.id,
+        chartTitle: chartNode.data.title || 'Untitled Chart',
+        dimensions: chartNode.data.dimensions || [],
+        measures: chartNode.data.measures || [],
+        chartType: chartNode.data.chartType || 'bar',
+        examples: examples,
+        apiKey: apiKey,
+        model: selectedModel || 'gemini-2.5-flash',
+      },
+    });
+
+    console.log('✅ Query card created for chart:', chartNode.data.title);
+  }, [nodes, apiKey, selectedModel, tldrawEditorRef, setSettingsPanelOpen, generateQueryExamples]);
 
   /**
    * Handle Chart Insight Shortcut from Contextual Toolbar
@@ -4032,13 +4581,17 @@ function AppWrapper({ user, onLogout }) {
         throw new Error('Chart shape not found in canvas.');
       }
       
-      // Calculate position for textbox (to the right of chart)
-      const textboxX = chartShape.x + chartShape.props.w + 50;
+      // Calculate position for insights textbox (to the right of chart, adjacent positioning)
+      const chartWidth = chartShape.props.w || 800;
+      const insightsOffset = 50; // Space between chart and insights
+      const textboxX = chartShape.x + chartWidth + insightsOffset;
       const textboxY = chartShape.y;
       
       // Prepare insights text
       const insightsContent = result.generic_insights || result.insight || 'No insights generated';
-      const insightsText = `AI Generated\n\n${insightsContent}`;
+      
+      // Get chart title for the insights header
+      const chartTitle = chartNode.data?.title || chartShape.props?.title || 'Chart';
       
       // Create TLDraw textbox for insights
       const { createShapeId } = await import('@tldraw/tldraw');
@@ -4051,13 +4604,15 @@ function AppWrapper({ user, onLogout }) {
         y: textboxY,
         props: {
           w: 300,
-          h: 200,
-          text: insightsText,
-          fontSize: 12
+          h: 400,
+          text: insightsContent,
+          fontSize: 14,
+          isAIInsights: true,
+          chartTitle: chartTitle
         }
       });
       
-      console.log('✅ Chart insights generated from toolbar shortcut');
+      console.log(`✅ Chart insights generated from toolbar for "${chartTitle}" at position:`, { x: textboxX, y: textboxY });
       
       // Track AI insight generation for session analytics
       trackAIInsight();
@@ -4206,7 +4761,8 @@ function AppWrapper({ user, onLogout }) {
         apiKey: apiKey || '',
         model: selectedModel || 'gemini-2.5-flash',
         width: 320,
-        height: 160
+        height: 160,
+        isNewlyCreated: true
       }
     }));
     
@@ -4314,7 +4870,8 @@ function AppWrapper({ user, onLogout }) {
             dimensions: dims, 
             measures: meas, 
             agg: newAgg,
-            filters: node.data.filters || {} // Maintain filters during aggregation change
+            filters: node.data.filters || {}, // Maintain filters during aggregation change
+            sort_order: node.data.sortOrder || 'dataset' // Maintain sort order during aggregation change
           };
           
           console.log('📡 Making aggregation API call:', { 
@@ -4418,6 +4975,225 @@ function AppWrapper({ user, onLogout }) {
           // Revert optimistic change on error
           setNodes(nds => nds.map(n => n.id === nodeId ? ({ ...n, data: { ...n.data, agg: (node.data.agg || 'sum') } }) : n));
           alert('Aggregation update failed: ' + e.message);
+        }
+      })();
+
+      return updatedNodes;
+    });
+  }, [datasetId]);
+
+  // Update sort order on an existing chart node
+  const updateChartSortOrder = useCallback(async (nodeId, newSortOrder) => {
+    console.log('🔄 Sort order change requested:', { nodeId, newSortOrder });
+    
+    setNodes(currentNodes => {
+      const node = currentNodes.find(n => n.id === nodeId);
+      if (!node) {
+        console.log('❌ Node not found in current nodes:', nodeId);
+        return currentNodes;
+      }
+      
+      const dims = node.data.dimensions || [];
+      const meas = node.data.measures || [];
+      const table = node.data.table || [];
+      const isDerived = node.data.isDerived || false;
+      
+      // Use the global datasetId as primary source
+      const currentDatasetId = datasetId || node.data.datasetId;
+      
+      console.log('📋 Sort order update context:', { 
+        nodeId, 
+        currentSortOrder: node.data.sortOrder,
+        newSortOrder, 
+        dims, 
+        meas, 
+        currentDatasetId,
+        isDerived,
+        hasTable: !!table.length
+      });
+      
+      // Only categorical charts with 1 dimension can be sorted
+      if (dims.length !== 1) {
+        console.warn('⚠️ Sort order only applies to charts with 1 dimension');
+        return currentNodes;
+      }
+      
+      // For derived charts, handle sort client-side
+      if (isDerived && table.length > 0) {
+        console.log('✨ Derived chart detected - sorting client-side');
+        
+        // Create a copy of the table
+        let sortedTable = [...table];
+        const dimensionCol = dims[0];
+        const measureCol = meas[0];
+        
+        // Apply sort
+        if (newSortOrder === 'ascending') {
+          sortedTable.sort((a, b) => {
+            const aVal = String(a[dimensionCol]);
+            const bVal = String(b[dimensionCol]);
+            return aVal.localeCompare(bVal);
+          });
+        } else if (newSortOrder === 'descending') {
+          sortedTable.sort((a, b) => {
+            const aVal = String(a[dimensionCol]);
+            const bVal = String(b[dimensionCol]);
+            return bVal.localeCompare(aVal);
+          });
+        } else if (newSortOrder === 'measure_desc' && measureCol) {
+          sortedTable.sort((a, b) => (b[measureCol] || 0) - (a[measureCol] || 0));
+        } else if (newSortOrder === 'measure_asc' && measureCol) {
+          sortedTable.sort((a, b) => (a[measureCol] || 0) - (b[measureCol] || 0));
+        }
+        // For 'dataset', keep original order (no sorting needed)
+        
+        // Regenerate chart with sorted data
+        const chartType = node.data.chartType || 'bar';
+        const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
+        
+        if (chartConfig && chartConfig.isSupported(dims.length, meas.length)) {
+          const option = chartConfig.createOption(sortedTable, { dimensions: dims, measures: meas });
+          
+          return currentNodes.map(n => 
+            n.id === nodeId ? ({
+              ...n,
+              data: {
+                ...n.data,
+                sortOrder: newSortOrder,
+                table: sortedTable,
+                chartData: option.series,
+                chartLayout: option
+              }
+            }) : n
+          );
+        }
+        
+        // Fallback: just update sort order and table
+        return currentNodes.map(n => 
+          n.id === nodeId ? ({
+            ...n,
+            data: {
+              ...n.data,
+              sortOrder: newSortOrder,
+              table: sortedTable
+            }
+          }) : n
+        );
+      }
+      
+      // For non-derived charts, use existing API call logic
+      if (!currentDatasetId) {
+        console.warn('❌ Missing dataset ID for sort order update:', { nodeId });
+        return currentNodes;
+      }
+
+      console.log('✅ Validation passed, proceeding with sort order update');
+
+      // Optimistically update UI so the dropdown reflects immediately
+      const updatedNodes = currentNodes.map(n => 
+        n.id === nodeId ? ({ ...n, data: { ...n.data, sortOrder: (newSortOrder || 'dataset') } }) : n
+      );
+
+      // Make the API call asynchronously
+      (async () => {
+        try {
+          const body = { 
+            dataset_id: currentDatasetId, 
+            dimensions: dims, 
+            measures: meas, 
+            agg: node.data.agg || 'sum',
+            filters: node.data.filters || {},
+            sort_order: newSortOrder
+          };
+          
+          console.log('📡 Making sort order API call:', { 
+            endpoint: `${API}/charts`, 
+            body 
+          });
+          
+          const res = await fetch(`${API}/charts`, { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify(body) 
+          });
+          
+          if (!res.ok) {
+            const errorText = await res.text();
+            console.error('❌ API call failed:', res.status, errorText);
+            throw new Error(`HTTP ${res.status}: ${errorText}`);
+          }
+          
+          const chart = await res.json();
+          
+          console.log('📥 Sort order API response:', {
+            hasTable: !!chart.table,
+            tableLength: chart.table?.length,
+            tableSample: chart.table?.slice(0, 3),
+            sortOrder: chart.sort_order
+          });
+          
+          // Use ECharts registry to regenerate chart
+          const chartType = node.data.chartType || 'bar';
+          const chartConfig = ECHARTS_TYPES[chartType.toUpperCase()];
+          
+          let updatedData;
+          if (chartConfig && chartConfig.isSupported(dims.length, meas.length)) {
+            console.log('📊 Chart config found and supported:', chartType.toUpperCase());
+            try {
+              const option = chartConfig.createOption(chart.table, {
+                dimensions: chart.dimensions,
+                measures: chart.measures
+              });
+              
+              console.log('✨ Generated ECharts option for sort order:', {
+                hasSeries: !!option.series,
+                seriesLength: option.series?.length,
+                firstCategory: option.xAxis?.data?.[0]
+              });
+              
+              updatedData = {
+                chartData: option.series,
+                chartLayout: option,
+                sortOrder: newSortOrder || 'dataset',
+                table: chart.table || [],
+                dimensions: chart.dimensions,
+                measures: chart.measures,
+                filters: chart.filters || node.data.filters || {}
+              };
+            } catch (error) {
+              console.error('❌ Error generating ECharts option:', error);
+              throw error;
+            }
+          } else {
+            console.warn('⚠️ Chart config not found or not supported');
+            updatedData = {
+              sortOrder: newSortOrder || 'dataset',
+              table: chart.table || [],
+              dimensions: chart.dimensions,
+              measures: chart.measures,
+              filters: chart.filters || node.data.filters || {}
+            };
+          }
+          
+          console.log('✅ Sort order update successful, applying to node:', {
+            nodeId,
+            newSortOrder,
+            hasChartData: !!updatedData.chartData,
+            hasChartLayout: !!updatedData.chartLayout
+          });
+          
+          setNodes(nds => nds.map(n => n.id === nodeId ? ({
+            ...n,
+            data: { 
+              ...n.data, 
+              ...updatedData
+            }
+          }) : n));
+        } catch (e) {
+          console.error('❌ Sort order update failed:', e);
+          // Revert optimistic change on error
+          setNodes(nds => nds.map(n => n.id === nodeId ? ({ ...n, data: { ...n.data, sortOrder: (node.data.sortOrder || 'dataset') } }) : n));
+          alert('Sort order update failed: ' + e.message);
         }
       })();
 
@@ -4584,10 +5360,20 @@ function AppWrapper({ user, onLogout }) {
       console.log('📊 Creating chart for same-dimension-different-measures:', {
         chartType: activeChartType.id,
         dims: dims.length,
-        measures: measures.length
+        measures: measures.length,
+        hasStatistics: !!payload.statistics
       });
       
-      const option = activeChartType.createOption(rows, payload);
+      // Include statistics in payload
+      const enhancedPayload = {
+        ...payload,
+        statistics: payload.statistics || {}
+      };
+      
+      let option = activeChartType.createOption(rows, enhancedPayload);
+      
+      // Apply universal enhancements
+      option = applyUniversalEnhancements(option, activeChartType.id, enhancedPayload.statistics, rows, enhancedPayload);
       
       if (option && option.series) {
         return {
@@ -4886,11 +5672,15 @@ function AppWrapper({ user, onLogout }) {
     const standardPayload = {
       ...payload,
       dimensions: payload.dimensions || [xKey],
-      measures: payload.measures || [numKey].filter(Boolean)
+      measures: payload.measures || [numKey].filter(Boolean),
+      statistics: payload.statistics || {} // Pass through statistics from backend
     };
     
     // Use ECharts registry to create option
-    const option = activeChartType.createOption(rows, standardPayload);
+    let option = activeChartType.createOption(rows, standardPayload);
+    
+    // Apply universal enhancements
+    option = applyUniversalEnhancements(option, activeChartType.id, standardPayload.statistics, rows, standardPayload);
     
     // Validate that the option has required properties
     if (!option || !option.series || !Array.isArray(option.series)) {
@@ -4913,10 +5703,11 @@ function AppWrapper({ user, onLogout }) {
       };
     }
     
-    console.log('✅ Valid ECharts option created:', {
-      chartType: activeChartType.name,
+    console.log('✅ Valid ECharts option created with enhancements:', {
+      chartType: activeChartType.id,
       seriesCount: option.series.length,
-      rowsCount: rows.length
+      rowsCount: rows.length,
+      hasStatistics: !!standardPayload.statistics && Object.keys(standardPayload.statistics).length > 0
     });
     
     return {
@@ -5028,7 +5819,8 @@ function AppWrapper({ user, onLogout }) {
           agg: chart.agg || 'sum',
           datasetId: nodeDatasetId,
           table: chart.table || [],
-          filters: chart.filters || {} // Store filters for persistence
+          filters: chart.filters || {}, // Store filters for persistence
+          isNewlyCreated: true
         }
       }));
       
@@ -5055,6 +5847,214 @@ function AppWrapper({ user, onLogout }) {
     }
   }, [nodes, apiKey, selectedModel, updateTokenUsage, getViewportCenter, handleShowTable, updateChartAgg, handleAIExplore, setNodes, setEdges, deselectAllCharts, trackChartsMerged, trackAIUsed]);
 
+  /**
+   * Handle Transform Complete
+   * Creates a new derived chart from transformation result
+   */
+  const handleTransformComplete = useCallback(async (transformResult) => {
+    console.log('✅ Transform complete:', transformResult);
+    
+    try {
+      // Extract result data
+      const {
+        chart_id,
+        table,
+        dimensions,
+        measures,
+        title,
+        parent_chart_id,
+        transformation_steps,
+        sort_order,
+        agg
+      } = transformResult;
+      
+      // Get parent chart position for positioning derived chart
+      const parentNode = nodes.find(n => n.id === parent_chart_id);
+      let newPosition;
+      
+      if (parentNode && tldrawEditorRef?.current) {
+        // Get parent chart shape from TLDraw
+        const parentShape = tldrawEditorRef.current.getShape(`shape:${parent_chart_id}`);
+        if (parentShape) {
+          // Position to the right of parent chart with offset
+          newPosition = {
+            x: parentShape.x + parentShape.props.w + 50,
+            y: parentShape.y
+          };
+        }
+      }
+      
+      // Fallback to viewport center if parent not found
+      if (!newPosition) {
+        newPosition = getViewportCenter();
+      }
+      
+      // Determine default chart type
+      const defaultChartType = getEChartsDefaultType(dimensions.length, measures.length);
+      const chartTypeId = defaultChartType.id;
+      
+      // Create figure using existing function
+      const figure = figureFromPayload({ 
+        table, 
+        dimensions, 
+        measures, 
+        title, 
+        agg,
+        sort_order 
+      }, chartTypeId);
+      
+      // Create new derived chart node
+      const newChartNode = {
+        id: chart_id,
+        type: 'chart',
+        position: newPosition,
+        draggable: true,
+        selectable: false,
+        data: {
+          title,
+          figure,
+          chartType: chartTypeId,
+          selected: false,
+          onSelect: handleChartSelect,
+          onShowTable: handleShowTable,
+          onAggChange: updateChartAgg,
+          onAIExplore: handleAIExplore,
+          agg: agg || 'sum',
+          sortOrder: sort_order || 'dataset',
+          dimensions,
+          measures,
+          datasetId: datasetId,
+          table,
+          filters: {},
+          isNewlyCreated: true,
+          // Lineage metadata
+          parentChartId: parent_chart_id,
+          transformationSteps: transformation_steps,
+          isDerived: true
+        }
+      };
+      
+      setNodes(nds => nds.concat(newChartNode));
+      
+      // Track chart creation
+      trackChartCreatedByAI();
+      
+      console.log('✅ Derived chart created:', chart_id);
+      showToast(`Transformed chart created: ${title}`, 'success');
+    } catch (error) {
+      console.error('❌ Failed to create derived chart:', error);
+      alert('Failed to create derived chart: ' + error.message);
+    }
+  }, [nodes, tldrawEditorRef, getViewportCenter, figureFromPayload, getEChartsDefaultType, 
+      handleChartSelect, handleShowTable, updateChartAgg, handleAIExplore, datasetId, 
+      trackChartCreatedByAI, showToast]);
+
+  // Listen for transform-complete events from TransformCardShape
+  useEffect(() => {
+    const handleTransformCompleteEvent = (event) => {
+      console.log('🎯 Transform complete event received:', event.detail);
+      const { result } = event.detail;
+      
+      // Call handleTransformComplete with the result
+      handleTransformComplete(result);
+    };
+    
+    window.addEventListener('transform-complete', handleTransformCompleteEvent);
+    
+    return () => {
+      window.removeEventListener('transform-complete', handleTransformCompleteEvent);
+    };
+  }, [handleTransformComplete]);
+
+  // Listen for query-complete events from QueryCardShape
+  useEffect(() => {
+    const handleQueryCompleteEvent = async (event) => {
+      console.log('💬 Query complete event received:', event.detail);
+      const { result, cardId, chartId } = event.detail;
+
+      if (!tldrawEditorRef.current) {
+        console.error('❌ TLDraw editor not available');
+        return;
+      }
+      const editor = tldrawEditorRef.current;
+      
+      try {
+        // Get the card shape to find its position
+        const cardShape = editor.getShape(cardId);
+        if (!cardShape) {
+          console.error('❌ Could not find query card shape:', cardId);
+          return;
+        }
+
+        // Create AI insights textbox at card position
+        const textboxX = cardShape.x;
+        const textboxY = cardShape.y;
+        const textboxWidth = 300;
+        const textboxHeight = 400;
+        
+        // Get chart title for the insights header
+        const chartTitle = result.scope_info?.chart_title || 'Chart';
+        
+        // Strip markdown formatting from the answer for clean display
+        const stripMarkdown = (text) => {
+          if (!text) return text;
+          return text
+            .replace(/\*\*\*(.+?)\*\*\*/g, '$1')  // Bold + italic
+            .replace(/\*\*(.+?)\*\*/g, '$1')      // Bold
+            .replace(/\*(.+?)\*/g, '$1')          // Italic
+            .replace(/^[\s]*\*[\s]+/gm, '• ')     // Bullets
+            .replace(/^[\s]*-[\s]+/gm, '• ')      // Dashes to bullets
+            .replace(/^#+\s+/gm, '')              // Headers
+            .replace(/`(.+?)`/g, '$1')            // Inline code
+            .replace(/\[(.+?)\]\(.+?\)/g, '$1')   // Links
+            .trim();
+        };
+        
+        // Format the answer text for display - strip markdown, keep simple format
+        const cleanAnswer = stripMarkdown(result.answer);
+        const answerText = `Q: ${result.query}\n\n${cleanAnswer}`;
+        
+        // Create textbox with insights format (same as chart insights)
+        const { createShapeId } = await import('@tldraw/tldraw');
+        const textboxId = createShapeId();
+        
+        editor.createShape({
+          id: textboxId,
+          type: 'textbox',
+          x: textboxX,
+          y: textboxY,
+          props: {
+            w: textboxWidth,
+            h: textboxHeight,
+            text: answerText,
+            fontSize: 14,
+            isAIInsights: true,
+            chartTitle: `${chartTitle} Query` // Will display as "[Chart Title] Query Insights"
+          }
+        });
+        
+        console.log(`✅ Created AI query insights textbox: ${textboxId}`);
+        
+        // Delete the Query Card
+        editor.deleteShape(cardId);
+        console.log(`✅ Deleted query card: ${cardId}`);
+        
+        // Update token usage if provided
+        if (result.token_usage) {
+          updateTokenUsage(result.token_usage);
+        }
+      } catch (error) {
+        console.error('❌ Error creating query insights:', error);
+      }
+    };
+
+    window.addEventListener('query-complete', handleQueryCompleteEvent);
+
+    return () => {
+      window.removeEventListener('query-complete', handleQueryCompleteEvent);
+    };
+  }, [tldrawEditorRef, updateTokenUsage]);
+
   // Handle merge context submission
   const handleMergeContextSubmit = useCallback(async () => {
     if (!mergeContextText.trim()) {
@@ -5078,6 +6078,92 @@ function AppWrapper({ user, onLogout }) {
     setMergeContextText('');
   }, [mergeContextText, pendingMergeCharts, performAIAssistedMerge]);
 
+  /**
+   * Create Dataset Table
+   * Creates an interactive table showing the full uploaded dataset
+   */
+  const createDatasetTable = useCallback(async (datasetId, filename, dimensions, measures, totalRows) => {
+    try {
+      console.log('📊 Creating dataset table for:', datasetId);
+      
+      // Get all column names (dimensions + measures)
+      const allColumns = [...dimensions, ...measures];
+      
+      if (allColumns.length === 0) {
+        console.warn('No columns available for dataset table');
+        return;
+      }
+      
+      // Create a simple aggregation to get all rows (group by all columns)
+      // This effectively gives us the raw data without any aggregation
+      const response = await fetch(`${API}/charts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dataset_id: datasetId,
+          dimensions: allColumns, // Use all columns as dimensions
+          measures: [],  // No measures needed
+          agg: 'count'  // Aggregation doesn't matter since we're not measuring anything
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to fetch dataset: ${errorText}`);
+      }
+      
+      const chartData = await response.json();
+      const tableData = chartData.table || [];
+      
+      if (tableData.length === 0) {
+        console.warn('No data in dataset table');
+        return;
+      }
+      
+      // Extract headers from the first row
+      const headers = Object.keys(tableData[0]);
+      
+      // Convert table data to rows format
+      const tableRows = tableData.map(row => 
+        headers.map(header => row[header])
+      );
+      
+      // Position table at viewport center
+      const position = getViewportCenter();
+      
+      // Create table node
+      const tableId = `dataset-table-${datasetId}-${Date.now()}`;
+      const newTableNode = {
+        id: tableId,
+        type: 'table',
+        position: position,
+        data: {
+          title: `${filename} - Full Dataset`,
+          headers: headers,
+          rows: tableRows,
+          totalRows: totalRows,
+          width: 800,  // Larger width for dataset tables
+          height: 600   // Larger height for dataset tables
+        },
+        draggable: true,
+        selectable: true
+      };
+      
+      setNodes(nds => [...nds, newTableNode]);
+      
+      console.log(`✅ Dataset table created with ${tableRows.length} rows visible`);
+      
+      // Track table creation
+      trackTableCreated();
+      
+    } catch (error) {
+      console.error('Failed to create dataset table:', error);
+      console.error('Error details:', error.message);
+      // Don't alert - this is a non-critical enhancement
+      console.warn('Dataset table creation failed, but upload succeeded');
+    }
+  }, [getViewportCenter, trackTableCreated]);
+
   const uploadCSV = async (file) => {
     try {
       const fd = new FormData();
@@ -5089,24 +6175,40 @@ function AppWrapper({ user, onLogout }) {
       }
       
       const meta = await res.json();
-      setDatasetId(meta.dataset_id);
-      setCsvFileName(file.name); // Store the filename
-      setAvailableDimensions(meta.dimensions || []);
-      setAvailableMeasures(meta.measures || []);
+      
+      // Create new dataset object
+      const newDataset = {
+        id: meta.dataset_id,
+        filename: file.name,
+        dimensions: meta.dimensions || [],
+        measures: meta.measures || [],
+        rows: meta.rows,
+        analysis: null,
+        uploadedAt: new Date().toISOString()
+      };
+      
+      // Add to datasets array
+      setDatasets(prev => [...prev, newDataset]);
+      
+      // Auto-select the new dataset
+      setActiveDatasetId(meta.dataset_id);
+      
       // Clear previous selections
       setSelectedDimension('');
       setSelectedMeasure('');
       
-      // Clear previous analysis
-      setDatasetAnalysis(null);
+      // Clear analysis state for new dataset
       setAnalysisError(null);
       setEditingMetadata(false);
       setMetadataDraft(null);
       
-      console.log('CSV uploaded successfully:', meta);
+      console.log('📁 Dataset added:', newDataset);
+      console.log(`📊 Total datasets: ${datasets.length + 1}`);
+      
+      // Create a dataset table on the canvas
+      createDatasetTable(meta.dataset_id, file.name, meta.dimensions, meta.measures, meta.rows);
     } catch (error) {
       console.error('Failed to upload CSV:', error);
-      setCsvFileName(''); // Clear filename on error
       alert(`Failed to upload CSV: ${error.message}`);
     }
   };
@@ -5429,6 +6531,7 @@ function AppWrapper({ user, onLogout }) {
             table: chart.table || [],
             ai_generated: true,
             ai_method: method,
+            isNewlyCreated: true,
             ai_reasoning: suggestion.reasoning,
             user_goal: goalText,  // Store original user query for AI-assisted merging
             filters: chart.filters || {} // Store filters for persistence
@@ -5737,11 +6840,13 @@ function AppWrapper({ user, onLogout }) {
             onAggChange: updateChartAgg,
             onAIExplore: handleAIExplore,
             agg: chart.agg || 'sum',
+            sortOrder: chart.sort_order || 'dataset', // Initialize sort order
             dimensions: [selectedDimension],
             measures: [selectedMeasure],
             datasetId: datasetId, // Store dataset ID for aggregation updates
             table: chart.table || [], // Add table data for chart type switching
-            filters: chart.filters || {} // Store filters for persistence
+            filters: chart.filters || {}, // Store filters for persistence
+            isNewlyCreated: true
           } 
         }));
         
@@ -5834,13 +6939,15 @@ function AppWrapper({ user, onLogout }) {
             onAIExplore: handleAIExplore,
             stats,  // Keep stats for reference
             agg: 'sum', 
+            sortOrder: 'dataset', // Initialize sort order
             dimensions: ['bin'],  // Synthetic dimension
             measures: ['count'],  // Synthetic measure
             datasetId: datasetId,
             table: chart.table || tableData,
             onAggChange: updateChartAgg,
             isHistogram: true,  // Mark as histogram for special handling
-            originalMeasure: selectedMeasure  // Store the real measure for semantic merging
+            originalMeasure: selectedMeasure,  // Store the real measure for semantic merging
+            isNewlyCreated: true
           } 
         }));
         
@@ -5891,11 +6998,13 @@ function AppWrapper({ user, onLogout }) {
             onShowTable: handleShowTable, 
             onAIExplore: handleAIExplore,
             agg: 'count', 
+            sortOrder: 'dataset', // Initialize sort order
             dimensions: [selectedDimension], 
             measures: ['count'],  // Store count as measure 
             table: chart.table || [],  // Add table data for chart type switching
             datasetId: datasetId, // Store dataset ID for aggregation updates
-            onAggChange: updateChartAgg 
+            onAggChange: updateChartAgg,
+            isNewlyCreated: true
           } 
         }));
         
@@ -6009,9 +7118,12 @@ function AppWrapper({ user, onLogout }) {
           }
         }}
         onPaneClick={onPaneClick}
+        onTransformShortcut={handleTransformShortcut}
+        onQueryShortcut={handleQueryShortcut}
         onAIQueryShortcut={handleAIQueryShortcut}
         onChartInsightShortcut={handleChartInsightShortcut}
         onShowTableShortcut={handleShowTable}
+        onChartActionsShortcut={handleChartActionsShortcut}
         apiKeyConfigured={!!(apiKey && apiKey.trim())}
         fitView
         style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
@@ -6250,39 +7362,46 @@ function AppWrapper({ user, onLogout }) {
         >
           <div className="p-4">
             <div className="space-y-4">
+              {/* Dataset Selector - Shows all uploaded datasets */}
+              {datasets.length > 0 && (
+                <div className="border border-gray-200 rounded-lg overflow-hidden bg-white">
+                  <DatasetSelector 
+                    datasets={datasets}
+                    activeDatasetId={activeDatasetId}
+                    onSelect={switchDataset}
+                    onRemove={removeDataset}
+                  />
+                </div>
+              )}
+              
               {/* File Upload Section */}
               <div className="pt-2">
                 <FileUpload 
                   accept=".csv,.xlsx,.xls" 
                   onFileChange={(file) => uploadCSV(file)}
                 >
-                  {datasetId ? 'Replace File' : 'Choose CSV or XLSX File'}
+                  {datasets.length > 0 ? 'Add Another Dataset' : 'Choose CSV or XLSX File'}
                 </FileUpload>
                 
-                {(csvFileName || datasetId) && (
-                  <div className="mt-2 border border-gray-200 rounded-lg p-3 bg-gray-50/30">
-                    {csvFileName && (
-                      <div className="text-sm text-gray-600 flex items-center gap-2 mb-2">
-                        <File size={16} />
-                        {csvFileName}
-                      </div>
-                    )}
+                {/* Active Dataset Info */}
+                {activeDataset && (
+                  <div className="mt-2 border border-blue-200 rounded-lg p-3 bg-blue-50/30">
+                    <div className="text-sm text-gray-600 flex items-center gap-2 mb-2">
+                      <File size={16} />
+                      <span className="font-medium">Active:</span> {csvFileName}
+                    </div>
                     
-                    {datasetId && (
-                      <>
-                        <Badge variant="outline" className="w-fit mb-2">
-                          Dataset: {datasetId.substring(0, 8)}...
-                        </Badge>
-                        <div className="flex gap-1 flex-wrap">
-                          <Badge variant="secondary" className="text-xs">
-                            {availableDimensions.length} dimensions
-                          </Badge>
-                          <Badge variant="secondary" className="text-xs">
-                            {availableMeasures.length} measures
-                          </Badge>
-                        </div>
-                      </>
-                    )}
+                    <div className="flex gap-1 flex-wrap">
+                      <Badge variant="outline" className="w-fit">
+                        {activeDataset.rows?.toLocaleString() || '?'} rows
+                      </Badge>
+                      <Badge variant="secondary" className="text-xs">
+                        {availableDimensions.length} dimensions
+                      </Badge>
+                      <Badge variant="secondary" className="text-xs">
+                        {availableMeasures.length} measures
+                      </Badge>
+                    </div>
                   </div>
                 )}
               </div>
@@ -6677,6 +7796,8 @@ function AppWrapper({ user, onLogout }) {
                 datasetId,
                 apiKey,
                 figureFromPayload,
+                dataset: activeDataset?.dataframe,  // NEW - Pass dataset for Draw mode
+                datasetAnalysis: datasetAnalysis,   // NEW - Pass AI-generated metadata
                 // Session tracking functions
                 trackChartCreatedByAI,  // Canvas AI creates charts using AI
                 trackTableCreated,
@@ -6938,11 +8059,13 @@ function AppWrapper({ user, onLogout }) {
           updateTokenUsage={updateTokenUsage}
           onChartTypeChange={updateChartType}
           onAggChange={updateChartAgg}
+          onSortOrderChange={updateChartSortOrder}
           onShowTable={handleShowTable}
           tldrawEditorRef={tldrawEditorRef}
           onChartUpdate={handleChartUpdate}
           scrollToAI={scrollToAI}
           setScrollToAI={setScrollToAI}
+          setNodes={setNodes}
         />
       )}
 
@@ -7243,6 +8366,40 @@ function AuthenticatedApp() {
   const { isAuthenticated, isLoading, user, logout } = useAuth();
   const { endSession } = useSessionTracking();
 
+  // Backend wake-up state for Render.com free tier cold starts
+  const [backendStatus, setBackendStatus] = useState('checking'); // 'checking' | 'awake' | 'error'
+  const backendPingRef = useRef(null);
+
+  useEffect(() => {
+    let attempts = 0;
+    const maxAttempts = 20;
+    const retryDelay = 3000;
+
+    const pingBackend = async () => {
+      try {
+        const res = await fetch(`${API}`, { signal: AbortSignal.timeout(8000) });
+        if (res.ok) {
+          setBackendStatus('awake');
+          console.log('Backend is awake');
+          return;
+        }
+      } catch {
+        // backend still sleeping, will retry
+      }
+      attempts++;
+      if (attempts < maxAttempts) {
+        backendPingRef.current = setTimeout(pingBackend, retryDelay);
+      } else {
+        setBackendStatus('error');
+      }
+    };
+
+    pingBackend();
+    return () => {
+      if (backendPingRef.current) clearTimeout(backendPingRef.current);
+    };
+  }, []);
+
   // Combined logout handler that ends session first
   const handleLogout = async () => {
     console.log('👋 Logging out and ending session...');
@@ -7262,11 +8419,64 @@ function AuthenticatedApp() {
   }
 
   if (!isAuthenticated) {
-    return <LoginPage />;
+    return (
+      <>
+        <LoginPage />
+        {backendStatus === 'checking' && (
+          <div style={{
+            position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
+            background: 'rgba(30,27,75,0.95)', border: '1px solid rgba(139,92,246,0.4)',
+            borderRadius: '12px', padding: '12px 20px', display: 'flex', alignItems: 'center',
+            gap: '10px', zIndex: 9999, backdropFilter: 'blur(8px)',
+            boxShadow: '0 4px 24px rgba(0,0,0,0.4)'
+          }}>
+            <div style={{
+              width: '16px', height: '16px', border: '2px solid rgba(139,92,246,0.3)',
+              borderTop: '2px solid #a78bfa', borderRadius: '50%',
+              animation: 'spin 0.8s linear infinite', flexShrink: 0
+            }} />
+            <span style={{ color: '#c4b5fd', fontSize: '13px', whiteSpace: 'nowrap' }}>
+              Waking up server, this may take ~30s…
+            </span>
+          </div>
+        )}
+        {backendStatus === 'error' && (
+          <div style={{
+            position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
+            background: 'rgba(69,10,10,0.95)', border: '1px solid rgba(239,68,68,0.4)',
+            borderRadius: '12px', padding: '12px 20px', display: 'flex', alignItems: 'center',
+            gap: '10px', zIndex: 9999, backdropFilter: 'blur(8px)',
+            boxShadow: '0 4px 24px rgba(0,0,0,0.4)'
+          }}>
+            <span style={{ color: '#fca5a5', fontSize: '13px' }}>
+              ⚠ Server is slow to respond. Try refreshing if issues persist.
+            </span>
+          </div>
+        )}
+      </>
+    );
   }
 
   return (
     <GlobalFilterProvider>
+      {backendStatus === 'checking' && (
+        <div style={{
+          position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(30,27,75,0.95)', border: '1px solid rgba(139,92,246,0.4)',
+          borderRadius: '12px', padding: '12px 20px', display: 'flex', alignItems: 'center',
+          gap: '10px', zIndex: 9999, backdropFilter: 'blur(8px)',
+          boxShadow: '0 4px 24px rgba(0,0,0,0.4)'
+        }}>
+          <div style={{
+            width: '16px', height: '16px', border: '2px solid rgba(139,92,246,0.3)',
+            borderTop: '2px solid #a78bfa', borderRadius: '50%',
+            animation: 'spin 0.8s linear infinite', flexShrink: 0
+          }} />
+          <span style={{ color: '#c4b5fd', fontSize: '13px', whiteSpace: 'nowrap' }}>
+            Waking up server, this may take ~30s…
+          </span>
+        </div>
+      )}
       <AppWrapper user={user} onLogout={handleLogout} />
     </GlobalFilterProvider>
   );

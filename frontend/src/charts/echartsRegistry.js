@@ -4,7 +4,10 @@
  * Defines compatibility rules, data transformations, and option generation
  */
 
-import { BarChart, PieChart, Circle, TrendingUp, BarChart2 } from 'lucide-react';
+import { BarChart, PieChart, Circle, TrendingUp, BarChart2, Activity, Filter, LayoutGrid } from 'lucide-react';
+import { MARK_LINE_CONFIG, createValueBasedVisualMap, createQuartileMarkArea, createSliderDataZoom, createEmphasisConfig } from './visualEnhancements';
+import { createBarChartTooltip, createLineChartTooltip, createPieChartTooltip, createScatterTooltip, createMultiSeriesBarTooltip, createGroupedBarTooltip } from './tooltipFactory';
+import { createSmartLabels, createPieLabels } from './labelHelper';
 
 /**
  * Default ECharts Colors
@@ -44,36 +47,65 @@ export const ECHARTS_TYPES = {
     createOption: (data, payload) => {
       const xKey = payload.dimensions[0];
       const yKey = payload.measures[0];
+      const statistics = payload.statistics || {};
       
       const categories = data.map(r => truncateText(r[xKey]));
       const values = data.map(r => r[yKey] || 0);
       const fullLabels = data.map(r => String(r[xKey])); // For tooltips
       
-      return {
-        tooltip: {
-          trigger: 'axis',
-          axisPointer: { type: 'shadow' },
-          formatter: (params) => {
-            const dataIndex = params[0].dataIndex;
-            return `${fullLabels[dataIndex]}<br/>${yKey}: ${params[0].value}`;
-          }
-        },
-        dataZoom: [
+      // Prepare mark lines with statistics
+      const markLineData = [];
+      if (statistics[yKey]) {
+        const stats = statistics[yKey];
+        markLineData.push(
           {
-            type: 'inside',
-            xAxisIndex: 0,
-            start: 0,
-            end: 100,
-            zoomOnMouseWheel: true,
-            moveOnMouseMove: true,
-            moveOnMouseWheel: false
+            ...MARK_LINE_CONFIG.average,
+            yAxis: stats.mean,
+            label: { 
+              ...MARK_LINE_CONFIG.average.label,
+              formatter: `Avg: ${stats.mean.toFixed(1)}`
+            }
           }
-        ],
+        );
+      }
+      
+      // Slider zoom for large datasets
+      const dataZoomConfig = data.length > 20 ? createSliderDataZoom(data.length) : [
+        {
+          type: 'inside',
+          xAxisIndex: 0,
+          start: 0,
+          end: 100,
+          zoomOnMouseWheel: true,
+          moveOnMouseMove: true,
+          moveOnMouseWheel: false
+        }
+      ];
+      
+      // Value-based visual map for color scaling
+      const visualMap = statistics[yKey] ? {
+        show: false, // Hide the visual map component
+        dimension: 0,
+        seriesIndex: 0,
+        min: statistics[yKey].min,
+        max: statistics[yKey].max,
+        inRange: {
+          color: ['#e3f2fd', '#90caf9', '#42a5f5', '#1e88e5', '#1565c0', '#0d47a1']
+        }
+      } : null;
+      
+      // Smart labels
+      const smartLabels = createSmartLabels(data, yKey, 0.75);
+      
+      return {
+        tooltip: createBarChartTooltip(statistics, [yKey], data, fullLabels),
+        visualMap: visualMap,
+        dataZoom: dataZoomConfig,
         grid: {
           left: '80px',
           right: '30px',
           top: '20px',
-          bottom: '80px',
+          bottom: data.length > 20 ? '100px' : '80px', // Extra space for slider
           containLabel: false
         },
         xAxis: {
@@ -103,8 +135,11 @@ export const ECHARTS_TYPES = {
         series: [{
           type: 'bar',
           data: values,
-          itemStyle: { color: DEFAULT_ECHARTS_COLORS.categorical[0] },
-          label: { show: false }
+          itemStyle: visualMap ? undefined : { color: DEFAULT_ECHARTS_COLORS.categorical[0] },
+          label: smartLabels,
+          markLine: markLineData.length > 0 ? { data: markLineData, silent: true } : undefined,
+          emphasis: createEmphasisConfig(),
+          animationDelay: (idx) => idx * 10
         }]
       };
     }
@@ -118,6 +153,7 @@ export const ECHARTS_TYPES = {
     createOption: (data, payload) => {
       const labelKey = payload.dimensions[0];
       const valueKey = payload.measures[0];
+      const statistics = payload.statistics || {};
       
       const pieData = data.map((r, i) => ({
         name: truncateText(r[labelKey]),
@@ -127,13 +163,7 @@ export const ECHARTS_TYPES = {
       }));
       
       return {
-        tooltip: {
-          trigger: 'item',
-          formatter: (params) => {
-            const fullName = params.data.fullName || params.name;
-            return `${fullName}<br/>${valueKey}: ${params.value} (${params.percent}%)`;
-          }
-        },
+        tooltip: createPieChartTooltip(statistics, valueKey, pieData),
         legend: {
           type: pieData.length > 10 ? 'scroll' : 'plain',
           orient: 'vertical',
@@ -151,16 +181,23 @@ export const ECHARTS_TYPES = {
           data: pieData,
           label: {
             show: true,
-            formatter: '{b}',
-            fontSize: 11
+            formatter: '{b}\n{d}%',
+            fontSize: 11,
+            color: '#374151'
+          },
+          labelLine: {
+            show: true,
+            length: 15,
+            length2: 10
           },
           emphasis: {
-            itemStyle: {
-              shadowBlur: 10,
-              shadowOffsetX: 0,
-              shadowColor: 'rgba(0, 0, 0, 0.5)'
-            }
-          }
+            ...createEmphasisConfig(),
+            scale: true,
+            scaleSize: 10
+          },
+          animationType: 'scale',
+          animationEasing: 'elasticOut',
+          animationDelay: (idx) => idx * 50
         }]
       };
     }
@@ -170,39 +207,93 @@ export const ECHARTS_TYPES = {
     id: 'line',
     label: 'Line Chart',
     icon: TrendingUp,
-    isSupported: (dims, measures) => dims === 1 && measures === 1,
+    isSupported: (dims, measures) => dims === 1 && measures >= 1 && measures <= 5,
     createOption: (data, payload) => {
       const xKey = payload.dimensions[0];
-      const yKey = payload.measures[0];
+      const measureKeys = payload.measures;
+      const statistics = payload.statistics || {};
       
       const categories = data.map(r => truncateText(r[xKey]));
-      const values = data.map(r => r[yKey] || 0);
       const fullLabels = data.map(r => String(r[xKey]));
       
+      // Create series for each measure with mark lines
+      const series = measureKeys.map((measure, idx) => {
+        const seriesData = data.map(r => r[measure] || 0);
+        
+        // Add mark lines and mark areas for this series
+        const markLineData = [];
+        let markArea = null;
+        
+        if (statistics[measure]) {
+          const stats = statistics[measure];
+          markLineData.push({
+            ...MARK_LINE_CONFIG.average,
+            yAxis: stats.mean,
+            label: {
+              ...MARK_LINE_CONFIG.average.label,
+              formatter: `${measure} Avg: ${stats.mean.toFixed(1)}`
+            }
+          });
+          
+          // Add quartile range mark area
+          markArea = createQuartileMarkArea(statistics, measure);
+        }
+        
+        return {
+          name: measure,
+          type: 'line',
+          data: seriesData,
+          smooth: data.length > 20, // Smooth for large datasets
+          lineStyle: { 
+            color: DEFAULT_ECHARTS_COLORS.categorical[idx % DEFAULT_ECHARTS_COLORS.categorical.length], 
+            width: 3 
+          },
+          itemStyle: { 
+            color: DEFAULT_ECHARTS_COLORS.categorical[idx % DEFAULT_ECHARTS_COLORS.categorical.length] 
+          },
+          symbol: 'circle',
+          symbolSize: 6,
+          markLine: markLineData.length > 0 ? { 
+            data: markLineData, 
+            silent: true,
+            symbol: ['none', 'none']
+          } : undefined,
+          markArea: markArea,
+          emphasis: createEmphasisConfig(),
+          animationDelay: idx * 100
+        };
+      });
+      
+      // Slider zoom for time series data
+      const dataZoomConfig = data.length > 20 ? createSliderDataZoom(data.length) : [
+        {
+          type: 'inside',
+          xAxisIndex: 0,
+          start: 0,
+          end: 100,
+          zoomOnMouseWheel: true,
+          moveOnMouseMove: true,
+          moveOnMouseWheel: false
+        }
+      ];
+      
       return {
-        tooltip: {
-          trigger: 'axis',
-          formatter: (params) => {
-            const dataIndex = params[0].dataIndex;
-            return `${fullLabels[dataIndex]}<br/>${yKey}: ${params[0].value}`;
-          }
-        },
-        dataZoom: [
-          {
-            type: 'inside',
-            xAxisIndex: 0,
-            start: 0,
-            end: 100,
-            zoomOnMouseWheel: true,
-            moveOnMouseMove: true,
-            moveOnMouseWheel: false
-          }
-        ],
+        tooltip: createLineChartTooltip(statistics, measureKeys, data, fullLabels),
+        legend: measureKeys.length > 1 ? {
+          data: measureKeys,
+          top: 5,
+          textStyle: { fontSize: 11, color: '#6B7280' },
+          selector: measureKeys.length > 2 ? [
+            { type: 'all', title: 'All' },
+            { type: 'inverse', title: 'Inverse' }
+          ] : undefined
+        } : undefined,
+        dataZoom: dataZoomConfig,
         grid: {
           left: '80px',
           right: '30px',
-          top: '20px',
-          bottom: '80px',
+          top: measureKeys.length > 1 ? '50px' : '20px',
+          bottom: data.length > 20 ? '100px' : '80px',
           containLabel: false
         },
         xAxis: {
@@ -224,20 +315,12 @@ export const ECHARTS_TYPES = {
           axisLabel: { fontSize: 11, color: '#4B5563' },
           axisLine: { lineStyle: { color: '#E5E7EB' } },
           splitLine: { lineStyle: { color: '#E5E7EB' } },
-          name: yKey || 'Value',
+          name: measureKeys.length === 1 ? measureKeys[0] : 'Value',
           nameLocation: 'middle',
           nameGap: 50,
           nameTextStyle: { fontSize: 12, color: '#4B5563' }
         },
-        series: [{
-          type: 'line',
-          data: values,
-          smooth: false,
-          lineStyle: { color: DEFAULT_ECHARTS_COLORS.quantitative[0], width: 3 },
-          itemStyle: { color: DEFAULT_ECHARTS_COLORS.quantitative[0] },
-          symbol: 'circle',
-          symbolSize: 6
-        }]
+        series: series
       };
     }
   },
@@ -251,19 +334,52 @@ export const ECHARTS_TYPES = {
       const labelKey = payload.dimensions[0];
       const xKey = payload.measures[0];
       const yKey = payload.measures[1];
+      const statistics = payload.statistics || {};
       
       const scatterData = data.map(r => ({
         value: [r[xKey] || 0, r[yKey] || 0],
         name: String(r[labelKey])
       }));
       
-      return {
-        tooltip: {
-          trigger: 'item',
-          formatter: (params) => {
-            return `<b>${params.data.name}</b><br/>${xKey}: ${params.value[0]}<br/>${yKey}: ${params.value[1]}`;
+      // Create quadrant lines (average lines for X and Y)
+      const markLineData = [];
+      if (statistics[xKey] && statistics[yKey]) {
+        markLineData.push(
+          {
+            xAxis: statistics[xKey].mean,
+            label: {
+              formatter: `Avg ${xKey}`,
+              position: 'insideEndTop',
+              fontSize: 10,
+              color: '#6366f1'
+            },
+            lineStyle: {
+              type: 'dashed',
+              color: '#6366f1',
+              width: 2,
+              opacity: 0.6
+            }
+          },
+          {
+            yAxis: statistics[yKey].mean,
+            label: {
+              formatter: `Avg ${yKey}`,
+              position: 'insideEndTop',
+              fontSize: 10,
+              color: '#6366f1'
+            },
+            lineStyle: {
+              type: 'dashed',
+              color: '#6366f1',
+              width: 2,
+              opacity: 0.6
+            }
           }
-        },
+        );
+      }
+      
+      return {
+        tooltip: createScatterTooltip(statistics, xKey, yKey),
         dataZoom: [
           {
             type: 'inside',
@@ -314,7 +430,14 @@ export const ECHARTS_TYPES = {
             opacity: 0.7,
             borderColor: 'white',
             borderWidth: 1
-          }
+          },
+          markLine: markLineData.length > 0 ? {
+            data: markLineData,
+            silent: true,
+            symbol: ['none', 'none']
+          } : undefined,
+          emphasis: createEmphasisConfig(),
+          animationDelay: (idx) => idx * 5
         }]
       };
     }
@@ -328,6 +451,7 @@ export const ECHARTS_TYPES = {
     createOption: (data, payload) => {
       const xKey = payload.dimensions[0];
       const measureKeys = payload.measures;
+      const statistics = payload.statistics || {};
       
       const categories = [...new Set(data.map(r => r[xKey]))];
       const truncatedCategories = categories.map(c => truncateText(c));
@@ -341,44 +465,37 @@ export const ECHARTS_TYPES = {
         }),
         itemStyle: {
           color: DEFAULT_ECHARTS_COLORS.comparative[i % DEFAULT_ECHARTS_COLORS.comparative.length]
-        }
+        },
+        emphasis: createEmphasisConfig()
       }));
       
+      // Slider zoom for large datasets
+      const dataZoomConfig = data.length > 20 ? createSliderDataZoom(data.length) : [
+        {
+          type: 'inside',
+          xAxisIndex: 0,
+          start: 0,
+          end: 100,
+          zoomOnMouseWheel: true,
+          moveOnMouseMove: true,
+          moveOnMouseWheel: false
+        }
+      ];
+      
       return {
-        tooltip: {
-          trigger: 'axis',
-          axisPointer: { type: 'shadow' },
-          formatter: (params) => {
-            const categoryIndex = params[0].dataIndex;
-            let tooltip = `${categories[categoryIndex]}<br/>`;
-            params.forEach(param => {
-              tooltip += `${param.seriesName}: ${param.value}<br/>`;
-            });
-            return tooltip;
-          }
-        },
+        tooltip: createGroupedBarTooltip(statistics, measureKeys, categories, categories),
         legend: {
           type: measureKeys.length > 10 ? 'scroll' : 'plain',
           data: measureKeys.map(m => truncateText(m)),
           bottom: 10,
           textStyle: { fontSize: 11, color: '#6B7280' }
         },
-        dataZoom: [
-          {
-            type: 'inside',
-            xAxisIndex: 0,
-            start: 0,
-            end: 100,
-            zoomOnMouseWheel: true,
-            moveOnMouseMove: true,
-            moveOnMouseWheel: false
-          }
-        ],
+        dataZoom: dataZoomConfig,
         grid: {
           left: '80px',
           right: '30px',
           top: '20px',
-          bottom: '100px',
+          bottom: data.length > 20 ? '120px' : '100px',
           containLabel: false
         },
         xAxis: {
@@ -719,54 +836,72 @@ export const ECHARTS_TYPES = {
     createOption: (data, payload) => {
       const xKey = payload.dimensions[0];
       const measureKeys = payload.measures;
+      const statistics = payload.statistics || {};
       
       const categories = data.map(r => truncateText(r[xKey]));
       const fullLabels = data.map(r => String(r[xKey]));
       
-      // Create series for each measure
-      const series = measureKeys.map((measure, idx) => ({
-        name: measure,
-        type: 'bar',
-        data: data.map(r => r[measure] || 0),
-        animationDelay: idx * 100,
-        itemStyle: {
-          color: DEFAULT_ECHARTS_COLORS.categorical[idx % DEFAULT_ECHARTS_COLORS.categorical.length]
+      // Create series for each measure with mark lines
+      const series = measureKeys.map((measure, idx) => {
+        const markLineData = [];
+        if (statistics[measure]) {
+          const stats = statistics[measure];
+          markLineData.push({
+            ...MARK_LINE_CONFIG.average,
+            yAxis: stats.mean,
+            label: {
+              ...MARK_LINE_CONFIG.average.label,
+              formatter: `${measure} Avg: ${stats.mean.toFixed(1)}`
+            }
+          });
         }
-      }));
+        
+        return {
+          name: measure,
+          type: 'bar',
+          data: data.map(r => r[measure] || 0),
+          animationDelay: idx * 100,
+          itemStyle: {
+            color: DEFAULT_ECHARTS_COLORS.categorical[idx % DEFAULT_ECHARTS_COLORS.categorical.length]
+          },
+          markLine: markLineData.length > 0 ? {
+            data: markLineData,
+            silent: true,
+            symbol: ['none', 'none']
+          } : undefined,
+          emphasis: createEmphasisConfig()
+        };
+      });
+      
+      // Slider zoom for large datasets
+      const dataZoomConfig = data.length > 20 ? createSliderDataZoom(data.length) : [
+        {
+          type: 'inside',
+          xAxisIndex: 0,
+          start: 0,
+          end: 100,
+          zoomOnMouseWheel: true,
+          moveOnMouseMove: true
+        }
+      ];
       
       return {
-        tooltip: {
-          trigger: 'axis',
-          axisPointer: { type: 'shadow' },
-          formatter: (params) => {
-            const dataIndex = params[0].dataIndex;
-            let tooltip = `<strong>${fullLabels[dataIndex]}</strong><br/>`;
-            params.forEach(param => {
-              tooltip += `${param.marker} ${param.seriesName}: ${param.value.toLocaleString()}<br/>`;
-            });
-            return tooltip;
-          }
-        },
+        tooltip: createMultiSeriesBarTooltip(statistics, measureKeys, data, fullLabels),
         legend: {
           data: measureKeys,
           top: 5,
-          textStyle: { fontSize: 11, color: '#4B5563' }
+          textStyle: { fontSize: 11, color: '#4B5563' },
+          selector: measureKeys.length > 2 ? [
+            { type: 'all', title: 'All' },
+            { type: 'inverse', title: 'Inverse' }
+          ] : undefined
         },
-        dataZoom: [
-          {
-            type: 'inside',
-            xAxisIndex: 0,
-            start: 0,
-            end: 100,
-            zoomOnMouseWheel: true,
-            moveOnMouseMove: true
-          }
-        ],
+        dataZoom: dataZoomConfig,
         grid: {
           left: '80px',
           right: '30px',
           top: '50px',
-          bottom: '80px',
+          bottom: data.length > 20 ? '100px' : '80px',
           containLabel: false
         },
         xAxis: {
@@ -798,6 +933,392 @@ export const ECHARTS_TYPES = {
           nameTextStyle: { fontSize: 12, color: '#4B5563' }
         },
         series: series
+      };
+    }
+  },
+
+  GAUGE: {
+    id: 'gauge',
+    label: 'Gauge',
+    icon: Activity,
+    isSupported: (dims, measures) => dims === 0 && measures === 1,
+    createOption: (data, payload) => {
+      const measure = payload.measures[0];
+      const statistics = payload.statistics || {};
+      
+      // Extract single value
+      const value = data && data.length > 0 ? (data[0][measure] || 0) : 0;
+      
+      // Determine min/max from statistics or defaults
+      let min = 0;
+      let max = 100;
+      if (statistics[measure]) {
+        min = Math.floor(statistics[measure].min);
+        max = Math.ceil(statistics[measure].max);
+      }
+      
+      return {
+        tooltip: {
+          formatter: `{b}: {c}`
+        },
+        series: [{
+          type: 'gauge',
+          min: min,
+          max: max,
+          splitNumber: 5,
+          radius: '75%',
+          axisLine: {
+            lineStyle: {
+              width: 30,
+              color: [
+                [0.3, '#ef4444'],
+                [0.7, '#facc15'],
+                [1, '#22c55e']
+              ]
+            }
+          },
+          pointer: {
+            itemStyle: { color: 'auto' },
+            width: 8
+          },
+          axisTick: {
+            distance: -30,
+            length: 8,
+            lineStyle: { color: '#fff', width: 2 }
+          },
+          splitLine: {
+            distance: -30,
+            length: 30,
+            lineStyle: { color: '#fff', width: 4 }
+          },
+          axisLabel: {
+            distance: 30,
+            color: '#4B5563',
+            fontSize: 14
+          },
+          detail: {
+            valueAnimation: true,
+            formatter: '{value}',
+            color: 'auto',
+            fontSize: 24,
+            fontWeight: 'bold',
+            offsetCenter: [0, '70%']
+          },
+          title: {
+            offsetCenter: [0, '90%'],
+            fontSize: 16,
+            color: '#6B7280'
+          },
+          data: [{ value: value, name: measure }]
+        }]
+      };
+    }
+  },
+
+  FUNNEL: {
+    id: 'funnel',
+    label: 'Funnel',
+    icon: Filter,
+    isSupported: (dims, measures) => dims === 1 && measures === 1,
+    createOption: (data, payload) => {
+      const labelKey = payload.dimensions[0];
+      const valueKey = payload.measures[0];
+      const statistics = payload.statistics || {};
+      
+      // Sort data descending by value for funnel
+      const sortedData = [...data].sort((a, b) => (b[valueKey] || 0) - (a[valueKey] || 0));
+      
+      const funnelData = sortedData.map((r, i) => ({
+        name: String(r[labelKey]),
+        value: r[valueKey] || 0,
+        itemStyle: {
+          color: DEFAULT_ECHARTS_COLORS.categorical[i % DEFAULT_ECHARTS_COLORS.categorical.length]
+        }
+      }));
+      
+      // Calculate conversion rates
+      const total = funnelData[0]?.value || 1;
+      
+      return {
+        tooltip: {
+          trigger: 'item',
+          formatter: (params) => {
+            const percentage = ((params.value / total) * 100).toFixed(1);
+            const conversionFromPrev = params.dataIndex > 0 
+              ? ((params.value / funnelData[params.dataIndex - 1].value) * 100).toFixed(1)
+              : '100.0';
+            
+            return `
+              <div style="padding: 8px;">
+                <div style="font-weight: 600; margin-bottom: 6px;">${params.name}</div>
+                <div>Value: <strong>${params.value.toLocaleString()}</strong></div>
+                <div>% of Total: <strong>${percentage}%</strong></div>
+                ${params.dataIndex > 0 ? `<div>Conversion: <strong>${conversionFromPrev}%</strong></div>` : ''}
+              </div>
+            `;
+          }
+        },
+        legend: {
+          orient: 'vertical',
+          left: 'left',
+          top: 'center',
+          textStyle: { fontSize: 11, color: '#6B7280' }
+        },
+        series: [{
+          type: 'funnel',
+          sort: 'descending',
+          gap: 2,
+          left: '30%',
+          top: '10%',
+          bottom: '10%',
+          width: '60%',
+          label: {
+            show: true,
+            position: 'inside',
+            formatter: '{b}: {c}',
+            fontSize: 12,
+            color: '#fff'
+          },
+          labelLine: {
+            show: false
+          },
+          itemStyle: {
+            borderColor: '#fff',
+            borderWidth: 1
+          },
+          emphasis: createEmphasisConfig(),
+          data: funnelData
+        }]
+      };
+    }
+  },
+
+  TREEMAP: {
+    id: 'treemap',
+    label: 'Treemap',
+    icon: LayoutGrid,
+    isSupported: (dims, measures) => (dims === 1 || dims === 2) && measures === 1,
+    createOption: (data, payload) => {
+      const dimensions = payload.dimensions;
+      const measure = payload.measures[0];
+      const statistics = payload.statistics || {};
+      
+      // Transform data to tree structure
+      const transformToTreeData = () => {
+        if (dimensions.length === 1) {
+          // Flat treemap
+          return data.map((r, i) => ({
+            name: String(r[dimensions[0]]),
+            value: r[measure] || 0,
+            itemStyle: {
+              color: DEFAULT_ECHARTS_COLORS.categorical[i % DEFAULT_ECHARTS_COLORS.categorical.length]
+            }
+          }));
+        } else {
+          // Hierarchical treemap
+          const grouped = {};
+          data.forEach(r => {
+            const parent = String(r[dimensions[0]]);
+            const child = String(r[dimensions[1]]);
+            if (!grouped[parent]) {
+              grouped[parent] = { name: parent, children: [] };
+            }
+            grouped[parent].children.push({
+              name: child,
+              value: r[measure] || 0
+            });
+          });
+          return Object.values(grouped);
+        }
+      };
+      
+      const treeData = transformToTreeData();
+      
+      return {
+        tooltip: {
+          formatter: (params) => {
+            const percentage = statistics[measure] 
+              ? ((params.value / statistics[measure].sum) * 100).toFixed(1)
+              : '';
+            
+            return `
+              <div style="padding: 8px;">
+                <div style="font-weight: 600; margin-bottom: 4px;">${params.name}</div>
+                <div>Value: <strong>${params.value.toLocaleString()}</strong></div>
+                ${percentage ? `<div>% of Total: <strong>${percentage}%</strong></div>` : ''}
+              </div>
+            `;
+          }
+        },
+        series: [{
+          type: 'treemap',
+          data: treeData,
+          roam: false,
+          breadcrumb: {
+            show: dimensions.length > 1,
+            bottom: '5%',
+            textStyle: { fontSize: 11, color: '#6B7280' }
+          },
+          label: {
+            show: true,
+            formatter: '{b}\n{c}',
+            fontSize: 11,
+            color: '#fff'
+          },
+          upperLabel: {
+            show: true,
+            height: 30,
+            fontSize: 12,
+            color: '#fff',
+            fontWeight: 'bold'
+          },
+          itemStyle: {
+            borderColor: '#fff',
+            borderWidth: 2,
+            gapWidth: 2
+          },
+          emphasis: {
+            itemStyle: {
+              borderColor: '#333',
+              borderWidth: 3
+            },
+            upperLabel: {
+              show: true,
+              fontSize: 14
+            }
+          },
+          levels: [
+            {
+              itemStyle: {
+                borderWidth: 0,
+                gapWidth: 5
+              }
+            },
+            {
+              colorSaturation: [0.35, 0.5],
+              itemStyle: {
+                gapWidth: 1,
+                borderColorSaturation: 0.6
+              }
+            }
+          ]
+        }]
+      };
+    }
+  },
+
+  CANDLESTICK: {
+    id: 'candlestick',
+    label: 'Candlestick',
+    icon: TrendingUp,
+    isSupported: (dims, measures) => dims === 1 && measures === 4,
+    createOption: (data, payload) => {
+      const xKey = payload.dimensions[0];
+      const [openKey, closeKey, lowKey, highKey] = payload.measures;
+      
+      const categories = data.map(r => truncateText(r[xKey]));
+      const fullLabels = data.map(r => String(r[xKey]));
+      
+      const candlestickData = data.map(r => [
+        r[openKey] || 0,
+        r[closeKey] || 0,
+        r[lowKey] || 0,
+        r[highKey] || 0
+      ]);
+      
+      return {
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'cross' },
+          formatter: (params) => {
+            const dataIndex = params[0].dataIndex;
+            const values = candlestickData[dataIndex];
+            const isUp = values[1] >= values[0];
+            
+            return `
+              <div style="padding: 8px;">
+                <div style="font-weight: 600; margin-bottom: 6px;">${fullLabels[dataIndex]}</div>
+                <div style="color: ${isUp ? '#22c55e' : '#ef4444'};">
+                  ${isUp ? '▲' : '▼'} ${isUp ? 'Up' : 'Down'}
+                </div>
+                <div style="margin-top: 6px;">
+                  <div>Open: <strong>${values[0].toLocaleString()}</strong></div>
+                  <div>Close: <strong>${values[1].toLocaleString()}</strong></div>
+                  <div>Low: <strong>${values[2].toLocaleString()}</strong></div>
+                  <div>High: <strong>${values[3].toLocaleString()}</strong></div>
+                  <div style="margin-top: 4px;">Change: <strong style="color: ${isUp ? '#22c55e' : '#ef4444'};">${(values[1] - values[0]).toFixed(2)}</strong></div>
+                </div>
+              </div>
+            `;
+          }
+        },
+        grid: {
+          left: '80px',
+          right: '30px',
+          top: '20px',
+          bottom: '80px',
+          containLabel: false
+        },
+        xAxis: {
+          type: 'category',
+          data: categories,
+          scale: true,
+          axisLabel: {
+            rotate: 45,
+            fontSize: 11,
+            color: '#4B5563'
+          },
+          axisLine: { lineStyle: { color: '#E5E7EB' } },
+          name: xKey,
+          nameLocation: 'middle',
+          nameGap: 60,
+          nameTextStyle: { fontSize: 12, color: '#4B5563' }
+        },
+        yAxis: {
+          type: 'value',
+          scale: true,
+          axisLabel: { fontSize: 11, color: '#4B5563' },
+          axisLine: { lineStyle: { color: '#E5E7EB' } },
+          splitLine: { lineStyle: { color: '#E5E7EB' } },
+          nameLocation: 'middle',
+          nameGap: 50,
+          nameTextStyle: { fontSize: 12, color: '#4B5563' }
+        },
+        dataZoom: [
+          {
+            type: 'inside',
+            xAxisIndex: 0,
+            start: 0,
+            end: 100
+          },
+          {
+            type: 'slider',
+            xAxisIndex: 0,
+            start: 0,
+            end: 100,
+            bottom: 10,
+            height: 20
+          }
+        ],
+        series: [{
+          type: 'candlestick',
+          data: candlestickData,
+          itemStyle: {
+            color: '#22c55e',
+            color0: '#ef4444',
+            borderColor: '#22c55e',
+            borderColor0: '#ef4444',
+            borderWidth: 2
+          },
+          emphasis: {
+            itemStyle: {
+              borderWidth: 3,
+              shadowBlur: 5,
+              shadowOffsetX: 0,
+              shadowColor: 'rgba(0, 0, 0, 0.3)'
+            }
+          }
+        }]
       };
     }
   }
@@ -843,15 +1364,19 @@ export const canConvertChartType = (fromType, toType, dims, measures) => {
 /**
  * Compatibility Matrix for Quick Reference
  * 
- * Group 1 (1D + 1M): bar ↔ pie ↔ line
- * Group 2 (1D + 2M): scatter ↔ grouped_bar ↔ dual_axis
- * Group 3 (2D + 1M): stacked_bar ↔ bubble
- * Group 4 (1D + 3-5M): multi_series_bar ↔ grouped_bar ↔ dual_axis (when 2M only)
+ * Group 1 (1D + 1M): bar ↔ pie ↔ line ↔ funnel ↔ treemap
+ * Group 2 (1D + 2M): scatter ↔ grouped_bar ↔ dual_axis ↔ line
+ * Group 3 (2D + 1M): stacked_bar ↔ bubble ↔ treemap
+ * Group 4 (1D + 3-5M): multi_series_bar ↔ line
+ * Group 5 (0D + 1M): gauge
+ * Group 6 (1D + 4M): candlestick
  */
 export const COMPATIBILITY_GROUPS = {
-  'GROUP_1': ['bar', 'pie', 'line'],
-  'GROUP_2': ['scatter', 'grouped_bar', 'dual_axis'],
-  'GROUP_3': ['stacked_bar', 'bubble'],
-  'GROUP_4': ['multi_series_bar', 'grouped_bar', 'dual_axis']
+  'GROUP_1': ['bar', 'pie', 'line', 'funnel', 'treemap'],
+  'GROUP_2': ['scatter', 'grouped_bar', 'dual_axis', 'line'],
+  'GROUP_3': ['stacked_bar', 'bubble', 'treemap'],
+  'GROUP_4': ['multi_series_bar', 'grouped_bar', 'dual_axis', 'line'],
+  'GROUP_5': ['gauge'],
+  'GROUP_6': ['candlestick']
 };
 
