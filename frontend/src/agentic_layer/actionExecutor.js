@@ -144,16 +144,19 @@ async function executeAction(action, context) {
  * Create a chart on the canvas
  */
 async function createChartAction(action, context) {
-  const { API, datasetId, setNodes, figureFromPayload, trackChartCreatedByAI } = context;
+  const { API, datasetId, apiKey, setNodes, figureFromPayload, trackChartCreatedByAI } = context;
   
-  // Call existing /charts endpoint
+  // Step 1: Create base chart — pass all AI-supplied data parameters
   const response = await fetch(`${API}/charts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       dataset_id: datasetId,
       dimensions: action.dimensions,
-      measures: action.measures
+      measures: action.measures,
+      agg: action.agg || 'sum',
+      filters: action.filters || {},
+      sort_order: action.sort_order || 'dataset'
     })
   });
   
@@ -162,22 +165,59 @@ async function createChartAction(action, context) {
     throw new Error(`Chart creation failed: ${error}`);
   }
   
-  const chart = await response.json();
+  let chart = await response.json();
+  
+  // Step 2: If AI requested a data transformation, apply it via the transform endpoint
+  // This handles derived columns (profit/unit, margin %), filtered subsets, top-k, normalize, etc.
+  if (action.transform_prompt && chart.chart_id) {
+    console.log(`🔄 Applying AI-requested transform: "${action.transform_prompt}"`);
+    try {
+      const transformResponse = await fetch(`${API}/chart-transform`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chart_id: chart.chart_id,
+          user_prompt: action.transform_prompt,
+          api_key: apiKey,
+          model: 'gemini-2.5-flash'
+        })
+      });
+      
+      if (transformResponse.ok) {
+        const transformed = await transformResponse.json();
+        if (transformed.success) {
+          console.log(`✅ Transform applied:`, transformed.transformation_steps);
+          chart = transformed; // Use transformed chart (new chart_id, new table, updated dimensions/measures)
+        } else {
+          console.warn(`⚠️ Transform returned success:false, using base chart`);
+        }
+      } else {
+        console.warn(`⚠️ Transform request failed (${transformResponse.status}), using base chart`);
+      }
+    } catch (transformErr) {
+      console.warn(`⚠️ Transform error, using base chart:`, transformErr.message);
+    }
+  }
+  
   const position = calculatePosition(action.position, action, context);
   
   // Determine chart type with validation
+  // Use dimensions/measures from the (possibly transformed) chart response
+  const finalDimensions = chart.dimensions || action.dimensions;
+  const finalMeasures = chart.measures || action.measures;
+  
   const defaultChartType = getEChartsDefaultType(
-    action.dimensions.length,
-    action.measures.length
+    finalDimensions.length,
+    finalMeasures.length
   );
   
-  // Validate that the requested chart type is compatible
+  // Validate that the requested chart type is compatible with final column counts
   let chartTypeId = action.chartType || defaultChartType.id;
   
   // Check if requested chart type is supported for this data shape
   const requestedType = ECHARTS_TYPES[chartTypeId.toUpperCase()];
-  if (requestedType && !requestedType.isSupported(action.dimensions.length, action.measures.length)) {
-    console.warn(`⚠️ Requested chart type "${chartTypeId}" doesn't support ${action.dimensions.length}D + ${action.measures.length}M. Using default: ${defaultChartType.id}`);
+  if (requestedType && !requestedType.isSupported(finalDimensions.length, finalMeasures.length)) {
+    console.warn(`⚠️ Requested chart type "${chartTypeId}" doesn't support ${finalDimensions.length}D + ${finalMeasures.length}M. Using default: ${defaultChartType.id}`);
     chartTypeId = defaultChartType.id;
   }
   
@@ -200,19 +240,24 @@ async function createChartAction(action, context) {
     draggable: true,
     selectable: false,
     data: {
-      title: chart.title || `${action.measures[0]} by ${action.dimensions[0]}`,
+      title: chart.title || `${finalMeasures[0]} by ${finalDimensions[0]}`,
       figure,
       chartType: chartTypeId,
-      dimensions: action.dimensions,
-      measures: action.measures,
+      dimensions: finalDimensions,
+      measures: finalMeasures,
       table: chart.table || [],
-      statistics: chart.statistics || {}, // Preserve statistics from backend
-      agg: chart.agg || 'sum',
+      statistics: chart.statistics || {},
+      agg: chart.agg || action.agg || 'sum',
       datasetId: datasetId,
       selected: false,
-      filters: chart.filters || {},
+      filters: chart.filters || action.filters || {},
+      sortOrder: chart.sort_order || action.sort_order || 'dataset',
       width: chartWidth,
       height: chartHeight,
+      // Lineage — populated when transform was applied
+      isDerived: chart.is_derived || false,
+      parentChartId: chart.parent_chart_id || null,
+      transformationSteps: chart.transformation_steps || null,
       // Provenance metadata
       createdBy: 'agent',
       createdByQuery: context.currentQuery || null,
@@ -222,20 +267,18 @@ async function createChartAction(action, context) {
     }
   }));
   
-  console.log(`✅ Chart created:`, chartId, 'at position', position);
+  console.log(`✅ Chart created:`, chartId, 'at position', position, 'type:', chartTypeId, 'size:', `${chartWidth}x${chartHeight}`, chart.is_derived ? '(derived)' : '');
   
   // Track AI chart creation for session analytics
   if (trackChartCreatedByAI) {
     trackChartCreatedByAI();
   }
   
-  console.log(`✅ Chart created:`, chartId, 'at position', position, 'type:', chartTypeId, 'size:', `${chartWidth}x${chartHeight}`);
-  
   return { 
     chartId, 
     position,
-    dimensions: action.dimensions,
-    measures: action.measures,
+    dimensions: finalDimensions,
+    measures: finalMeasures,
     chartType: chartTypeId,
     width: chartWidth,
     height: chartHeight

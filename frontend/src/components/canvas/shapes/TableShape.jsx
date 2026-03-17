@@ -1,5 +1,5 @@
 import React from 'react';
-import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, T } from '@tldraw/tldraw';
+import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, T, useEditor, useValue } from '@tldraw/tldraw';
 import { InteractiveTable } from './InteractiveTable';
 
 /**
@@ -40,72 +40,84 @@ export class TableShape extends BaseBoxShapeUtil {
   }
 
   component(shape) {
-    const { w, h, title, headers, rows, totalRows, isNewlyCreated } = shape.props;
-    
-    // Add animation class if newly created
-    const highlightClass = isNewlyCreated ? 'shape-highlight-new' : '';
+    const TableShapeContent = () => {
+      const editor = useEditor();
 
-    return (
-      <HTMLContainer
-        style={{
-          width: w,
-          height: h,
-          pointerEvents: 'all'
-        }}
-      >
-        <div 
-          className={highlightClass}
+      // Transparent to pointer events when a drawing/annotation tool is active
+      const isDrawingTool = useValue('isDrawingTool', () => {
+        const toolId = editor.getCurrentTool().id;
+        return toolId !== 'select' && toolId !== 'zoom';
+      }, [editor]);
+
+      const { w, h, title, headers, rows, totalRows, isNewlyCreated } = shape.props;
+      
+      // Add animation class if newly created
+      const highlightClass = isNewlyCreated ? 'shape-highlight-new' : '';
+
+      return (
+        <HTMLContainer
           style={{
-            width: '100%',
-            height: '100%',
-            backgroundColor: 'white',
-            border: '1px solid #e5e7eb',
-            borderRadius: '8px',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden'
-          }}>
-          {/* Table Header - Allows TLDraw selection and dragging */}
-          <div style={{
-            padding: '12px 16px',
-            borderBottom: '1px solid #e5e7eb',
-            backgroundColor: '#f9fafb',
-            flexShrink: 0,
-            cursor: 'move'
-          }}>
-            <h3 style={{
-              fontSize: '14px',
-              fontWeight: '600',
-              color: '#1f2937',
-              margin: 0
+            width: w,
+            height: h,
+            pointerEvents: isDrawingTool ? 'none' : 'all'
+          }}
+        >
+          <div 
+            className={highlightClass}
+            style={{
+              width: '100%',
+              height: '100%',
+              backgroundColor: 'white',
+              border: '1px solid #e5e7eb',
+              borderRadius: '8px',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden'
             }}>
-              {title || 'Data Table'}
-            </h3>
-            {totalRows > 0 && (
-              <p style={{
-                fontSize: '12px',
-                color: '#6b7280',
-                margin: '4px 0 0 0'
+            {/* Table Header - Allows TLDraw selection and dragging */}
+            <div style={{
+              padding: '12px 16px',
+              borderBottom: '1px solid #e5e7eb',
+              backgroundColor: '#f9fafb',
+              flexShrink: 0,
+              cursor: 'move'
+            }}>
+              <h3 style={{
+                fontSize: '14px',
+                fontWeight: '600',
+                color: '#1f2937',
+                margin: 0
               }}>
-                {totalRows} total rows
-              </p>
-            )}
-          </div>
+                {title || 'Data Table'}
+              </h3>
+              {totalRows > 0 && (
+                <p style={{
+                  fontSize: '12px',
+                  color: '#6b7280',
+                  margin: '4px 0 0 0'
+                }}>
+                  {totalRows} total rows
+                </p>
+              )}
+            </div>
 
-          {/* Interactive Table Content */}
-          <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-            <InteractiveTable 
-              headers={headers || []}
-              rows={rows || []}
-              totalRows={totalRows || 0}
-              width={w}
-              height={h - 80} // Account for header space (12px padding top + 12px bottom + ~56px content)
-            />
+            {/* Interactive Table Content */}
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+              <InteractiveTable 
+                headers={headers || []}
+                rows={rows || []}
+                totalRows={totalRows || 0}
+                width={w}
+                height={h - 80} // Account for header space (12px padding top + 12px bottom + ~56px content)
+              />
+            </div>
           </div>
-        </div>
-      </HTMLContainer>
-    );
+        </HTMLContainer>
+      );
+    };
+
+    return <TableShapeContent />;
   }
 
   indicator(shape) {

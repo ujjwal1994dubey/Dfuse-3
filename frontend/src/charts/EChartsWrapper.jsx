@@ -314,7 +314,10 @@ const EChartsWrapper = React.memo(({
     <div
       onClick={handleWrapperClick}
       onPointerDown={(e) => {
-        e.stopPropagation(); // Prevent TLDraw from starting drag
+        // Do NOT stop propagation here — tldraw needs to receive this event
+        // so its hit-testing can select annotations that overlap this chart.
+        // Accidental shape dragging is prevented because dragging requires
+        // the user to actually move the pointer, not just press and release.
       }}
       style={{
         width: '100%',

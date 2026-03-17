@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, T } from '@tldraw/tldraw';
+import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, T, useValue } from '@tldraw/tldraw';
 
 // Backend API endpoint
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -94,6 +94,12 @@ export class TransformCardShape extends BaseBoxShapeUtil {
         apiKey,
         model
       } = shape.props;
+
+      // Transparent to pointer events when a drawing/annotation tool is active
+      const isDrawingTool = useValue('isDrawingTool', () => {
+        const toolId = editor.getCurrentTool().id;
+        return toolId !== 'select' && toolId !== 'zoom';
+      }, [editor]);
       
       // Focus input on mount
       useEffect(() => {
@@ -215,7 +221,7 @@ export class TransformCardShape extends BaseBoxShapeUtil {
           style={{
             width: w,
             height: h,
-            pointerEvents: 'all',
+            pointerEvents: isDrawingTool ? 'none' : 'all',
             display: 'flex',
             alignItems: 'flex-start',
             justifyContent: 'center',

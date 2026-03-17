@@ -1,5 +1,5 @@
 import React from 'react';
-import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, T } from '@tldraw/tldraw';
+import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, T, useEditor, useValue } from '@tldraw/tldraw';
 import EChartsWrapper from '../../../charts/EChartsWrapper';
 import { useGlobalFilter } from '../../../contexts/GlobalFilterContext';
 
@@ -74,6 +74,15 @@ export class ChartShape extends BaseBoxShapeUtil {
     // Create a functional component to use hooks
     const ChartShapeContent = () => {
       const { globalFilter, setGlobalFilter } = useGlobalFilter();
+      const editor = useEditor();
+
+      // When any drawing/annotation tool is active, make the chart transparent
+      // to pointer events so tldraw's drawing engine can receive them directly.
+      // Only 'select' and 'zoom' should keep the chart interactive.
+      const isDrawingTool = useValue('isDrawingTool', () => {
+        const toolId = editor.getCurrentTool().id;
+        return toolId !== 'select' && toolId !== 'zoom';
+      }, [editor]);
       
       // Handle chart element clicks for filtering
       const handleChartClick = (params) => {
@@ -132,7 +141,10 @@ export class ChartShape extends BaseBoxShapeUtil {
             width: w,
             height: h,
             overflow: 'hidden',
-            pointerEvents: 'all'  // Enable pointer events for legend interactions and tooltips
+            // Transparent to pointer events when a drawing/annotation tool is active,
+            // so tldraw's draw, arrow, eraser, etc. tools work over charts.
+            // Restored to 'all' in select/zoom mode so chart tooltips and filtering work.
+            pointerEvents: isDrawingTool ? 'none' : 'all'
           }}
         >
           <div

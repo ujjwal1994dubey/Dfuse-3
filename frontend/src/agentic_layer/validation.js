@@ -21,6 +21,10 @@ export const CreateChartActionSchema = z.object({
     POSITION_TYPES.AUTO
   ]),
   referenceChartId: z.string().optional(),
+  agg: z.string().optional(),
+  filters: z.record(z.array(z.string())).optional(),
+  sort_order: z.string().optional(),
+  transform_prompt: z.string().optional(),
   reasoning: z.string()
 });
 
@@ -113,6 +117,10 @@ export const CreateDashboardActionSchema = z.object({
     formatted_value: z.string().optional(),
     text: z.string().optional(),
     chartType: z.string().optional(),
+    agg: z.string().optional(),
+    filters: z.record(z.array(z.string())).optional(),
+    sort_order: z.string().optional(),
+    transform_prompt: z.string().optional(),
     reasoning: z.string()
   })),
   reasoning: z.string()

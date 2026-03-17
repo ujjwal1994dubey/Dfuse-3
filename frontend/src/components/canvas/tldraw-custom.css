@@ -19,14 +19,14 @@
   stroke-width: 3 !important;
 }
 
-/* HTMLContainer pointer events fix */
+/* HTMLContainer pointer events - managed dynamically by each shape component */
 .tl-html-container {
-  pointer-events: all !important;
+  pointer-events: all;
 }
 
-/* Ensure charts are interactive */
+/* Ensure chart content is interactive when the container allows events */
 .tl-html-container [data-chart-id] {
-  pointer-events: all !important;
+  pointer-events: all;
 }
 
 /* Text box focus styles */

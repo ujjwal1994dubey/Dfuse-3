@@ -1280,16 +1280,40 @@ ACTION SELECTION (choose based on query intent):
 - Text: "add title", "create label", "add text" → create_text
 - Delete: NOT SUPPORTED → suggest manual deletion + reorganize
 
+DERIVED METRIC DETECTION (check FIRST, before chart type selection):
+If the query contains any of: "per", "/", "divided by", "ratio", "rate", "per unit", "per match", "per game", "per day", "per player", "growth %", "margin", "% of", "efficiency", "yield"
+→ The user wants ONE computed metric, NOT two separate chart series
+→ ALWAYS use create_chart with:
+   - measures[]: include ALL source columns needed for the formula (both numerator and denominator)
+   - chartType: "bar" (1 derived metric = 1 dimension + 1 computed measure after transform)
+   - position: "center"
+   - transform_prompt: describe the formula in plain English (e.g. "add a column ducks_per_match = 0 / Mat, then show only that derived column")
+→ DO NOT use scatter/grouped_bar/dual_axis/multi_series_bar for these queries
+→ DO NOT show the raw source columns as separate series — the transform produces the single derived column
+
 CHART TYPE SELECTION (based on dimensions + measures count):
 - 1 dimension + 1 measure → chartType: "bar", "pie", or "line"
 - 1 dimension + 2 measures → chartType: "scatter", "grouped_bar", or "dual_axis"
 - 2 dimensions + 1 measure → chartType: "stacked_bar" or "bubble"
 - 1 dimension + 3-5 measures → chartType: "multi_series_bar"
 
+CREATE_CHART OPTIONAL FIELDS (use when the query implies data manipulation):
+- "agg": override aggregation method → "sum" (default) | "avg" | "min" | "max" | "count"
+  Use when: "average sales", "minimum cost", "count of orders" instead of sum
+- "filters": pre-filter rows before aggregation → {{"DimColumn": ["val1", "val2"]}}
+  Use when: query targets a subset — "Electronics only", "North region", "Q2 data"
+- "sort_order": control result ordering → "measure_desc" | "measure_asc" | "ascending" | "descending" | "dataset"
+  Use when: "top categories", "ranked by profit", "alphabetical"
+- "transform_prompt": natural language description of a derived column or row manipulation AFTER aggregation
+  Use when: query requires a computed metric not available as a raw column — ratio, rate, percentage, per-unit, growth, margin
+  Examples: "profit per unit sold", "revenue growth %", "profit margin = profit / revenue", "top 5 by profit", "normalize by total"
+  DO NOT use transform_prompt for simple aggregations (sum/avg) — those are handled by agg field
+  IMPORTANT: When using transform_prompt, include ALL source columns needed for the formula in measures[]
+
 ACTION SCHEMAS:
-1. create_chart: {{"type": "create_chart", "dimensions": ["dim"], "measures": ["measure"], "chartType": "bar", "position": "center", "reasoning": "why"}}
+1. create_chart: {{"type": "create_chart", "dimensions": ["dim"], "measures": ["measure"], "chartType": "bar", "agg": "sum", "filters": {{}}, "sort_order": "dataset", "transform_prompt": "optional: derived column description", "position": "center", "reasoning": "why"}}
 2. create_kpi: {{"type": "create_kpi", "query": "description", "value": 12345.67, "formatted_value": "12,345.67", "explanation": "brief explanation", "position": "center", "reasoning": "why"}}
-3. create_dashboard: {{"type": "create_dashboard", "dashboardType": "sales|executive|operations|analysis|general", "layoutStrategy": "grid|hero|flow|comparison|kpi-dashboard", "elements": [{{"type": "chart|kpi|insight", "dimensions": ["dim"], "measures": ["meas"], "chartType": "bar", "reasoning": "why"}}], "reasoning": "overall reasoning"}}
+3. create_dashboard: {{"type": "create_dashboard", "dashboardType": "sales|executive|operations|analysis|general", "layoutStrategy": "grid|hero|flow|comparison|kpi-dashboard", "elements": [{{"type": "chart|kpi|insight", "dimensions": ["dim"], "measures": ["meas"], "chartType": "bar", "agg": "sum", "filters": {{}}, "sort_order": "dataset", "transform_prompt": "optional", "reasoning": "why"}}], "reasoning": "overall reasoning"}}
 4. ai_query: {{"type": "ai_query", "query": "analytical question", "position": "center", "reasoning": "why"}}
 5. create_insight: {{"type": "create_insight", "text": "insight text", "position": "center", "reasoning": "why"}}
 6. generate_chart_insights: {{"type": "generate_chart_insights", "chartId": "existing-id", "position": "center", "reasoning": "why"}}
@@ -1331,13 +1355,23 @@ EXAMPLE 6 - "calculate total profit and average revenue" (KPI with pre-computed 
 EXAMPLE 7 - "create a sales dashboard" (multi-element dashboard):
 {{"actions": [{{"type": "create_dashboard", "dashboardType": "sales", "layoutStrategy": "kpi-dashboard", "elements": [{{"type": "kpi", "query": "Total {m1}", "value": {m1_sum}, "formatted_value": "{m1_sum:,.2f}", "reasoning": "Key metric"}}, {{"type": "kpi", "query": "Average {m2}", "value": {m2_avg}, "formatted_value": "{m2_avg:,.2f}", "reasoning": "Key metric"}}, {{"type": "chart", "dimensions": ["{dim1}"], "measures": ["{m1}"], "chartType": "bar", "reasoning": "Main breakdown"}}, {{"type": "chart", "dimensions": ["{dim1}"], "measures": ["{m2}"], "chartType": "line", "reasoning": "Trend analysis"}}], "reasoning": "Complete sales dashboard with KPIs and charts"}}], "reasoning": "Coordinated dashboard creation"}}
 
+EXAMPLE 8 - "show {m1} per {m2} by {dim1}" (derived column via transform):
+{{"actions": [{{"type": "create_chart", "dimensions": ["{dim1}"], "measures": ["{m1}", "{m2}"], "chartType": "bar", "position": "center", "transform_prompt": "add a column {m1}_per_{m2} = {m1} / {m2}, then show only that derived column", "reasoning": "Derived per-unit metric requires computed column"}}], "reasoning": "Computed ratio not available as raw column"}}
+
+EXAMPLE 9 - "show {m1} for {dim1} = X only" (filtered subset):
+{{"actions": [{{"type": "create_chart", "dimensions": ["{dim1}"], "measures": ["{m1}"], "chartType": "bar", "position": "center", "filters": {{"{dim2}": ["specific_value"]}}, "sort_order": "measure_desc", "reasoning": "Filter to specific subset and rank by value"}}], "reasoning": "Subset analysis with ranking"}}
+
 CRITICAL RULES:
 1. create_chart MUST have at least 1 dimension AND at least 1 measure from the lists above
 2. Use EXACT column names from Dimensions/Measures lists - do not invent column names
 3. Choose chartType based on dimension/measure count (see CHART TYPE SELECTION above)
 4. Output ONLY valid JSON, no markdown code blocks
 5. Position MUST be: "center", "right_of_chart", or "below_chart"
-6. For "vs" or "and" queries with multiple metrics, use 2+ measures with scatter/grouped_bar/multi_series_bar"""
+6. For "vs" or "and" queries comparing multiple metrics side by side, use 2+ measures with scatter/grouped_bar/multi_series_bar
+   EXCEPTION: "X per Y", "X divided by Y", "ratio of X to Y", "X per match/unit/game/day" → use transform_prompt (single derived column), NOT a multi-measure chart
+7. Use transform_prompt for derived/computed columns (ratios, rates, per-unit, margins, growth %)
+8. Use filters when the query targets a named subset of data (specific category, region, time period)
+9. Use agg when the query implies avg/min/max/count aggregation instead of sum"""
 
             print("📝 Sending prompt to Gemini...")
             response, token_usage = self.run_gemini_with_usage(prompt)
@@ -1439,6 +1473,11 @@ CRITICAL RULES:
                 
                 # Basic chart info
                 summary.append(f"  - Chart '{chart_id}': {chart_type} | {dims} vs {meas}")
+                
+                # Show derived chart context so AI understands what columns are available
+                if chart.get('isDerived'):
+                    transform_summary = chart.get('transformSummary', 'transformed data')
+                    summary.append(f"    (Derived chart — {transform_summary})")
                 
                 # Token-efficient context: Reuse existing insight (FREE!)
                 existing_insight = chart.get('existingInsight')

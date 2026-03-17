@@ -14,6 +14,7 @@ import { createSmartLabels, createPieLabels } from './labelHelper';
  */
 const DEFAULT_ECHARTS_COLORS = {
   categorical: ['#2563EB', '#3B82F6', '#60A5FA', '#93C5FD', '#DBEAFE', '#EFF6FF'],
+  multiSeries: ['#2563EB', '#F97316', '#10B981', '#8B5CF6', '#EF4444', '#F59E0B', '#06B6D4', '#EC4899'],
   quantitative: ['#059669', '#10B981', '#34D399', '#6EE7B7', '#A7F3D0', '#D1FAE5'],
   comparative: ['#2563EB', '#F97316'],
   sequential: ['#EFF6FF', '#DBEAFE', '#93C5FD', '#60A5FA', '#3B82F6', '#2563EB']
@@ -245,11 +246,11 @@ export const ECHARTS_TYPES = {
           data: seriesData,
           smooth: data.length > 20, // Smooth for large datasets
           lineStyle: { 
-            color: DEFAULT_ECHARTS_COLORS.categorical[idx % DEFAULT_ECHARTS_COLORS.categorical.length], 
+            color: DEFAULT_ECHARTS_COLORS.multiSeries[idx % DEFAULT_ECHARTS_COLORS.multiSeries.length], 
             width: 3 
           },
           itemStyle: { 
-            color: DEFAULT_ECHARTS_COLORS.categorical[idx % DEFAULT_ECHARTS_COLORS.categorical.length] 
+            color: DEFAULT_ECHARTS_COLORS.multiSeries[idx % DEFAULT_ECHARTS_COLORS.multiSeries.length] 
           },
           symbol: 'circle',
           symbolSize: 6,
@@ -464,7 +465,7 @@ export const ECHARTS_TYPES = {
           return row ? (row[measure] || 0) : 0;
         }),
         itemStyle: {
-          color: DEFAULT_ECHARTS_COLORS.comparative[i % DEFAULT_ECHARTS_COLORS.comparative.length]
+          color: DEFAULT_ECHARTS_COLORS.multiSeries[i % DEFAULT_ECHARTS_COLORS.multiSeries.length]
         },
         emphasis: createEmphasisConfig()
       }));
@@ -673,7 +674,7 @@ export const ECHARTS_TYPES = {
           return row ? (row[measure] || 0) : 0;
         }),
         itemStyle: {
-          color: ['#3182ce', '#38a169', '#d69e2e', '#e53e3e', '#805ad5', '#dd6b20', '#38b2ac', '#ed64a6'][i % 8]
+          color: DEFAULT_ECHARTS_COLORS.multiSeries[i % DEFAULT_ECHARTS_COLORS.multiSeries.length]
         }
       }));
       
@@ -862,7 +863,7 @@ export const ECHARTS_TYPES = {
           data: data.map(r => r[measure] || 0),
           animationDelay: idx * 100,
           itemStyle: {
-            color: DEFAULT_ECHARTS_COLORS.categorical[idx % DEFAULT_ECHARTS_COLORS.categorical.length]
+            color: DEFAULT_ECHARTS_COLORS.multiSeries[idx % DEFAULT_ECHARTS_COLORS.multiSeries.length]
           },
           markLine: markLineData.length > 0 ? {
             data: markLineData,

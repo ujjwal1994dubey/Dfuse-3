@@ -545,6 +545,11 @@ function extractCharts(nodes) {
     .map(n => {
       const existingInsight = findAssociatedInsight(n.id, nodes);
       
+      // Build a human-readable transform summary for derived charts
+      const transformSummary = n.data.transformationSteps
+        ? `${n.data.transformationSteps.length} transform(s): ${n.data.transformationSteps.map(t => t.type).join(', ')}`
+        : null;
+      
       return {
         id: n.id,
         dimensions: n.data.dimensions || [],
@@ -556,6 +561,12 @@ function extractCharts(nodes) {
         // Token-efficient context
         existingInsight: existingInsight, // Reuse insights (zero token cost!)
         dataSummary: !existingInsight && n.data.table ? extractStatisticalSummary(n.data.table) : null,
+        
+        // Derived chart lineage — lets AI understand what data transformations are present
+        // and reference the correct columns in follow-up queries
+        isDerived: n.data.isDerived || false,
+        transformSummary,
+        parentChartId: n.data.parentChartId || null,
         
         // Provenance metadata
         createdBy: n.data.createdBy || 'user',
