@@ -20,7 +20,6 @@ import {
 } from './canvasSnapshot';
 import { executeActions } from './actionExecutor';
 import { validateActionsSafe } from './validation';
-import { createTldrawAgent, executeDrawingActions } from './tldrawAgent';
 import {
   Loader2, AlertCircle, Trash2, ArrowUp, ChevronDown, ChevronRight,
   Eye, Map, BarChart2, Layers, Move, AlignLeft, ZoomIn, Grid,
@@ -329,7 +328,6 @@ export function AgentSidebarPanel({
   const [error, setError] = useState(null);
   const [mode, setMode] = useState('canvas');
   const [analysisType, setAnalysisType] = useState('detailed');
-  const [drawMessages, setDrawMessages] = useState([]);
   const [executionProgress, setExecutionProgress] = useState(null);
   const [viewportCtx, setViewportCtx] = useState(null);
 
@@ -338,13 +336,9 @@ export function AgentSidebarPanel({
   const abortRef = useRef(null);
   const textareaRef = useRef(null);
 
-  const currentMessages = mode === 'canvas' ? canvasMessages
-    : mode === 'ask' ? askMessages
-    : drawMessages;
+  const currentMessages = mode === 'canvas' ? canvasMessages : askMessages;
 
-  const setCurrentMessages = mode === 'canvas' ? setCanvasMessages
-    : mode === 'ask' ? setAskMessages
-    : setDrawMessages;
+  const setCurrentMessages = mode === 'canvas' ? setCanvasMessages : setAskMessages;
 
   // Auto-scroll
   useEffect(() => {
@@ -379,7 +373,7 @@ export function AgentSidebarPanel({
   // ── Clear conversation ────────────────────────────────────────────────────
   const handleClear = useCallback(() => {
     if (!currentMessages.length) return;
-    const label = mode === 'canvas' ? 'Canvas' : mode === 'ask' ? 'Ask' : 'Draw';
+    const label = mode === 'canvas' ? 'Canvas' : 'Ask';
     if (!window.confirm(`Clear ${label} conversation? This cannot be undone.`)) return;
     setCurrentMessages([]);
     setError(null);
@@ -390,36 +384,11 @@ export function AgentSidebarPanel({
     }
   }, [currentMessages, mode, setCurrentMessages, canvasContext]);
 
-  // ── Draw mode submit ───────────────────────────────────────────────────────
-  const handleDrawSubmit = useCallback(async (userInput) => {
-    const newMessages = [...drawMessages, { type: 'user', content: userInput, timestamp: new Date(), mode: 'draw' }];
-    setDrawMessages(newMessages);
-    try {
-      const agent = createTldrawAgent(apiKey);
-      const editor = canvasContext?.editor;
-      const enhancedContext = getEnhancedCanvasContext(editor, canvasContext?.nodes || [], canvasContext?.dataset, canvasContext?.datasetAnalysis);
-      const result = await agent.generateDrawingActions(userInput, enhancedContext);
-      if (result.success) {
-        if (editor && result.actions?.length) executeDrawingActions(result.actions, editor);
-        const assistantMsg = { type: 'agent', content: result.explanation || 'Drawing created!', actions: result.actions, timestamp: new Date(), mode: 'draw' };
-        setDrawMessages([...newMessages, assistantMsg]);
-        if (onTokenUsage && result.tokensUsed) {
-          const inputCost = (result.tokensUsed.input / 1e6) * 0.075;
-          const outputCost = (result.tokensUsed.output / 1e6) * 0.30;
-          onTokenUsage({ inputTokens: result.tokensUsed.input, outputTokens: result.tokensUsed.output, totalTokens: result.tokensUsed.total, estimatedCost: inputCost + outputCost, mode: 'draw' });
-        }
-      } else throw new Error(result.error || 'Failed to generate drawing');
-    } catch (err) {
-      setError(err.message);
-      setDrawMessages([...newMessages, { type: 'error', content: `❌ ${err.message}`, timestamp: new Date(), mode: 'draw' }]);
-    }
-  }, [drawMessages, apiKey, canvasContext, onTokenUsage]);
-
   // ── Main streaming submit ──────────────────────────────────────────────────
   const handleSubmit = useCallback(async (e) => {
     e?.preventDefault();
     if (!input.trim() || loading) return;
-    if (mode !== 'draw' && !datasetId) { setError('Please upload a dataset first'); return; }
+    if (!datasetId) { setError('Please upload a dataset first'); return; }
     if (!apiKey) { setError('Please configure your Gemini API key'); return; }
 
     const userMessage = input.trim();
@@ -430,19 +399,36 @@ export function AgentSidebarPanel({
 
     if (canvasContext?.trackAIUsed) canvasContext.trackAIUsed();
 
-    if (mode === 'draw') {
-      await handleDrawSubmit(userMessage);
-      setLoading(false);
-      return;
-    }
-
     setCurrentMessages(prev => [...prev, { type: 'user', content: userMessage, timestamp: new Date(), mode }]);
 
-    // Refresh viewport context
+    // Refresh viewport context — store in local var so it's used in THIS request
+    // (setViewportCtx schedules an async state update; reading viewportCtx from
+    //  React state here would give the PREVIOUS request's context)
+    let freshViewportCtx = null;
     try {
-      const ctx = getViewportAwareContext(canvasContext?.editor, canvasContext?.nodes || []);
-      setViewportCtx(ctx);
+      freshViewportCtx = getViewportAwareContext(canvasContext?.editor, canvasContext?.nodes || []);
+      setViewportCtx(freshViewportCtx); // still update state for the chips UI
     } catch (_) {}
+
+    // Capture currently selected shapes at submit time
+    const selectedShapes = (() => {
+      try {
+        const editor = canvasContext?.editor;
+        if (!editor) return [];
+        const ids = editor.getSelectedShapeIds() ?? [];
+        return ids.map(id => {
+          const shape = editor.getShape(id);
+          if (!shape) return null;
+          const bounds = editor.getShapePageBounds(shape);
+          return {
+            id,
+            type: shape.type,
+            title: shape.props?.title || shape.meta?.title || shape.props?.text?.slice(0, 60) || '',
+            bounds: bounds ? { x: Math.round(bounds.x), y: Math.round(bounds.y), w: Math.round(bounds.w), h: Math.round(bounds.h) } : null,
+          };
+        }).filter(Boolean);
+      } catch (_) { return []; }
+    })();
 
     const enhancedContext = getEnhancedCanvasContext(canvasContext?.editor, canvasContext?.nodes || []);
     const recentHistory = currentMessages.slice(-6).map(m => ({
@@ -455,10 +441,11 @@ export function AgentSidebarPanel({
       user_query: userMessage,
       canvas_state: {
         ...enhancedContext,
-        spatial_analysis: viewportCtx ? {
-          viewport_shapes: viewportCtx.viewportShapes,
-          peripheral_clusters: viewportCtx.peripheralClusters,
-          viewport_bounds: viewportCtx.viewportBounds,
+        selected_shapes: selectedShapes,
+        spatial_analysis: freshViewportCtx ? {
+          viewport_shapes: freshViewportCtx.viewportShapes,
+          peripheral_clusters: freshViewportCtx.peripheralClusters,
+          viewport_bounds: freshViewportCtx.viewportBounds,
         } : undefined,
       },
       dataset_id: datasetId,
@@ -674,24 +661,26 @@ export function AgentSidebarPanel({
       setStreamingText('');
       setExecutionProgress(null);
     }
-  }, [input, loading, mode, datasetId, apiKey, canvasContext, currentMessages, viewportCtx, analysisType, onTokenUsage, setCurrentMessages, handleDrawSubmit]);
+  }, [input, loading, mode, datasetId, apiKey, canvasContext, currentMessages, viewportCtx, analysisType, onTokenUsage, setCurrentMessages]);
 
   // ── Empty state prompts ───────────────────────────────────────────────────
   const emptyState = {
     canvas: {
       icon: '📊', title: 'Canvas Mode',
-      subtitle: 'Create charts, KPIs, and insights',
-      examples: ['Show me revenue by region', 'Create a sales dashboard', 'Compare top products', 'Align all charts in a grid'],
+      subtitle: 'Create charts, shapes, and insights',
+      examples: [
+        'Show me revenue by region',
+        'Create a sales dashboard',
+        'Draw a red rectangle around the KPI cards',
+        "Add a sticky note near the revenue chart",
+        "Add a title 'Q4 Dashboard'",
+        'Align all charts in a grid',
+      ],
     },
     ask: {
       icon: '💬', title: 'Ask Mode',
       subtitle: 'Get analytical answers from your data',
       examples: ['Which products have the highest margin?', 'What is the average revenue?', 'Find outliers in the data'],
-    },
-    draw: {
-      icon: '✏️', title: 'Draw Mode',
-      subtitle: 'Annotate and enhance your canvas',
-      examples: ["Add a title 'Q4 Dashboard'", 'Create a 3-section layout', 'Draw an arrow to the peak'],
     },
   };
   const empty = emptyState[mode];
@@ -702,15 +691,14 @@ export function AgentSidebarPanel({
       <div className="p-3 border-b border-gray-200">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5 border border-gray-200 rounded-lg p-0.5">
-            {['canvas', 'ask', 'draw'].map(m => (
+            {['canvas', 'ask'].map(m => (
               <button
                 key={m}
                 onClick={() => setMode(m)}
                 className={`px-3 py-1.5 rounded text-xs font-medium transition-colors capitalize ${
                   mode === m
                     ? m === 'canvas' ? 'bg-purple-600 text-white'
-                    : m === 'ask' ? 'bg-blue-600 text-white'
-                    : 'bg-green-600 text-white'
+                    : 'bg-blue-600 text-white'
                     : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
@@ -831,9 +819,9 @@ export function AgentSidebarPanel({
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(e); }
               }}
               placeholder={
-                mode === 'canvas' ? 'Ask to create charts, move shapes, align...'
-                : mode === 'ask' ? 'Ask a question about your data...'
-                : 'Describe annotation or layout to add...'
+                mode === 'canvas'
+                  ? 'Create charts, draw shapes, move or align elements...'
+                  : 'Ask a question about your data...'
               }
               className="w-full px-4 py-3 pr-12 bg-transparent resize-none rounded-2xl focus:outline-none text-sm"
               rows={1}

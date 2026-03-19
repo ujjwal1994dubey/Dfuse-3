@@ -6,7 +6,9 @@ import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresE
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
 import { applyUniversalEnhancements } from './charts/enhancementApplier';
-import { AgentChatPanel, AgentSidebarPanel } from './agentic_layer';
+// AgentChatPanel kept for rollback — remove comment to restore the old AI Agent panel
+// import { AgentChatPanel, AgentSidebarPanel } from './agentic_layer';
+import { AgentSidebarPanel } from './agentic_layer';
 import { GlobalFilterProvider, useGlobalFilter } from './contexts/GlobalFilterContext';
 import { useAuth } from './contexts/AuthContext';
 import { useSessionTracking } from './contexts/SessionTrackingContext';
@@ -1637,8 +1639,8 @@ function UnifiedSidebar({
   setInstructionsPanelOpen,
   settingsPanelOpen,
   setSettingsPanelOpen,
-  agentPanelOpen,
-  setAgentPanelOpen,
+  // agentPanelOpen,    // DEPRECATED — old AI Agent panel (kept for rollback)
+  // setAgentPanelOpen,
   agentSidebarOpen,
   setAgentSidebarOpen,
   activeTool,
@@ -1688,7 +1690,6 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
-          setAgentPanelOpen(false);
           setAgentSidebarOpen(false);
         }
       }, 
@@ -1706,7 +1707,6 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
-          setAgentPanelOpen(false);
           setAgentSidebarOpen(false);
         }
       }, 
@@ -1724,7 +1724,6 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
-          setAgentPanelOpen(false);
           setAgentSidebarOpen(false);
         }
       }, 
@@ -1748,7 +1747,6 @@ function UnifiedSidebar({
         setChartActionsPanelOpen(false);
         setInstructionsPanelOpen(false);
         setSettingsPanelOpen(false);
-        setAgentPanelOpen(false);
         setAgentSidebarOpen(false);
       }, 
       active: mergePanelOpen
@@ -1776,7 +1774,6 @@ function UnifiedSidebar({
           setChartActionsPanelOpen(false);
           setMergePanelOpen(false);
           setSettingsPanelOpen(false);
-          setAgentPanelOpen(false);
           setAgentSidebarOpen(false);
         }
       }
@@ -1794,29 +1791,29 @@ function UnifiedSidebar({
           setChartActionsPanelOpen(false);
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
-          setAgentPanelOpen(false);
           setAgentSidebarOpen(false);
         }
       }
     },
-    {
-      id: 'agent',
-      icon: Sparkles,
-      label: 'AI Agent',
-      active: agentPanelOpen,
-      onClick: () => {
-        setAgentPanelOpen(!agentPanelOpen);
-        if (!agentPanelOpen) {
-          setUploadPanelOpen(false);
-          setVariablesPanelOpen(false);
-          setChartActionsPanelOpen(false);
-          setMergePanelOpen(false);
-          setInstructionsPanelOpen(false);
-          setSettingsPanelOpen(false);
-          setAgentSidebarOpen(false);
-        }
-      }
-    },
+    // DEPRECATED: old AI Agent button — uncomment to restore
+    // {
+    //   id: 'agent',
+    //   icon: Sparkles,
+    //   label: 'AI Agent',
+    //   active: agentPanelOpen,
+    //   onClick: () => {
+    //     setAgentPanelOpen(!agentPanelOpen);
+    //     if (!agentPanelOpen) {
+    //       setUploadPanelOpen(false);
+    //       setVariablesPanelOpen(false);
+    //       setChartActionsPanelOpen(false);
+    //       setMergePanelOpen(false);
+    //       setInstructionsPanelOpen(false);
+    //       setSettingsPanelOpen(false);
+    //       setAgentSidebarOpen(false);
+    //     }
+    //   }
+    // },
     {
       id: 'agentSidebar',
       icon: Bot,
@@ -1831,7 +1828,6 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
-          setAgentPanelOpen(false);
         }
       }
     },
@@ -3440,7 +3436,7 @@ function AppWrapper({ user, onLogout }) {
     return !hasSeenInstructions;
   });
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
-  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+  // const [agentPanelOpen, setAgentPanelOpen] = useState(false); // DEPRECATED — old AI Agent panel
   const [agentSidebarOpen, setAgentSidebarOpen] = useState(false);
   const [canvasMessages, setCanvasMessages] = useState([]); // Canvas mode conversation
   const [askMessages, setAskMessages] = useState([]); // Ask mode conversation
@@ -7349,8 +7345,8 @@ function AppWrapper({ user, onLogout }) {
         setInstructionsPanelOpen={setInstructionsPanelOpen}
         settingsPanelOpen={settingsPanelOpen}
         setSettingsPanelOpen={setSettingsPanelOpen}
-        agentPanelOpen={agentPanelOpen}
-        setAgentPanelOpen={setAgentPanelOpen}
+        // agentPanelOpen={agentPanelOpen}   // DEPRECATED — old AI Agent panel
+        // setAgentPanelOpen={setAgentPanelOpen}
         agentSidebarOpen={agentSidebarOpen}
         setAgentSidebarOpen={setAgentSidebarOpen}
         activeTool={activeTool}
@@ -7376,7 +7372,7 @@ function AppWrapper({ user, onLogout }) {
           left: 'calc(var(--size-sidebar) + 14px)',
           top: '60px',
           bottom: '100px',
-          pointerEvents: (uploadPanelOpen || variablesPanelOpen || chartActionsPanelOpen || mergePanelOpen || instructionsPanelOpen || settingsPanelOpen || agentPanelOpen || agentSidebarOpen) ? 'auto' : 'none'
+          pointerEvents: (uploadPanelOpen || variablesPanelOpen || chartActionsPanelOpen || mergePanelOpen || instructionsPanelOpen || settingsPanelOpen || agentSidebarOpen) ? 'auto' : 'none'
         }}
       >
       {/* Single Panel Container - Only one panel can be open at a time */}
@@ -7789,50 +7785,11 @@ function AppWrapper({ user, onLogout }) {
           </SlidingPanel>
         )}
 
-        {/* AI Agent Panel (original) */}
-        {agentPanelOpen && (
-          <SlidingPanel
-            isOpen={agentPanelOpen}
-            title="AI Agent"
-            onClose={() => setAgentPanelOpen(false)}
-            size="md"
-          >
-            <AgentChatPanel
-              isOpen={agentPanelOpen}
-              onClose={() => setAgentPanelOpen(false)}
-              datasetId={datasetId}
-              apiKey={apiKey}
-              canvasMessages={canvasMessages}
-              setCanvasMessages={setCanvasMessages}
-              askMessages={askMessages}
-              setAskMessages={setAskMessages}
-              onTokenUsage={(usage) => {
-                setTokenUsage(prev => ({
-                  inputTokens: prev.inputTokens + (usage.inputTokens || 0),
-                  outputTokens: prev.outputTokens + (usage.outputTokens || 0),
-                  totalTokens: prev.totalTokens + (usage.totalTokens || 0),
-                  estimatedCost: prev.estimatedCost + (usage.estimatedCost || 0)
-                }));
-              }}
-              canvasContext={{
-                editor: tldrawEditorRef.current,
-                nodes,
-                setNodes,
-                getViewportCenter,
-                API,
-                datasetId,
-                apiKey,
-                figureFromPayload,
-                dataset: activeDataset?.dataframe,
-                datasetAnalysis: datasetAnalysis,
-                trackChartCreatedByAI,
-                trackTableCreated,
-                trackAIInsight,
-                trackAIUsed
-              }}
-            />
-          </SlidingPanel>
-        )}
+        {/* DEPRECATED: Old AI Agent Panel removed from UI.
+             The full render block is preserved in AgentChatPanel.jsx.
+             To restore: re-add agentPanelOpen state, the sidebar button,
+             update the import to include AgentChatPanel, and re-add the
+             SlidingPanel + AgentChatPanel render block here. */}
 
         {/* Smart Agent Panel — AgentSidebarPanel with streaming + memory + spatial */}
         {agentSidebarOpen && (

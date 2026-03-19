@@ -38,18 +38,37 @@ export class LayoutManager {
   }
 
   /**
-   * Get occupied canvas regions
+   * Get occupied canvas regions — prefers actual TLDraw bounds so dragged/resized
+   * shapes report their real position rather than the stale React state value.
    * @returns {Array} Array of occupied rectangles with node metadata
    */
   getOccupiedRegions() {
-    return this.nodes.map(node => ({
-      x: node.position.x,
-      y: node.position.y,
-      w: node.data.width || AGENT_CONFIG.DEFAULT_CHART_WIDTH,
-      h: node.data.height || AGENT_CONFIG.DEFAULT_CHART_HEIGHT,
-      nodeId: node.id,
-      nodeType: node.type
-    }));
+    return this.nodes.map(node => {
+      let x = node.position.x;
+      let y = node.position.y;
+      let w = node.data?.width || AGENT_CONFIG.DEFAULT_CHART_WIDTH;
+      let h = node.data?.height || AGENT_CONFIG.DEFAULT_CHART_HEIGHT;
+
+      if (this.editor) {
+        try {
+          const shapeId = `shape:${node.id}`;
+          const shape = this.editor.getShape(shapeId);
+          if (shape) {
+            const bounds = this.editor.getShapePageBounds(shape);
+            if (bounds) {
+              x = bounds.x;
+              y = bounds.y;
+              w = bounds.w;
+              h = bounds.h;
+            }
+          }
+        } catch (_) {
+          // Fall back to React state values if TLDraw lookup fails
+        }
+      }
+
+      return { x, y, w, h, nodeId: node.id, nodeType: node.type };
+    });
   }
 
   /**
@@ -132,16 +151,13 @@ export class LayoutManager {
    */
   calculateDensity() {
     if (!this.editor) return 0;
-    
+
     const viewport = this.editor.getViewportPageBounds();
     const viewportArea = viewport.w * viewport.h;
-    
-    const occupiedArea = this.nodes.reduce((sum, node) => {
-      const w = node.data.width || AGENT_CONFIG.DEFAULT_CHART_WIDTH;
-      const h = node.data.height || AGENT_CONFIG.DEFAULT_CHART_HEIGHT;
-      return sum + (w * h);
-    }, 0);
-    
+
+    // Use getOccupiedRegions so we always get actual TLDraw bounds
+    const occupiedArea = this.getOccupiedRegions().reduce((sum, r) => sum + r.w * r.h, 0);
+
     return Math.min(occupiedArea / viewportArea, 1);
   }
 
@@ -500,8 +516,18 @@ export class LayoutManager {
     }
 
     const positions = nodes.map(node => {
-      const w = node.data.width || AGENT_CONFIG.DEFAULT_CHART_WIDTH;
-      const h = node.data.height || AGENT_CONFIG.DEFAULT_CHART_HEIGHT;
+      // Try to read actual TLDraw bounds first
+      if (this.editor) {
+        try {
+          const shape = this.editor.getShape(`shape:${node.id}`);
+          if (shape) {
+            const b = this.editor.getShapePageBounds(shape);
+            if (b) return { x1: b.x, y1: b.y, x2: b.x + b.w, y2: b.y + b.h };
+          }
+        } catch (_) {}
+      }
+      const w = node.data?.width || AGENT_CONFIG.DEFAULT_CHART_WIDTH;
+      const h = node.data?.height || AGENT_CONFIG.DEFAULT_CHART_HEIGHT;
       return {
         x1: node.position.x,
         y1: node.position.y,

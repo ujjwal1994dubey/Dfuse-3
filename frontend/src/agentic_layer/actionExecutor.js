@@ -1136,7 +1136,7 @@ function arrangeElementsAction(action, context) {
     y: viewport.y + 50
   };
   
-  // Apply new positions
+  // Apply new positions — two steps: React state sync + actual TLDraw canvas move
   const updatedNodes = nodes.map(node => {
     const plannedElement = layoutPlan.find(p => p.id === node.id);
     if (plannedElement) {
@@ -1150,13 +1150,41 @@ function arrangeElementsAction(action, context) {
     }
     return node;
   });
-  
+
   setNodes(updatedNodes);
-  
-  console.log(`✅ Arranged ${layoutPlan.length} elements`);
-  
+
+  // Actually move TLDraw shapes (setNodes alone only updates React state)
+  let movedCount = 0;
+  editor.batch(() => {
+    updatedNodes.forEach(node => {
+      const plannedElement = layoutPlan.find(p => p.id === node.id);
+      if (!plannedElement) return;
+      const shapeId = `shape:${node.id}`;
+      if (editor.getShape(shapeId)) {
+        editor.updateShape({
+          id: shapeId,
+          x: anchor.x + plannedElement.position.x,
+          y: anchor.y + plannedElement.position.y,
+        });
+        movedCount++;
+      }
+    });
+  });
+
+  // Zoom to show all arranged shapes
+  try {
+    const movedIds = layoutPlan.map(p => `shape:${p.id}`).filter(id => editor.getShape(id));
+    if (movedIds.length > 0) {
+      editor.setSelectedShapes(movedIds);
+      editor.zoomToSelection({ animation: { duration: 500 } });
+      editor.setSelectedShapes([]);
+    }
+  } catch (_) {}
+
+  console.log(`✅ Arranged ${movedCount} elements on canvas`);
+
   return {
-    arrangedCount: layoutPlan.length,
+    arrangedCount: movedCount,
     strategy: strategy === 'optimize' ? 'auto-detected' : strategy
   };
 }
@@ -1170,17 +1198,33 @@ function organizeCanvasAction(action, context) {
   console.log('🔄 Organizing canvas with rule-based layout (0 API calls)');
   
   const result = organizeCanvas(nodes, editor);
-  
-  // Batch update all positions
+
+  // Sync React state
   setNodes(result.updatedNodes);
-  
-  // Pan to show organized canvas
-  if (editor && result.updatedNodes.length > 0) {
-    const bounds = calculateBounds(result.updatedNodes);
-    editor.zoomToBounds(bounds, { animation: { duration: 500 } });
-  }
-  
-  console.log(`✅ Organized ${result.updatedNodes.length} elements using ${result.strategy} layout`);
+
+  // Actually move TLDraw shapes
+  let movedCount = 0;
+  editor.batch(() => {
+    result.updatedNodes.forEach(node => {
+      const shapeId = `shape:${node.id}`;
+      if (editor.getShape(shapeId)) {
+        editor.updateShape({ id: shapeId, x: node.position.x, y: node.position.y });
+        movedCount++;
+      }
+    });
+  });
+
+  // Zoom to show all organised shapes
+  try {
+    const allIds = result.updatedNodes.map(n => `shape:${n.id}`).filter(id => editor.getShape(id));
+    if (allIds.length > 0) {
+      editor.setSelectedShapes(allIds);
+      editor.zoomToSelection({ animation: { duration: 500 } });
+      editor.setSelectedShapes([]);
+    }
+  } catch (_) {}
+
+  console.log(`✅ Organised ${movedCount} elements using ${result.strategy} layout`);
   
   return {
     organized: true,
@@ -1207,15 +1251,29 @@ async function semanticGroupingAction(action, context) {
     editor
   );
   
-  // Update node positions
+  // Sync React state
   setNodes(result.updatedNodes);
-  
-  // Zoom to show grouped content
-  if (editor && result.updatedNodes.length > 0) {
-    const bounds = calculateBounds(result.updatedNodes);
-    editor.zoomToBounds(bounds, { animation: { duration: 500 } });
-  }
-  
+
+  // Actually move TLDraw shapes
+  editor.batch(() => {
+    result.updatedNodes.forEach(node => {
+      const shapeId = `shape:${node.id}`;
+      if (editor.getShape(shapeId)) {
+        editor.updateShape({ id: shapeId, x: node.position.x, y: node.position.y });
+      }
+    });
+  });
+
+  // Zoom to show all grouped shapes
+  try {
+    const allIds = result.updatedNodes.map(n => `shape:${n.id}`).filter(id => editor.getShape(id));
+    if (allIds.length > 0) {
+      editor.setSelectedShapes(allIds);
+      editor.zoomToSelection({ animation: { duration: 500 } });
+      editor.setSelectedShapes([]);
+    }
+  } catch (_) {}
+
   console.log(`✅ Created ${result.groups.length} semantic groups`);
   
   return {
@@ -1238,25 +1296,75 @@ function createShapeAction(action, context) {
   
   const shapeType = action.shapeType || 'rectangle';
   const color = action.color || 'red';
-  
-  // Get viewport center for positioning
-  const viewport = editor.getViewportPageBounds();
-  const centerX = viewport.x + viewport.width / 2;
-  const centerY = viewport.y + viewport.height / 2;
-  
+  const isStickyNote = shapeType === 'sticky_note';
+
+  // Resolve target shape bounds when action.target is provided
+  const PADDING = 16;
+  let resolvedProps = null;
+
+  if (action.target) {
+    // 1. Try ID-based resolution (exact, prefixed "shape:", and fuzzy suffix)
+    let targetShapeId = resolveTLDrawShapeId(action.target, editor);
+
+    // 2. Fall back to title/label fuzzy match across all page shapes
+    if (!targetShapeId) {
+      const needle = action.target.toLowerCase();
+      const all = editor.getCurrentPageShapes();
+      const match = all.find(s => {
+        const candidates = [
+          s.props?.title,
+          s.props?.text,
+          s.props?.name,
+          s.meta?.title,
+          s.meta?.label,
+        ].filter(Boolean).map(v => String(v).toLowerCase());
+        return candidates.some(c => c.includes(needle) || needle.includes(c));
+      });
+      if (match) targetShapeId = match.id;
+    }
+
+    if (targetShapeId) {
+      try {
+        const targetShape = editor.getShape(targetShapeId);
+        const bounds = targetShape && editor.getShapePageBounds(targetShape);
+        if (bounds) {
+          resolvedProps = {
+            x: bounds.x - PADDING,
+            y: bounds.y - PADDING,
+            w: bounds.w + PADDING * 2,
+            h: bounds.h + PADDING * 2,
+          };
+          console.log(`🎯 createShapeAction: wrapping "${action.target}" (${targetShapeId}) at`, resolvedProps);
+        }
+      } catch (e) {
+        console.warn(`⚠️ createShapeAction: could not read bounds for "${action.target}":`, e);
+      }
+    } else {
+      console.warn(`⚠️ createShapeAction: target "${action.target}" not found on canvas — falling back to viewport center`);
+    }
+  }
+
+  // Fall back to viewport center when target is absent or unresolvable
+  if (!resolvedProps) {
+    const viewport = editor.getViewportPageBounds();
+    resolvedProps = {
+      x: viewport.x + viewport.width / 2 - (isStickyNote ? 125 : 200),
+      y: viewport.y + viewport.height / 2 - (isStickyNote ? 60 : 100),
+      w: isStickyNote ? 250 : 400,
+      h: isStickyNote ? 120 : 200,
+    };
+  }
+
   // Convert to tldraw action format (expected by executeDrawingActions)
-  // NOTE: createTldrawShape expects 'rectangle', 'ellipse', etc. NOT 'geo'
   const drawingAction = {
     type: 'create_shape',
-    shape: shapeType, // Use 'rectangle', 'ellipse', 'line' directly
+    shape: shapeType,
     props: {
-      x: centerX - 200,
-      y: centerY - 100,
-      w: 400,
-      h: 200,
+      ...resolvedProps,
       color: color,
       fill: action.style === 'solid' ? 'solid' : 'none',
-      dash: action.style === 'dashed' ? 'dashed' : 'solid'
+      dash: action.style === 'dashed' ? 'dashed' : 'solid',
+      ...(action.text ? { text: action.text } : {})
     }
   };
   
@@ -1275,41 +1383,84 @@ function createShapeAction(action, context) {
 
 function createArrowAction(action, context) {
   const { editor } = context;
-  
-  if (!editor) {
-    throw new Error('Editor not available');
+
+  if (!editor) throw new Error('Editor not available');
+
+  // Helper: resolve a shape ID (React node id or TLDraw shape id) to page-space center
+  function resolveCenter(rawId) {
+    if (!rawId) return null;
+
+    // Try exact and prefixed IDs first
+    const tlId = resolveTLDrawShapeId(rawId, editor);
+    if (tlId) {
+      const shape = editor.getShape(tlId);
+      if (shape) {
+        const b = editor.getShapePageBounds(shape);
+        if (b) return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+      }
+    }
+
+    // Fuzzy fallback: match by title / text content
+    const needle = rawId.toLowerCase();
+    const all = editor.getCurrentPageShapes();
+    const match = all.find(s => {
+      const title = (s.props?.title || s.meta?.title || s.props?.text || '').toLowerCase();
+      return title.includes(needle) || needle.includes(title.split(' ')[0]);
+    });
+    if (match) {
+      const b = editor.getShapePageBounds(match);
+      if (b) return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+    }
+
+    return null;
   }
-  
-  // Get viewport center
-  const viewport = editor.getViewportPageBounds();
-  const centerX = viewport.x + viewport.width / 2;
-  const centerY = viewport.y + viewport.height / 2;
-  
-  // Convert to tldraw action format
+
+  const fromCenter = resolveCenter(action.from);
+  const toCenter   = resolveCenter(action.to);
+
+  let arrowX, arrowY, arrowW, arrowH;
+
+  if (fromCenter && toCenter) {
+    // Place arrow starting at fromCenter, ending at toCenter
+    arrowX = fromCenter.x;
+    arrowY = fromCenter.y;
+    arrowW = toCenter.x - fromCenter.x;
+    arrowH = toCenter.y - fromCenter.y;
+    console.log(`🏹 Arrow from (${arrowX.toFixed(0)},${arrowY.toFixed(0)}) → (${toCenter.x.toFixed(0)},${toCenter.y.toFixed(0)})`);
+  } else {
+    // Graceful fallback to viewport center if shapes couldn't be resolved
+    const viewport = editor.getViewportPageBounds();
+    arrowX = viewport.x + viewport.width / 2 - 200;
+    arrowY = viewport.y + viewport.height / 2;
+    arrowW = 400;
+    arrowH = 0;
+    console.warn(`⚠️ create_arrow: couldn't resolve from="${action.from}" or to="${action.to}", using viewport center`);
+  }
+
   const drawingAction = {
     type: 'create_shape',
     shape: 'arrow',
     props: {
-      x: centerX - 200,
-      y: centerY,
-      w: 400,
-      h: 0,
+      x: arrowX,
+      y: arrowY,
+      w: arrowW,
+      h: arrowH,
       start: { x: 0, y: 0 },
-      end: { x: 400, y: 0 },
-      color: 'black',
+      end: { x: arrowW, y: arrowH },
+      color: action.color || 'black',
       arrowheadStart: 'none',
       arrowheadEnd: 'arrow',
-      text: action.label || ''
+      text: action.label || '',
     }
   };
-  
+
   const shapeIds = executeDrawingActions([drawingAction], editor);
-  
+
   console.log(`✅ Created arrow, IDs: ${shapeIds.join(', ')}`);
-  
+
   return {
     created: true,
-    shapeIds: shapeIds,
+    shapeIds,
     count: shapeIds.length
   };
 }
@@ -1489,10 +1640,24 @@ function resolveTLDrawShapeId(rawId, editor) {
  * action: { shapeId, x, y, reason? }
  */
 function moveShapeAction(action, context) {
-  const { editor } = context;
+  const { editor, currentQuery } = context;
   if (!editor) throw new Error('Editor not available for move_shape');
 
-  const shapeId = resolveTLDrawShapeId(action.shapeId, editor);
+  // Selection shortcut — same pattern as highlightShapeAction
+  let shapeId = null;
+  const queryLower = (currentQuery || '').toLowerCase();
+  const selectionKeywords = ['selected', 'this chart', 'this shape', 'the chart i selected', 'it'];
+  if (selectionKeywords.some(kw => queryLower.includes(kw))) {
+    try {
+      const sel = editor.getSelectedShapeIds();
+      if (sel && sel.length > 0) {
+        shapeId = sel[0];
+        console.log(`🎯 move_shape: using active editor selection "${shapeId}"`);
+      }
+    } catch (_) {}
+  }
+  if (!shapeId) shapeId = resolveTLDrawShapeId(action.shapeId, editor);
+
   if (!shapeId) {
     console.warn(`⚠️ move_shape: shape "${action.shapeId}" not found`);
     return { moved: false, shapeId: action.shapeId };
@@ -1519,12 +1684,36 @@ function moveShapeAction(action, context) {
  * HighlightShapeAction — select a shape and zoom to it.
  * Optionally flashes a temporary highlight ring and pans the viewport.
  * action: { shapeId, reason?, title? }
+ *
+ * Client-side shortcut: if the query refers to "selected" or "this" chart and
+ * there is an active editor selection, use that directly rather than trusting
+ * the model's shapeId — the model cannot see real-time selection state.
  */
 function highlightShapeAction(action, context) {
-  const { editor, nodes } = context;
+  const { editor, nodes, currentQuery } = context;
   if (!editor) throw new Error('Editor not available for highlight_shape');
 
-  const shapeId = resolveTLDrawShapeId(action.shapeId, editor);
+  // Selection shortcut — detect "selected / this / it" intent and use real selection
+  let shapeId = null;
+  const queryLower = (currentQuery || '').toLowerCase();
+  const selectionKeywords = ['selected', 'this chart', 'this shape', 'the chart i selected', 'it', 'focused'];
+  const refersToSelection = selectionKeywords.some(kw => queryLower.includes(kw));
+
+  if (refersToSelection) {
+    try {
+      const currentSelection = editor.getSelectedShapeIds();
+      if (currentSelection && currentSelection.length > 0) {
+        shapeId = currentSelection[0];
+        console.log(`🎯 highlight_shape: using active editor selection "${shapeId}" (query referred to "selected")`);
+      }
+    } catch (_) {}
+  }
+
+  // Fall back to model-provided shapeId
+  if (!shapeId) {
+    shapeId = resolveTLDrawShapeId(action.shapeId, editor);
+  }
+
   if (!shapeId) {
     console.warn(`⚠️ highlight_shape: shape "${action.shapeId}" not found`);
     return { highlighted: false, shapeId: action.shapeId };

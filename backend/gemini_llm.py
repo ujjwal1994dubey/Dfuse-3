@@ -1197,7 +1197,23 @@ PLACEMENT RULES FOR ANNOTATIONS:
 """
                 print(f"✨ Using annotation context: {len(annotations)} annotations")
 
-            
+            # Add selected shapes context if the user has something selected
+            selection_context = ""
+            selected_shapes = canvas_state.get('selected_shapes', [])
+            if selected_shapes:
+                selection_context = "\n🎯 USER SELECTION (shapes currently selected by the user):\n"
+                for sel in selected_shapes:
+                    b = sel.get('bounds') or {}
+                    title = sel.get('title', '')
+                    sel_id = sel.get('id', '')
+                    sel_type = sel.get('type', '')
+                    selection_context += f"  - SELECTED: ID='{sel_id}' type={sel_type} title='{title}'"
+                    if b:
+                        selection_context += f" @ ({b.get('x',0):.0f},{b.get('y',0):.0f}) size {b.get('w',0):.0f}x{b.get('h',0):.0f}"
+                    selection_context += "\n"
+                selection_context += "IMPORTANT: When the user's query refers to 'the selected chart/shape', 'this chart', 'it', or 'the chart I selected', ALWAYS use the SELECTED shape IDs listed above.\n"
+                print(f"✨ User has {len(selected_shapes)} shape(s) selected: {[s.get('title','?') for s in selected_shapes]}")
+
             # Get chart count for prompt
             charts = canvas_state.get('charts', [])
             chart_count = len(charts)
@@ -1206,7 +1222,8 @@ PLACEMENT RULES FOR ANNOTATIONS:
             if mode == "ask":
                 mode_instructions = """🔵 ASK MODE: Generate ONLY ai_query actions. No charts/tables/insights/KPIs. Answer questions directly via ai_query."""
             else:
-                mode_instructions = """🟣 CANVAS MODE: Generate data visualizations ONLY.
+                mode_instructions = """🟣 CANVAS MODE: Generate structured JSON actions.
+IMPORTANT: Always respond with valid JSON only. Do not include any explanation or text outside the JSON block.
 
 DATA VISUALIZATION ACTIONS:
 - create_chart: Generate a new data visualization
@@ -1223,8 +1240,12 @@ DECISION LOGIC:
 - "compare A vs B" → create_dashboard with comparison layout
 - "create dashboard" → create_dashboard
 
-DO NOT generate drawing actions (create_shape, create_arrow, create_text, highlight_element, semantic_grouping).
-For drawing/annotation requests, tell user to switch to Draw mode.
+ANNOTATION RULES (for create_shape, create_text, create_arrow):
+- Titles/headers: place high above content (y = -400 to -600 relative to canvas top); use create_text with fontSize "large"; width >= 600
+- Sticky notes: place near the relevant chart; use create_shape with shapeType "sticky_note" + a "text" field for the note content
+- Highlight boxes: wrap the target chart with create_shape "rectangle" + dashed style and a contrasting color
+- Arrows: use create_arrow with "from" = source element id and "to" = destination element id or descriptive position
+- Color semantics: yellow = highlights/attention, blue = professional headers/labels, red = warnings/critical, green = positive/success
 
 SPATIAL LAYOUT INTELLIGENCE:
 When creating 3+ visualizations:
@@ -1281,6 +1302,7 @@ LAYOUT RULES:
 {enhanced_context}
 {spatial_context}
 {annotation_context}
+{selection_context}
 CANVAS STATE ({chart_count} charts):
 {canvas_summary}
 
@@ -1300,11 +1322,12 @@ ACTION SELECTION (choose based on query intent):
 - Data: "show data", "table" (existing chart) → show_table
 - Arrange with strategy: "organize in [layout]", "arrange [strategy]" → arrange_elements
 - Group: "group by X", "organize by Y" → semantic_grouping
-- Drawing: "create arrow", "draw line", "create rectangle" → create_shape or create_arrow
+- Drawing: "create arrow", "draw line", "create rectangle", "draw a box around" → create_shape or create_arrow
+- Sticky notes / annotations: "add a sticky note", "annotate", "add a note" → create_shape with shapeType "sticky_note" (include "text" field)
 - Highlighting: "highlight X", "put a box around", "emphasize" → highlight_element or highlight_shape
-- Text: "add title", "create label", "add text" → create_text
+- Text labels: "add title", "add header", "create label", "add text" → create_text (use fontSize "large" for titles/headers)
 - Move/reposition: "move [chart] to the left/right/below", "reposition" → move_shape (use actual x,y pixel coords)
-- Highlight and zoom: "show me [chart]", "zoom to [chart]", "where is [chart]" → highlight_shape (zooms viewport to shape)
+- Highlight and zoom: "show me [chart]", "zoom to [chart]", "where is [chart]", "focus on [chart]", "go to [chart]", "navigate to [chart]" → highlight_shape (zooms viewport to shape)
 - Align: "align [charts] to the left/right/top/bottom/center" → align_shapes
 - Distribute evenly: "spread [charts] evenly", "distribute [charts]" → distribute_shapes
 - Delete: NOT SUPPORTED → suggest manual deletion + reorganize
@@ -1349,7 +1372,7 @@ ACTION SCHEMAS:
 7. show_table: {{"type": "show_table", "chartId": "existing-id", "reasoning": "why"}}
 8. arrange_elements: {{"type": "arrange_elements", "elementIds": ["id1", "id2"], "strategy": "grid|hero|flow|comparison|optimize", "reasoning": "why"}}
 9. semantic_grouping: {{"type": "semantic_grouping", "grouping_intent": "funnel stage|region|metric type", "create_zones": true, "reasoning": "why"}}
-10. create_shape: {{"type": "create_shape", "shapeType": "rectangle|circle|line", "target": "chart-id or position", "color": "red|blue|green|yellow", "style": "solid|dashed", "reasoning": "why"}}
+10. create_shape: {{"type": "create_shape", "shapeType": "rectangle|circle|line|sticky_note", "target": "chart-id or position", "color": "red|blue|green|yellow", "style": "solid|dashed", "text": "optional: content for sticky_note", "reasoning": "why"}}
 11. create_arrow: {{"type": "create_arrow", "from": "element-id", "to": "element-id or position", "label": "optional text", "reasoning": "why"}}
 12. create_text: {{"type": "create_text", "text": "content", "position": "center|top|bottom", "fontSize": "large|medium|small", "reasoning": "why"}}
 13. highlight_element: {{"type": "highlight_element", "targetId": "chart-id", "highlightType": "box|background|glow", "color": "red|yellow|blue", "reasoning": "why"}}
@@ -1357,6 +1380,7 @@ ACTION SCHEMAS:
 15. highlight_shape: {{"type": "highlight_shape", "shapeId": "existing-shape-id", "title": "human readable name", "reasoning": "why highlight"}}
 16. align_shapes: {{"type": "align_shapes", "shapeIds": ["id1", "id2", "id3"], "alignment": "left|right|top|bottom|center-horizontal|center-vertical", "reasoning": "why"}}
 17. distribute_shapes: {{"type": "distribute_shapes", "shapeIds": ["id1", "id2", "id3"], "direction": "horizontal|vertical", "reasoning": "why"}}
+18. smart_place: {{"type": "smart_place", "suggestedX": 0, "suggestedY": 0, "reasoning": "why this position"}}
 
 KPI CALCULATION RULES:
 - For create_kpi, you MUST compute the value from MEASURE STATISTICS above
@@ -1585,9 +1609,15 @@ CRITICAL RULES:
             # Parse JSON
             parsed = json.loads(json_str)
             
-            # Validate structure
+            # Validate structure — graceful fallback instead of raising
             if "actions" not in parsed:
-                raise ValueError("Response missing 'actions' field")
+                print(f"⚠️ Response JSON has no 'actions' field, keys: {list(parsed.keys())}")
+                # Relay whatever the model returned as a text response
+                text = parsed.get("reasoning") or parsed.get("text") or parsed.get("response") or str(parsed)
+                return {
+                    "actions": [],
+                    "reasoning": text
+                }
             if "reasoning" not in parsed:
                 parsed["reasoning"] = "No reasoning provided"
             
@@ -1599,10 +1629,10 @@ CRITICAL RULES:
         except json.JSONDecodeError as e:
             print(f"❌ JSON parsing failed: {e}")
             print(f"Response text: {response[:500]}...")
-            # Return empty actions on parse failure
+            # Surface the raw Gemini text as reasoning so the user sees something useful
             return {
                 "actions": [],
-                "reasoning": f"Failed to parse agent response: {str(e)}"
+                "reasoning": response.strip()[:500] if response.strip() else f"Failed to parse agent response: {str(e)}"
             }
     
     def _normalize_actions(self, actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1617,9 +1647,9 @@ CRITICAL RULES:
             if not isinstance(action, dict):
                 continue
                 
-            # Ensure position is valid
+            # Ensure position is valid (guard against dict positions from LLM)
             position = action.get("position", "center")
-            if position not in VALID_POSITIONS:
+            if not isinstance(position, str) or position not in VALID_POSITIONS:
                 print(f"⚠️ Fixing invalid position '{position}' → 'center'")
                 action["position"] = "center"
             
