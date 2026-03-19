@@ -18,7 +18,13 @@ export const ACTION_TYPES = {
   CREATE_SHAPE: 'create_shape',
   CREATE_TEXT: 'create_text',
   CREATE_ARROW: 'create_arrow',
-  HIGHLIGHT_ELEMENT: 'highlight_element'
+  HIGHLIGHT_ELEMENT: 'highlight_element',
+  // Spatial manipulation actions (new)
+  MOVE_SHAPE: 'move_shape',
+  HIGHLIGHT_SHAPE: 'highlight_shape',
+  ALIGN_SHAPES: 'align_shapes',
+  DISTRIBUTE_SHAPES: 'distribute_shapes',
+  SMART_PLACE: 'smart_place',
 };
 
 export const POSITION_TYPES = {
@@ -85,6 +91,12 @@ export const ACTION_WEIGHTS = {
   [ACTION_TYPES.CREATE_TEXT]: 'local',
   [ACTION_TYPES.CREATE_ARROW]: 'local',
   [ACTION_TYPES.HIGHLIGHT_ELEMENT]: 'local',
-  [ACTION_TYPES.SHOW_TABLE]: 'local'
+  [ACTION_TYPES.SHOW_TABLE]: 'local',
+  // Spatial actions — all local (no API call needed)
+  [ACTION_TYPES.MOVE_SHAPE]: 'local',
+  [ACTION_TYPES.HIGHLIGHT_SHAPE]: 'local',
+  [ACTION_TYPES.ALIGN_SHAPES]: 'local',
+  [ACTION_TYPES.DISTRIBUTE_SHAPES]: 'local',
+  [ACTION_TYPES.SMART_PLACE]: 'local',
 };
 

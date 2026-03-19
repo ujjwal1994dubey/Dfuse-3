@@ -124,6 +124,122 @@ export function getEnhancedCanvasContext(editor, nodes, dataset = null, datasetA
 }
 
 /**
+ * Viewport-aware canvas context assembler.
+ * Implements the BlurryShape / PeripheralShapeCluster pattern from the tldraw Agent Starter Kit.
+ *
+ * Shapes INSIDE the current viewport → sent as a BlurryShape list
+ *   (id, type, title, bounds, chartType — enough for the model to understand what is visible)
+ *
+ * Shapes OUTSIDE the viewport → grouped into PeripheralShapeCluster summaries
+ *   (count + bounding box of the cluster — cheap spatial awareness without token overload)
+ *
+ * This keeps the token count bounded regardless of canvas size and gives the model
+ * accurate spatial context about what the user is currently looking at.
+ *
+ * @param {Object} editor  - TLDraw editor instance
+ * @param {Array}  nodes   - Current React canvas nodes
+ * @returns {Object} { viewportBounds, viewportShapes, peripheralClusters, allShapeIds }
+ */
+export function getViewportAwareContext(editor, nodes) {
+  if (!editor) return { viewportBounds: null, viewportShapes: [], peripheralClusters: [] };
+
+  let viewportBounds = null;
+  try {
+    const vp = editor.getViewportPageBounds();
+    viewportBounds = { x: vp.x, y: vp.y, w: vp.w, h: vp.h };
+  } catch (_) {
+    return { viewportBounds: null, viewportShapes: [], peripheralClusters: [] };
+  }
+
+  const { x: vx, y: vy, w: vw, h: vh } = viewportBounds;
+
+  // Helper: does a bounding box intersect the viewport?
+  function inViewport(bx, by, bw, bh) {
+    return bx < vx + vw && bx + bw > vx && by < vy + vh && by + bh > vy;
+  }
+
+  const viewportShapes = [];
+  const outsideShapes = [];
+
+  // Process React nodes (charts, KPIs, tables, textboxes)
+  for (const node of nodes) {
+    const enriched = enrichWithBounds(node, editor);
+    const { x, y, width, height } = enriched.bounds;
+
+    const blurry = {
+      id: node.id,
+      type: node.type,
+      title: node.data?.title || node.data?.query || node.data?.text?.slice(0, 40) || '',
+      chartType: node.data?.chartType || null,
+      bounds: { x: Math.round(x), y: Math.round(y), w: Math.round(width), h: Math.round(height) },
+    };
+
+    if (inViewport(x, y, width, height)) {
+      viewportShapes.push(blurry);
+    } else {
+      outsideShapes.push(blurry);
+    }
+  }
+
+  // Also include native TLDraw shapes (annotations, arrows, text)
+  try {
+    const tldrawShapes = editor.getCurrentPageShapes()
+      .filter(s => ['geo', 'arrow', 'line', 'text'].includes(s.type));
+
+    for (const s of tldrawShapes) {
+      const bounds = editor.getShapePageBounds(s);
+      if (!bounds) continue;
+      const blurry = {
+        id: s.id,
+        type: s.type,
+        title: s.props?.text?.slice(0, 40) || s.type,
+        bounds: { x: Math.round(bounds.x), y: Math.round(bounds.y), w: Math.round(bounds.w), h: Math.round(bounds.h) },
+      };
+      if (inViewport(bounds.x, bounds.y, bounds.w, bounds.h)) {
+        viewportShapes.push(blurry);
+      } else {
+        outsideShapes.push(blurry);
+      }
+    }
+  } catch (_) {}
+
+  // Cluster shapes outside the viewport by proximity (~1200px grid cells)
+  const CLUSTER_CELL = 1200;
+  const clusterMap = new Map();
+  for (const s of outsideShapes) {
+    const cx = Math.floor(s.bounds.x / CLUSTER_CELL);
+    const cy = Math.floor(s.bounds.y / CLUSTER_CELL);
+    const key = `${cx},${cy}`;
+    if (!clusterMap.has(key)) clusterMap.set(key, []);
+    clusterMap.get(key).push(s);
+  }
+
+  const peripheralClusters = Array.from(clusterMap.values()).map(shapes => {
+    const xs = shapes.map(s => s.bounds.x);
+    const ys = shapes.map(s => s.bounds.y);
+    const x2s = shapes.map(s => s.bounds.x + s.bounds.w);
+    const y2s = shapes.map(s => s.bounds.y + s.bounds.h);
+    return {
+      count: shapes.length,
+      bounds: {
+        x: Math.round(Math.min(...xs)),
+        y: Math.round(Math.min(...ys)),
+        w: Math.round(Math.max(...x2s) - Math.min(...xs)),
+        h: Math.round(Math.max(...y2s) - Math.min(...ys)),
+      },
+      types: [...new Set(shapes.map(s => s.type))],
+    };
+  });
+
+  return {
+    viewportBounds,
+    viewportShapes,
+    peripheralClusters,
+    allShapeIds: nodes.map(n => n.id),
+  };
+}
+
+/**
  * Extract KPI nodes with relevant data
  */
 function extractKPIs(nodes) {
@@ -545,6 +661,11 @@ function extractCharts(nodes) {
     .map(n => {
       const existingInsight = findAssociatedInsight(n.id, nodes);
       
+      // Build a human-readable transform summary for derived charts
+      const transformSummary = n.data.transformationSteps
+        ? `${n.data.transformationSteps.length} transform(s): ${n.data.transformationSteps.map(t => t.type).join(', ')}`
+        : null;
+      
       return {
         id: n.id,
         dimensions: n.data.dimensions || [],
@@ -556,6 +677,12 @@ function extractCharts(nodes) {
         // Token-efficient context
         existingInsight: existingInsight, // Reuse insights (zero token cost!)
         dataSummary: !existingInsight && n.data.table ? extractStatisticalSummary(n.data.table) : null,
+        
+        // Derived chart lineage — lets AI understand what data transformations are present
+        // and reference the correct columns in follow-up queries
+        isDerived: n.data.isDerived || false,
+        transformSummary,
+        parentChartId: n.data.parentChartId || null,
         
         // Provenance metadata
         createdBy: n.data.createdBy || 'user',

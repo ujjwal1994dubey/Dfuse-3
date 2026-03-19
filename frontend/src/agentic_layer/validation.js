@@ -21,6 +21,10 @@ export const CreateChartActionSchema = z.object({
     POSITION_TYPES.AUTO
   ]),
   referenceChartId: z.string().optional(),
+  agg: z.string().optional(),
+  filters: z.record(z.array(z.string())).optional(),
+  sort_order: z.string().optional(),
+  transform_prompt: z.string().optional(),
   reasoning: z.string()
 });
 
@@ -113,6 +117,10 @@ export const CreateDashboardActionSchema = z.object({
     formatted_value: z.string().optional(),
     text: z.string().optional(),
     chartType: z.string().optional(),
+    agg: z.string().optional(),
+    filters: z.record(z.array(z.string())).optional(),
+    sort_order: z.string().optional(),
+    transform_prompt: z.string().optional(),
     reasoning: z.string()
   })),
   reasoning: z.string()
@@ -196,6 +204,64 @@ export const HighlightElementSchema = z.object({
 });
 
 /**
+ * Schema for move_shape action (spatial manipulation)
+ * Moves an existing shape to an absolute (x, y) position on the canvas.
+ */
+export const MoveShapeSchema = z.object({
+  type: z.literal(ACTION_TYPES.MOVE_SHAPE),
+  shapeId: z.string().min(1, "Shape ID required"),
+  x: z.number(),
+  y: z.number(),
+  reasoning: z.string()
+});
+
+/**
+ * Schema for highlight_shape action (spatial manipulation)
+ * Selects a shape and zooms the viewport to it.
+ */
+export const HighlightShapeSchema = z.object({
+  type: z.literal(ACTION_TYPES.HIGHLIGHT_SHAPE),
+  shapeId: z.string().min(1, "Shape ID required"),
+  title: z.string().optional(),
+  reasoning: z.string()
+});
+
+/**
+ * Schema for align_shapes action (spatial manipulation)
+ * Aligns 2+ shapes along a shared axis using TLDraw's alignShapes API.
+ */
+export const AlignShapesSchema = z.object({
+  type: z.literal(ACTION_TYPES.ALIGN_SHAPES),
+  shapeIds: z.array(z.string()).min(2, "At least 2 shapes required to align"),
+  alignment: z.enum(['left', 'right', 'top', 'bottom', 'center', 'center-horizontal', 'center-vertical', 'middle']),
+  reasoning: z.string()
+});
+
+/**
+ * Schema for distribute_shapes action (spatial manipulation)
+ * Evenly distributes 3+ shapes along an axis using TLDraw's distributeShapes API.
+ */
+export const DistributeShapesSchema = z.object({
+  type: z.literal(ACTION_TYPES.DISTRIBUTE_SHAPES),
+  shapeIds: z.array(z.string()).min(3, "At least 3 shapes required to distribute"),
+  direction: z.enum(['horizontal', 'vertical']),
+  reasoning: z.string()
+});
+
+/**
+ * Schema for smart_place action (spatial manipulation)
+ * Finds a non-overlapping position on the canvas using AABB collision detection.
+ */
+export const SmartPlaceSchema = z.object({
+  type: z.literal(ACTION_TYPES.SMART_PLACE),
+  suggestedX: z.number(),
+  suggestedY: z.number(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  reasoning: z.string()
+});
+
+/**
  * Union schema for any agent action
  */
 export const AgentActionSchema = z.union([
@@ -212,7 +278,12 @@ export const AgentActionSchema = z.union([
   CreateShapeSchema,
   CreateArrowSchema,
   CreateTextSchema,
-  HighlightElementSchema
+  HighlightElementSchema,
+  MoveShapeSchema,
+  HighlightShapeSchema,
+  AlignShapesSchema,
+  DistributeShapesSchema,
+  SmartPlaceSchema
 ]);
 
 /**

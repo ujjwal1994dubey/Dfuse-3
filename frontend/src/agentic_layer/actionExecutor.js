@@ -135,6 +135,17 @@ async function executeAction(action, context) {
       return createTextAction(action, context);
     case ACTION_TYPES.HIGHLIGHT_ELEMENT:
       return highlightElementAction(action, context);
+    // Spatial manipulation actions
+    case ACTION_TYPES.MOVE_SHAPE:
+      return moveShapeAction(action, context);
+    case ACTION_TYPES.HIGHLIGHT_SHAPE:
+      return highlightShapeAction(action, context);
+    case ACTION_TYPES.ALIGN_SHAPES:
+      return alignShapesAction(action, context);
+    case ACTION_TYPES.DISTRIBUTE_SHAPES:
+      return distributeShapesAction(action, context);
+    case ACTION_TYPES.SMART_PLACE:
+      return smartPlaceAction(action, context);
     default:
       throw new Error(`Unknown action type: ${action.type}`);
   }
@@ -144,16 +155,19 @@ async function executeAction(action, context) {
  * Create a chart on the canvas
  */
 async function createChartAction(action, context) {
-  const { API, datasetId, setNodes, figureFromPayload, trackChartCreatedByAI } = context;
+  const { API, datasetId, apiKey, setNodes, figureFromPayload, trackChartCreatedByAI } = context;
   
-  // Call existing /charts endpoint
+  // Step 1: Create base chart — pass all AI-supplied data parameters
   const response = await fetch(`${API}/charts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       dataset_id: datasetId,
       dimensions: action.dimensions,
-      measures: action.measures
+      measures: action.measures,
+      agg: action.agg || 'sum',
+      filters: action.filters || {},
+      sort_order: action.sort_order || 'dataset'
     })
   });
   
@@ -162,22 +176,59 @@ async function createChartAction(action, context) {
     throw new Error(`Chart creation failed: ${error}`);
   }
   
-  const chart = await response.json();
+  let chart = await response.json();
+  
+  // Step 2: If AI requested a data transformation, apply it via the transform endpoint
+  // This handles derived columns (profit/unit, margin %), filtered subsets, top-k, normalize, etc.
+  if (action.transform_prompt && chart.chart_id) {
+    console.log(`🔄 Applying AI-requested transform: "${action.transform_prompt}"`);
+    try {
+      const transformResponse = await fetch(`${API}/chart-transform`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chart_id: chart.chart_id,
+          user_prompt: action.transform_prompt,
+          api_key: apiKey,
+          model: 'gemini-2.5-flash'
+        })
+      });
+      
+      if (transformResponse.ok) {
+        const transformed = await transformResponse.json();
+        if (transformed.success) {
+          console.log(`✅ Transform applied:`, transformed.transformation_steps);
+          chart = transformed; // Use transformed chart (new chart_id, new table, updated dimensions/measures)
+        } else {
+          console.warn(`⚠️ Transform returned success:false, using base chart`);
+        }
+      } else {
+        console.warn(`⚠️ Transform request failed (${transformResponse.status}), using base chart`);
+      }
+    } catch (transformErr) {
+      console.warn(`⚠️ Transform error, using base chart:`, transformErr.message);
+    }
+  }
+  
   const position = calculatePosition(action.position, action, context);
   
   // Determine chart type with validation
+  // Use dimensions/measures from the (possibly transformed) chart response
+  const finalDimensions = chart.dimensions || action.dimensions;
+  const finalMeasures = chart.measures || action.measures;
+  
   const defaultChartType = getEChartsDefaultType(
-    action.dimensions.length,
-    action.measures.length
+    finalDimensions.length,
+    finalMeasures.length
   );
   
-  // Validate that the requested chart type is compatible
+  // Validate that the requested chart type is compatible with final column counts
   let chartTypeId = action.chartType || defaultChartType.id;
   
   // Check if requested chart type is supported for this data shape
   const requestedType = ECHARTS_TYPES[chartTypeId.toUpperCase()];
-  if (requestedType && !requestedType.isSupported(action.dimensions.length, action.measures.length)) {
-    console.warn(`⚠️ Requested chart type "${chartTypeId}" doesn't support ${action.dimensions.length}D + ${action.measures.length}M. Using default: ${defaultChartType.id}`);
+  if (requestedType && !requestedType.isSupported(finalDimensions.length, finalMeasures.length)) {
+    console.warn(`⚠️ Requested chart type "${chartTypeId}" doesn't support ${finalDimensions.length}D + ${finalMeasures.length}M. Using default: ${defaultChartType.id}`);
     chartTypeId = defaultChartType.id;
   }
   
@@ -200,19 +251,24 @@ async function createChartAction(action, context) {
     draggable: true,
     selectable: false,
     data: {
-      title: chart.title || `${action.measures[0]} by ${action.dimensions[0]}`,
+      title: chart.title || `${finalMeasures[0]} by ${finalDimensions[0]}`,
       figure,
       chartType: chartTypeId,
-      dimensions: action.dimensions,
-      measures: action.measures,
+      dimensions: finalDimensions,
+      measures: finalMeasures,
       table: chart.table || [],
-      statistics: chart.statistics || {}, // Preserve statistics from backend
-      agg: chart.agg || 'sum',
+      statistics: chart.statistics || {},
+      agg: chart.agg || action.agg || 'sum',
       datasetId: datasetId,
       selected: false,
-      filters: chart.filters || {},
+      filters: chart.filters || action.filters || {},
+      sortOrder: chart.sort_order || action.sort_order || 'dataset',
       width: chartWidth,
       height: chartHeight,
+      // Lineage — populated when transform was applied
+      isDerived: chart.is_derived || false,
+      parentChartId: chart.parent_chart_id || null,
+      transformationSteps: chart.transformation_steps || null,
       // Provenance metadata
       createdBy: 'agent',
       createdByQuery: context.currentQuery || null,
@@ -222,20 +278,18 @@ async function createChartAction(action, context) {
     }
   }));
   
-  console.log(`✅ Chart created:`, chartId, 'at position', position);
+  console.log(`✅ Chart created:`, chartId, 'at position', position, 'type:', chartTypeId, 'size:', `${chartWidth}x${chartHeight}`, chart.is_derived ? '(derived)' : '');
   
   // Track AI chart creation for session analytics
   if (trackChartCreatedByAI) {
     trackChartCreatedByAI();
   }
   
-  console.log(`✅ Chart created:`, chartId, 'at position', position, 'type:', chartTypeId, 'size:', `${chartWidth}x${chartHeight}`);
-  
   return { 
     chartId, 
     position,
-    dimensions: action.dimensions,
-    measures: action.measures,
+    dimensions: finalDimensions,
+    measures: finalMeasures,
     chartType: chartTypeId,
     width: chartWidth,
     height: chartHeight
@@ -1391,8 +1445,233 @@ function getSuccessMessage(action, result) {
       return result.count > 0 ? `✅ Added text: "${result.text}"` : `⚠️ Failed to create text`;
     case ACTION_TYPES.HIGHLIGHT_ELEMENT:
       return result.count > 0 ? `✅ Highlighted element` : `⚠️ Failed to highlight element`;
+    case ACTION_TYPES.MOVE_SHAPE:
+      return result.moved ? `✅ Moved shape to (${result.x}, ${result.y})` : `⚠️ Could not move shape`;
+    case ACTION_TYPES.HIGHLIGHT_SHAPE:
+      return result.highlighted ? `✅ Highlighted: ${result.title || result.shapeId}` : `⚠️ Shape not found`;
+    case ACTION_TYPES.ALIGN_SHAPES:
+      return `✅ Aligned ${result.count} shapes (${action.alignment})`;
+    case ACTION_TYPES.DISTRIBUTE_SHAPES:
+      return `✅ Distributed ${result.count} shapes (${action.direction})`;
+    case ACTION_TYPES.SMART_PLACE:
+      return `✅ Placed shape at (${result.x}, ${result.y})`;
     default:
       return '✅ Action completed';
   }
 }
 
+// =============================================================================
+// Spatial Manipulation Actions
+// =============================================================================
+
+/**
+ * Resolve a shape ID to a TLDraw shape ID.
+ * The model may send either a React node ID like "abc123" or
+ * a full TLDraw ID like "shape:abc123".
+ */
+function resolveTLDrawShapeId(rawId, editor) {
+  if (!rawId || !editor) return null;
+  // Try "shape:<id>" first (most common for our custom shapes)
+  const fullId = rawId.startsWith('shape:') ? rawId : `shape:${rawId}`;
+  const shape = editor.getShape(fullId);
+  if (shape) return fullId;
+  // Try as-is (for native tldraw shapes like geo, text, arrow)
+  const direct = editor.getShape(rawId);
+  if (direct) return rawId;
+  // Fuzzy: search all shapes whose ID ends with the rawId
+  const all = editor.getCurrentPageShapes();
+  const fuzzy = all.find(s => s.id.endsWith(rawId));
+  return fuzzy ? fuzzy.id : null;
+}
+
+/**
+ * MoveShapeAction — move a shape to a new position.
+ * action: { shapeId, x, y, reason? }
+ */
+function moveShapeAction(action, context) {
+  const { editor } = context;
+  if (!editor) throw new Error('Editor not available for move_shape');
+
+  const shapeId = resolveTLDrawShapeId(action.shapeId, editor);
+  if (!shapeId) {
+    console.warn(`⚠️ move_shape: shape "${action.shapeId}" not found`);
+    return { moved: false, shapeId: action.shapeId };
+  }
+
+  const x = Number(action.x);
+  const y = Number(action.y);
+  if (isNaN(x) || isNaN(y)) throw new Error('move_shape: x and y must be numbers');
+
+  editor.updateShape({ id: shapeId, x, y });
+  console.log(`✅ Moved shape ${shapeId} to (${x}, ${y})`);
+
+  // Pan viewport to show the moved shape
+  try {
+    editor.setSelectedShapes([shapeId]);
+    editor.zoomToSelection({ animation: { duration: 400 } });
+    editor.setSelectedShapes([]);
+  } catch (_) {}
+
+  return { moved: true, shapeId, x, y };
+}
+
+/**
+ * HighlightShapeAction — select a shape and zoom to it.
+ * Optionally flashes a temporary highlight ring and pans the viewport.
+ * action: { shapeId, reason?, title? }
+ */
+function highlightShapeAction(action, context) {
+  const { editor, nodes } = context;
+  if (!editor) throw new Error('Editor not available for highlight_shape');
+
+  const shapeId = resolveTLDrawShapeId(action.shapeId, editor);
+  if (!shapeId) {
+    console.warn(`⚠️ highlight_shape: shape "${action.shapeId}" not found`);
+    return { highlighted: false, shapeId: action.shapeId };
+  }
+
+  // Select the shape so TLDraw visually highlights it with the selection ring
+  editor.setSelectedShapes([shapeId]);
+
+  // Zoom viewport to show the shape with comfortable padding
+  try {
+    editor.zoomToSelection({ animation: { duration: 500 } });
+  } catch (_) {}
+
+  // Resolve title for the success message
+  const node = nodes?.find(n => n.id === action.shapeId || `shape:${n.id}` === shapeId);
+  const title = action.title || node?.data?.title || action.shapeId;
+
+  console.log(`✅ Highlighted shape: ${shapeId} (${title})`);
+  return { highlighted: true, shapeId, title };
+}
+
+/**
+ * AlignShapesAction — align multiple shapes along an axis.
+ * action: { shapeIds: string[], alignment: 'left'|'center-horizontal'|'right'|'top'|'center-vertical'|'bottom' }
+ */
+function alignShapesAction(action, context) {
+  const { editor } = context;
+  if (!editor) throw new Error('Editor not available for align_shapes');
+
+  const shapeIds = (action.shapeIds || [])
+    .map(id => resolveTLDrawShapeId(id, editor))
+    .filter(Boolean);
+
+  if (shapeIds.length < 2) {
+    console.warn('⚠️ align_shapes: need at least 2 valid shapes');
+    return { count: 0, alignment: action.alignment };
+  }
+
+  // Map friendly alignment names to TLDraw's expected string
+  const alignmentMap = {
+    'left': 'left',
+    'right': 'right',
+    'top': 'top',
+    'bottom': 'bottom',
+    'center': 'center-horizontal',
+    'center-horizontal': 'center-horizontal',
+    'center-vertical': 'center-vertical',
+    'middle': 'center-vertical',
+  };
+  const tldrawAlignment = alignmentMap[action.alignment] || action.alignment;
+
+  editor.alignShapes(shapeIds, tldrawAlignment);
+  console.log(`✅ Aligned ${shapeIds.length} shapes: ${tldrawAlignment}`);
+  return { count: shapeIds.length, alignment: tldrawAlignment };
+}
+
+/**
+ * DistributeShapesAction — evenly distribute shapes along an axis.
+ * action: { shapeIds: string[], direction: 'horizontal'|'vertical' }
+ */
+function distributeShapesAction(action, context) {
+  const { editor } = context;
+  if (!editor) throw new Error('Editor not available for distribute_shapes');
+
+  const shapeIds = (action.shapeIds || [])
+    .map(id => resolveTLDrawShapeId(id, editor))
+    .filter(Boolean);
+
+  if (shapeIds.length < 3) {
+    console.warn('⚠️ distribute_shapes: need at least 3 shapes to distribute');
+    return { count: shapeIds.length, direction: action.direction };
+  }
+
+  const direction = action.direction === 'vertical' ? 'vertical' : 'horizontal';
+  editor.distributeShapes(shapeIds, direction);
+  console.log(`✅ Distributed ${shapeIds.length} shapes: ${direction}`);
+  return { count: shapeIds.length, direction };
+}
+
+/**
+ * SmartPlaceAction — find a non-overlapping position and place a shape there.
+ * Validates that the model-suggested coordinates don't overlap existing shapes.
+ * action: { suggestedX, suggestedY, width, height, fallbackToViewport? }
+ */
+function smartPlaceAction(action, context) {
+  const { editor, nodes, getViewportCenter } = context;
+  if (!editor) throw new Error('Editor not available for smart_place');
+
+  const width = Number(action.width) || 800;
+  const height = Number(action.height) || 400;
+  const padding = 30;
+
+  // Collect occupied bounding boxes from all existing shapes
+  const occupiedBoxes = [];
+  try {
+    const allShapes = editor.getCurrentPageShapes();
+    for (const shape of allShapes) {
+      const bounds = editor.getShapePageBounds(shape);
+      if (bounds) {
+        occupiedBoxes.push({ x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h });
+      }
+    }
+  } catch (_) {}
+
+  // AABB overlap test
+  function overlaps(ax, ay, aw, ah) {
+    return occupiedBoxes.some(b =>
+      ax < b.x + b.w + padding &&
+      ax + aw + padding > b.x &&
+      ay < b.y + b.h + padding &&
+      ay + ah + padding > b.y
+    );
+  }
+
+  // Try the model-suggested position first
+  let x = Number(action.suggestedX);
+  let y = Number(action.suggestedY);
+  let placed = false;
+
+  if (!isNaN(x) && !isNaN(y) && !overlaps(x, y, width, height)) {
+    placed = true;
+  } else {
+    // Fallback: scan rightward from rightmost existing shape, then below
+    if (occupiedBoxes.length > 0) {
+      const maxRight = Math.max(...occupiedBoxes.map(b => b.x + b.w));
+      const midY = occupiedBoxes.reduce((s, b) => s + b.y + b.h / 2, 0) / occupiedBoxes.length;
+      x = maxRight + padding;
+      y = midY - height / 2;
+      if (!overlaps(x, y, width, height)) {
+        placed = true;
+      } else {
+        // Try below
+        const maxBottom = Math.max(...occupiedBoxes.map(b => b.y + b.h));
+        const midX = occupiedBoxes.reduce((s, b) => s + b.x + b.w / 2, 0) / occupiedBoxes.length;
+        x = midX - width / 2;
+        y = maxBottom + padding;
+        placed = true;
+      }
+    } else {
+      // Empty canvas: use viewport center
+      const vc = getViewportCenter ? getViewportCenter() : { x: 0, y: 0 };
+      x = vc.x - width / 2;
+      y = vc.y - height / 2;
+      placed = true;
+    }
+  }
+
+  console.log(`✅ smart_place resolved position: (${Math.round(x)}, ${Math.round(y)})`);
+  return { x: Math.round(x), y: Math.round(y), width, height, placed };
+}

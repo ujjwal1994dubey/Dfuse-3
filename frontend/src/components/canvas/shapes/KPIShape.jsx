@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, T } from '@tldraw/tldraw';
+import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, T, useValue } from '@tldraw/tldraw';
 
 // Backend API endpoint
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -92,6 +92,12 @@ export class KPIShape extends BaseBoxShapeUtil {
       
       // Add animation class if newly created
       const highlightClass = isNewlyCreated ? 'shape-highlight-new' : '';
+
+      // Transparent to pointer events when a drawing/annotation tool is active
+      const isDrawingTool = useValue('isDrawingTool', () => {
+        const toolId = editor.getCurrentTool().id;
+        return toolId !== 'select' && toolId !== 'zoom';
+      }, [editor]);
 
       // Sync localQuery with shape props when entering edit mode
       useEffect(() => {
@@ -225,7 +231,7 @@ export class KPIShape extends BaseBoxShapeUtil {
             style={{
               width: w,
               height: h,
-              pointerEvents: 'all'
+              pointerEvents: isDrawingTool ? 'none' : 'all'
             }}
           >
             <div
@@ -367,7 +373,7 @@ export class KPIShape extends BaseBoxShapeUtil {
           style={{
             width: w,
             height: h,
-            pointerEvents: 'all'
+            pointerEvents: isDrawingTool ? 'none' : 'all'
           }}
         >
           <div

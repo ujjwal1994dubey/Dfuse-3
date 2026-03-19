@@ -2,11 +2,11 @@ import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react'
 import EChartsWrapper from './charts/EChartsWrapper';
 import TLDrawCanvas from './components/canvas/TLDrawCanvas';
 import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, ShareModal, Toast, DatasetSelector } from './components/ui';
-import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus, LogOut } from 'lucide-react';
+import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, Bot, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus, LogOut } from 'lucide-react';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
 import { applyUniversalEnhancements } from './charts/enhancementApplier';
-import { AgentChatPanel } from './agentic_layer';
+import { AgentChatPanel, AgentSidebarPanel } from './agentic_layer';
 import { GlobalFilterProvider, useGlobalFilter } from './contexts/GlobalFilterContext';
 import { useAuth } from './contexts/AuthContext';
 import { useSessionTracking } from './contexts/SessionTrackingContext';
@@ -1639,6 +1639,8 @@ function UnifiedSidebar({
   setSettingsPanelOpen,
   agentPanelOpen,
   setAgentPanelOpen,
+  agentSidebarOpen,
+  setAgentSidebarOpen,
   activeTool,
   onToolChange,
   // Action handlers
@@ -1687,6 +1689,7 @@ function UnifiedSidebar({
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
           setAgentPanelOpen(false);
+          setAgentSidebarOpen(false);
         }
       }, 
       active: uploadPanelOpen 
@@ -1704,6 +1707,7 @@ function UnifiedSidebar({
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
           setAgentPanelOpen(false);
+          setAgentSidebarOpen(false);
         }
       }, 
       active: variablesPanelOpen 
@@ -1721,6 +1725,7 @@ function UnifiedSidebar({
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
           setAgentPanelOpen(false);
+          setAgentSidebarOpen(false);
         }
       }, 
       // Only show as active when panel is actually open
@@ -1733,22 +1738,20 @@ function UnifiedSidebar({
       icon: Merge, 
       label: 'Merge Charts', 
       onClick: () => {
-        // Always toggle the panel (no disabled state)
         if (!mergePanelOpen) {
           setMergePanelOpen(true);
         } else {
           setMergePanelOpen(false);
         }
-        // Close other panels
         setUploadPanelOpen(false);
         setVariablesPanelOpen(false);
         setChartActionsPanelOpen(false);
         setInstructionsPanelOpen(false);
         setSettingsPanelOpen(false);
         setAgentPanelOpen(false);
+        setAgentSidebarOpen(false);
       }, 
       active: mergePanelOpen
-      // No disabled state - always accessible
     },
     {
       id: 'kpi',
@@ -1774,6 +1777,7 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setSettingsPanelOpen(false);
           setAgentPanelOpen(false);
+          setAgentSidebarOpen(false);
         }
       }
     },
@@ -1791,6 +1795,7 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setAgentPanelOpen(false);
+          setAgentSidebarOpen(false);
         }
       }
     },
@@ -1808,6 +1813,25 @@ function UnifiedSidebar({
           setMergePanelOpen(false);
           setInstructionsPanelOpen(false);
           setSettingsPanelOpen(false);
+          setAgentSidebarOpen(false);
+        }
+      }
+    },
+    {
+      id: 'agentSidebar',
+      icon: Bot,
+      label: 'Smart Agent (New)',
+      active: agentSidebarOpen,
+      onClick: () => {
+        setAgentSidebarOpen(!agentSidebarOpen);
+        if (!agentSidebarOpen) {
+          setUploadPanelOpen(false);
+          setVariablesPanelOpen(false);
+          setChartActionsPanelOpen(false);
+          setMergePanelOpen(false);
+          setInstructionsPanelOpen(false);
+          setSettingsPanelOpen(false);
+          setAgentPanelOpen(false);
         }
       }
     },
@@ -3417,6 +3441,7 @@ function AppWrapper({ user, onLogout }) {
   });
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+  const [agentSidebarOpen, setAgentSidebarOpen] = useState(false);
   const [canvasMessages, setCanvasMessages] = useState([]); // Canvas mode conversation
   const [askMessages, setAskMessages] = useState([]); // Ask mode conversation
   
@@ -7326,6 +7351,8 @@ function AppWrapper({ user, onLogout }) {
         setSettingsPanelOpen={setSettingsPanelOpen}
         agentPanelOpen={agentPanelOpen}
         setAgentPanelOpen={setAgentPanelOpen}
+        agentSidebarOpen={agentSidebarOpen}
+        setAgentSidebarOpen={setAgentSidebarOpen}
         activeTool={activeTool}
         onToolChange={handleToolChange}
         onMergeCharts={mergeSelectedCharts}
@@ -7349,7 +7376,7 @@ function AppWrapper({ user, onLogout }) {
           left: 'calc(var(--size-sidebar) + 14px)',
           top: '60px',
           bottom: '100px',
-          pointerEvents: (uploadPanelOpen || variablesPanelOpen || chartActionsPanelOpen || mergePanelOpen || instructionsPanelOpen || settingsPanelOpen || agentPanelOpen) ? 'auto' : 'none'
+          pointerEvents: (uploadPanelOpen || variablesPanelOpen || chartActionsPanelOpen || mergePanelOpen || instructionsPanelOpen || settingsPanelOpen || agentPanelOpen || agentSidebarOpen) ? 'auto' : 'none'
         }}
       >
       {/* Single Panel Container - Only one panel can be open at a time */}
@@ -7762,7 +7789,7 @@ function AppWrapper({ user, onLogout }) {
           </SlidingPanel>
         )}
 
-        {/* Agent Panel */}
+        {/* AI Agent Panel (original) */}
         {agentPanelOpen && (
           <SlidingPanel
             isOpen={agentPanelOpen}
@@ -7796,13 +7823,57 @@ function AppWrapper({ user, onLogout }) {
                 datasetId,
                 apiKey,
                 figureFromPayload,
-                dataset: activeDataset?.dataframe,  // NEW - Pass dataset for Draw mode
-                datasetAnalysis: datasetAnalysis,   // NEW - Pass AI-generated metadata
-                // Session tracking functions
-                trackChartCreatedByAI,  // Canvas AI creates charts using AI
+                dataset: activeDataset?.dataframe,
+                datasetAnalysis: datasetAnalysis,
+                trackChartCreatedByAI,
                 trackTableCreated,
                 trackAIInsight,
-                trackAIUsed  // Track AI feature usage
+                trackAIUsed
+              }}
+            />
+          </SlidingPanel>
+        )}
+
+        {/* Smart Agent Panel — AgentSidebarPanel with streaming + memory + spatial */}
+        {agentSidebarOpen && (
+          <SlidingPanel
+            isOpen={agentSidebarOpen}
+            title="Smart Agent"
+            onClose={() => setAgentSidebarOpen(false)}
+            size="md"
+          >
+            <AgentSidebarPanel
+              isOpen={agentSidebarOpen}
+              onClose={() => setAgentSidebarOpen(false)}
+              datasetId={datasetId}
+              apiKey={apiKey}
+              canvasMessages={canvasMessages}
+              setCanvasMessages={setCanvasMessages}
+              askMessages={askMessages}
+              setAskMessages={setAskMessages}
+              onTokenUsage={(usage) => {
+                setTokenUsage(prev => ({
+                  inputTokens: prev.inputTokens + (usage.inputTokens || 0),
+                  outputTokens: prev.outputTokens + (usage.outputTokens || 0),
+                  totalTokens: prev.totalTokens + (usage.totalTokens || 0),
+                  estimatedCost: prev.estimatedCost + (usage.estimatedCost || 0)
+                }));
+              }}
+              canvasContext={{
+                editor: tldrawEditorRef.current,
+                nodes,
+                setNodes,
+                getViewportCenter,
+                API,
+                datasetId,
+                apiKey,
+                figureFromPayload,
+                dataset: activeDataset?.dataframe,
+                datasetAnalysis: datasetAnalysis,
+                trackChartCreatedByAI,
+                trackTableCreated,
+                trackAIInsight,
+                trackAIUsed
               }}
             />
           </SlidingPanel>

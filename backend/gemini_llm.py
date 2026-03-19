@@ -1079,7 +1079,8 @@ IMPORTANT:
         canvas_state: Dict[str, Any],
         dataset_id: str,
         dataset_metadata: Optional[Dict[str, Any]] = None,
-        mode: str = "canvas"
+        mode: str = "canvas",
+        conversation_history: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         Generate Agent Actions
@@ -1136,7 +1137,31 @@ IMPORTANT:
             spatial_context = ""
             if canvas_state.get('spatial_analysis'):
                 analysis = canvas_state['spatial_analysis']
-                spatial_context = f"""
+                
+                # New viewport-aware context (from AgentSidebarPanel)
+                viewport_shapes = analysis.get('viewport_shapes', [])
+                peripheral_clusters = analysis.get('peripheral_clusters', [])
+                viewport_bounds = analysis.get('viewport_bounds')
+                
+                if viewport_shapes or peripheral_clusters:
+                    spatial_context = "\n📍 VIEWPORT-AWARE CANVAS CONTEXT:\n"
+                    if viewport_bounds:
+                        vb = viewport_bounds
+                        spatial_context += f"- User is viewing: ({vb.get('x',0):.0f}, {vb.get('y',0):.0f}) → ({vb.get('x',0)+vb.get('w',0):.0f}, {vb.get('y',0)+vb.get('h',0):.0f})\n"
+                    if viewport_shapes:
+                        spatial_context += f"- Shapes IN viewport ({len(viewport_shapes)} visible):\n"
+                        for s in viewport_shapes[:8]:  # cap at 8 to save tokens
+                            b = s.get('bounds', {})
+                            spatial_context += f"    ID='{s.get('id','')}' type={s.get('type','')} title='{s.get('title','')}' @ ({b.get('x',0):.0f},{b.get('y',0):.0f})\n"
+                    if peripheral_clusters:
+                        spatial_context += f"- Off-screen clusters ({len(peripheral_clusters)}):\n"
+                        for c in peripheral_clusters:
+                            b = c.get('bounds', {})
+                            spatial_context += f"    {c.get('count',0)} shapes near ({b.get('x',0):.0f},{b.get('y',0):.0f})\n"
+                    print(f"✨ Using viewport-aware spatial context: {len(viewport_shapes)} visible, {len(peripheral_clusters)} clusters")
+                else:
+                    # Legacy spatial analysis format
+                    spatial_context = f"""
 📍 SPATIAL CANVAS ANALYSIS:
 - Density: {analysis.get('density', 0):.1%} occupied
 - Spatial clusters: {analysis.get('clusters', 0)} detected
@@ -1146,7 +1171,7 @@ IMPORTANT:
 - Suggested layout: {analysis.get('suggested_layout', 'grid')}
 - Groupings: {analysis.get('groupings', 0)} logical groups
 """
-                print(f"✨ Using spatial analysis context")
+                    print(f"✨ Using legacy spatial analysis context")
             
             # Add annotation context if available
             annotation_context = ""
@@ -1276,9 +1301,24 @@ ACTION SELECTION (choose based on query intent):
 - Arrange with strategy: "organize in [layout]", "arrange [strategy]" → arrange_elements
 - Group: "group by X", "organize by Y" → semantic_grouping
 - Drawing: "create arrow", "draw line", "create rectangle" → create_shape or create_arrow
-- Highlighting: "highlight X", "put a box around", "emphasize" → highlight_element
+- Highlighting: "highlight X", "put a box around", "emphasize" → highlight_element or highlight_shape
 - Text: "add title", "create label", "add text" → create_text
+- Move/reposition: "move [chart] to the left/right/below", "reposition" → move_shape (use actual x,y pixel coords)
+- Highlight and zoom: "show me [chart]", "zoom to [chart]", "where is [chart]" → highlight_shape (zooms viewport to shape)
+- Align: "align [charts] to the left/right/top/bottom/center" → align_shapes
+- Distribute evenly: "spread [charts] evenly", "distribute [charts]" → distribute_shapes
 - Delete: NOT SUPPORTED → suggest manual deletion + reorganize
+
+DERIVED METRIC DETECTION (check FIRST, before chart type selection):
+If the query contains any of: "per", "/", "divided by", "ratio", "rate", "per unit", "per match", "per game", "per day", "per player", "growth %", "margin", "% of", "efficiency", "yield"
+→ The user wants ONE computed metric, NOT two separate chart series
+→ ALWAYS use create_chart with:
+   - measures[]: include ALL source columns needed for the formula (both numerator and denominator)
+   - chartType: "bar" (1 derived metric = 1 dimension + 1 computed measure after transform)
+   - position: "center"
+   - transform_prompt: describe the formula in plain English (e.g. "add a column ducks_per_match = 0 / Mat, then show only that derived column")
+→ DO NOT use scatter/grouped_bar/dual_axis/multi_series_bar for these queries
+→ DO NOT show the raw source columns as separate series — the transform produces the single derived column
 
 CHART TYPE SELECTION (based on dimensions + measures count):
 - 1 dimension + 1 measure → chartType: "bar", "pie", or "line"
@@ -1286,10 +1326,23 @@ CHART TYPE SELECTION (based on dimensions + measures count):
 - 2 dimensions + 1 measure → chartType: "stacked_bar" or "bubble"
 - 1 dimension + 3-5 measures → chartType: "multi_series_bar"
 
+CREATE_CHART OPTIONAL FIELDS (use when the query implies data manipulation):
+- "agg": override aggregation method → "sum" (default) | "avg" | "min" | "max" | "count"
+  Use when: "average sales", "minimum cost", "count of orders" instead of sum
+- "filters": pre-filter rows before aggregation → {{"DimColumn": ["val1", "val2"]}}
+  Use when: query targets a subset — "Electronics only", "North region", "Q2 data"
+- "sort_order": control result ordering → "measure_desc" | "measure_asc" | "ascending" | "descending" | "dataset"
+  Use when: "top categories", "ranked by profit", "alphabetical"
+- "transform_prompt": natural language description of a derived column or row manipulation AFTER aggregation
+  Use when: query requires a computed metric not available as a raw column — ratio, rate, percentage, per-unit, growth, margin
+  Examples: "profit per unit sold", "revenue growth %", "profit margin = profit / revenue", "top 5 by profit", "normalize by total"
+  DO NOT use transform_prompt for simple aggregations (sum/avg) — those are handled by agg field
+  IMPORTANT: When using transform_prompt, include ALL source columns needed for the formula in measures[]
+
 ACTION SCHEMAS:
-1. create_chart: {{"type": "create_chart", "dimensions": ["dim"], "measures": ["measure"], "chartType": "bar", "position": "center", "reasoning": "why"}}
+1. create_chart: {{"type": "create_chart", "dimensions": ["dim"], "measures": ["measure"], "chartType": "bar", "agg": "sum", "filters": {{}}, "sort_order": "dataset", "transform_prompt": "optional: derived column description", "position": "center", "reasoning": "why"}}
 2. create_kpi: {{"type": "create_kpi", "query": "description", "value": 12345.67, "formatted_value": "12,345.67", "explanation": "brief explanation", "position": "center", "reasoning": "why"}}
-3. create_dashboard: {{"type": "create_dashboard", "dashboardType": "sales|executive|operations|analysis|general", "layoutStrategy": "grid|hero|flow|comparison|kpi-dashboard", "elements": [{{"type": "chart|kpi|insight", "dimensions": ["dim"], "measures": ["meas"], "chartType": "bar", "reasoning": "why"}}], "reasoning": "overall reasoning"}}
+3. create_dashboard: {{"type": "create_dashboard", "dashboardType": "sales|executive|operations|analysis|general", "layoutStrategy": "grid|hero|flow|comparison|kpi-dashboard", "elements": [{{"type": "chart|kpi|insight", "dimensions": ["dim"], "measures": ["meas"], "chartType": "bar", "agg": "sum", "filters": {{}}, "sort_order": "dataset", "transform_prompt": "optional", "reasoning": "why"}}], "reasoning": "overall reasoning"}}
 4. ai_query: {{"type": "ai_query", "query": "analytical question", "position": "center", "reasoning": "why"}}
 5. create_insight: {{"type": "create_insight", "text": "insight text", "position": "center", "reasoning": "why"}}
 6. generate_chart_insights: {{"type": "generate_chart_insights", "chartId": "existing-id", "position": "center", "reasoning": "why"}}
@@ -1300,6 +1353,10 @@ ACTION SCHEMAS:
 11. create_arrow: {{"type": "create_arrow", "from": "element-id", "to": "element-id or position", "label": "optional text", "reasoning": "why"}}
 12. create_text: {{"type": "create_text", "text": "content", "position": "center|top|bottom", "fontSize": "large|medium|small", "reasoning": "why"}}
 13. highlight_element: {{"type": "highlight_element", "targetId": "chart-id", "highlightType": "box|background|glow", "color": "red|yellow|blue", "reasoning": "why"}}
+14. move_shape: {{"type": "move_shape", "shapeId": "existing-shape-id", "x": 100, "y": 200, "reasoning": "why to move it there"}}
+15. highlight_shape: {{"type": "highlight_shape", "shapeId": "existing-shape-id", "title": "human readable name", "reasoning": "why highlight"}}
+16. align_shapes: {{"type": "align_shapes", "shapeIds": ["id1", "id2", "id3"], "alignment": "left|right|top|bottom|center-horizontal|center-vertical", "reasoning": "why"}}
+17. distribute_shapes: {{"type": "distribute_shapes", "shapeIds": ["id1", "id2", "id3"], "direction": "horizontal|vertical", "reasoning": "why"}}
 
 KPI CALCULATION RULES:
 - For create_kpi, you MUST compute the value from MEASURE STATISTICS above
@@ -1331,13 +1388,51 @@ EXAMPLE 6 - "calculate total profit and average revenue" (KPI with pre-computed 
 EXAMPLE 7 - "create a sales dashboard" (multi-element dashboard):
 {{"actions": [{{"type": "create_dashboard", "dashboardType": "sales", "layoutStrategy": "kpi-dashboard", "elements": [{{"type": "kpi", "query": "Total {m1}", "value": {m1_sum}, "formatted_value": "{m1_sum:,.2f}", "reasoning": "Key metric"}}, {{"type": "kpi", "query": "Average {m2}", "value": {m2_avg}, "formatted_value": "{m2_avg:,.2f}", "reasoning": "Key metric"}}, {{"type": "chart", "dimensions": ["{dim1}"], "measures": ["{m1}"], "chartType": "bar", "reasoning": "Main breakdown"}}, {{"type": "chart", "dimensions": ["{dim1}"], "measures": ["{m2}"], "chartType": "line", "reasoning": "Trend analysis"}}], "reasoning": "Complete sales dashboard with KPIs and charts"}}], "reasoning": "Coordinated dashboard creation"}}
 
+EXAMPLE 8 - "show {m1} per {m2} by {dim1}" (derived column via transform):
+{{"actions": [{{"type": "create_chart", "dimensions": ["{dim1}"], "measures": ["{m1}", "{m2}"], "chartType": "bar", "position": "center", "transform_prompt": "add a column {m1}_per_{m2} = {m1} / {m2}, then show only that derived column", "reasoning": "Derived per-unit metric requires computed column"}}], "reasoning": "Computed ratio not available as raw column"}}
+
+EXAMPLE 9 - "show {m1} for {dim1} = X only" (filtered subset):
+{{"actions": [{{"type": "create_chart", "dimensions": ["{dim1}"], "measures": ["{m1}"], "chartType": "bar", "position": "center", "filters": {{"{dim2}": ["specific_value"]}}, "sort_order": "measure_desc", "reasoning": "Filter to specific subset and rank by value"}}], "reasoning": "Subset analysis with ranking"}}
+
 CRITICAL RULES:
 1. create_chart MUST have at least 1 dimension AND at least 1 measure from the lists above
 2. Use EXACT column names from Dimensions/Measures lists - do not invent column names
 3. Choose chartType based on dimension/measure count (see CHART TYPE SELECTION above)
 4. Output ONLY valid JSON, no markdown code blocks
 5. Position MUST be: "center", "right_of_chart", or "below_chart"
-6. For "vs" or "and" queries with multiple metrics, use 2+ measures with scatter/grouped_bar/multi_series_bar"""
+6. For "vs" or "and" queries comparing multiple metrics side by side, use 2+ measures with scatter/grouped_bar/multi_series_bar
+   EXCEPTION: "X per Y", "X divided by Y", "ratio of X to Y", "X per match/unit/game/day" → use transform_prompt (single derived column), NOT a multi-measure chart
+7. Use transform_prompt for derived/computed columns (ratios, rates, per-unit, margins, growth %)
+8. Use filters when the query targets a named subset of data (specific category, region, time period)
+9. Use agg when the query implies avg/min/max/count aggregation instead of sum"""
+
+            # Build conversation history section to inject into the prompt
+            history_context = ""
+            if conversation_history and len(conversation_history) > 0:
+                history_context = "\n\n📜 CONVERSATION HISTORY (most recent first — use this to understand follow-up intent):\n"
+                # Show last 6 turns (3 exchanges) for token efficiency
+                recent = conversation_history[-6:] if len(conversation_history) > 6 else conversation_history
+                for turn in reversed(recent):
+                    role = "User" if turn.get("role") == "user" else "Agent"
+                    content = turn.get("content", "")
+                    actions_summary = turn.get("actions_summary", "")
+                    canvas_snap = turn.get("canvas_summary", {})
+                    
+                    if role == "User":
+                        history_context += f"  [{role}]: {content}\n"
+                    else:
+                        history_context += f"  [{role}]: {content}"
+                        if actions_summary:
+                            history_context += f" → Actions: {actions_summary}"
+                        if canvas_snap:
+                            chart_titles = canvas_snap.get("chart_titles", [])
+                            if chart_titles:
+                                history_context += f" (canvas had: {', '.join(chart_titles[:3])})"
+                        history_context += "\n"
+                history_context += "\nIMPORTANT: Use this history to understand 'that chart', 'the one you just made', 'now filter it', etc.\n"
+                # Inject history right before the user query in the prompt
+                prompt = prompt.replace(f'USER QUERY: "{query}"', f'{history_context}USER QUERY: "{query}"')
+                print(f"📜 Injected {len(recent)} history turns into prompt")
 
             print("📝 Sending prompt to Gemini...")
             response, token_usage = self.run_gemini_with_usage(prompt)
@@ -1437,8 +1532,15 @@ CRITICAL RULES:
                 chart_type = chart.get('chartType', 'bar')
                 chart_id = chart.get('id', 'unknown')
                 
-                # Basic chart info
-                summary.append(f"  - Chart '{chart_id}': {chart_type} | {dims} vs {meas}")
+                # Basic chart info — include position for spatial move actions
+                pos = chart.get('position', {})
+                pos_str = f" @ ({pos.get('x',0):.0f}, {pos.get('y',0):.0f})" if pos else ""
+                summary.append(f"  - Chart ID='{chart_id}'{pos_str}: {chart_type} | {dims} vs {meas}")
+                
+                # Show derived chart context so AI understands what columns are available
+                if chart.get('isDerived'):
+                    transform_summary = chart.get('transformSummary', 'transformed data')
+                    summary.append(f"    (Derived chart — {transform_summary})")
                 
                 # Token-efficient context: Reuse existing insight (FREE!)
                 existing_insight = chart.get('existingInsight')
@@ -1578,6 +1680,33 @@ CRITICAL RULES:
                 if "chartId" not in action or not action["chartId"]:
                     continue  # Skip - requires chartId
             
+            elif action_type == "move_shape":
+                if not action.get("shapeId"):
+                    continue
+                # Ensure x, y are valid numbers
+                try:
+                    action["x"] = float(action.get("x", 0))
+                    action["y"] = float(action.get("y", 0))
+                except (TypeError, ValueError):
+                    continue
+            
+            elif action_type == "highlight_shape":
+                if not action.get("shapeId"):
+                    continue
+            
+            elif action_type in ["align_shapes", "distribute_shapes"]:
+                if not action.get("shapeIds") or not isinstance(action.get("shapeIds"), list):
+                    continue
+                if len(action["shapeIds"]) < 2:
+                    continue
+
+            elif action_type == "smart_place":
+                try:
+                    action["suggestedX"] = float(action.get("suggestedX", 0))
+                    action["suggestedY"] = float(action.get("suggestedY", 0))
+                except (TypeError, ValueError):
+                    continue
+
             normalized.append(action)
         
         return normalized

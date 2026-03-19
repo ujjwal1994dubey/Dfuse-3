@@ -1,7 +1,8 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, AsyncGenerator
 import pandas as pd
 import numpy as np
 import io
@@ -11,6 +12,7 @@ import ast
 import operator
 import json
 import os
+import asyncio
 import requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -65,6 +67,8 @@ DATASETS: Dict[str, pd.DataFrame] = {}
 DATASET_METADATA: Dict[str, Dict[str, Any]] = {}  # Store dataset analysis and metadata
 CHARTS: Dict[str, Dict[str, Any]] = {}
 CHART_INSIGHTS_CACHE: Dict[str, Dict[str, Any]] = {}  # Cache generated chart insights
+CONVERSATION_STORE: Dict[str, List[Dict[str, Any]]] = {}  # session_id -> list of conversation turns
+CONVERSATION_MAX_TURNS = 10  # Keep last N turns in context (keeps token count bounded)
 
 
 # Add this right after line 28 (after the CHARTS dictionary):
@@ -441,6 +445,8 @@ class AgentQueryRequest(BaseModel):
     model: str = "gemini-2.5-flash"
     mode: str = "canvas"  # 'canvas' or 'ask'
     analysis_type: str = "detailed"  # 'raw' or 'detailed' (Ask mode only)
+    session_id: Optional[str] = None  # Persistent session for conversation memory
+    conversation_history: Optional[List[Dict[str, Any]]] = None  # Previous turns from client
 
 # -----------------------
 # Helpers
@@ -3746,7 +3752,7 @@ async def agent_query(request: AgentQueryRequest):
     """
     Agent Query Endpoint
     Processes natural language queries and generates actions for the agentic layer.
-    Uses canvas state and dataset metadata for enhanced context understanding.
+    Uses canvas state, dataset metadata, and conversation history for full context.
     
     OPTIMIZATION: In Ask mode, skips the planning LLM call and directly executes
     AI query, reducing API calls from 3 to 2 (33% reduction).
@@ -3758,17 +3764,22 @@ async def agent_query(request: AgentQueryRequest):
         - api_key: Gemini API key
         - model: Gemini model to use
         - mode: 'canvas' or 'ask'
+        - session_id: Optional session identifier for conversation memory
+        - conversation_history: Optional list of previous turns from client
     
     Returns:
         - success: bool
         - actions: List of actions to execute (create_chart, create_insight)
         - reasoning: Agent's reasoning for the actions
         - token_usage: Token consumption metrics
+        - session_id: Session identifier to pass back on next request
     """
+    import uuid
     try:
         print(f"🤖 Agent query received: '{request.user_query}'")
         print(f"   Dataset ID: {request.dataset_id}")
         print(f"   Mode: {request.mode}")
+        print(f"   Session ID: {request.session_id or 'new session'}")
         print(f"   Canvas state: {len(request.canvas_state.get('charts', []))} charts, {len(request.canvas_state.get('textBoxes', []))} insights")
         
         # Validate dataset exists
@@ -3779,12 +3790,23 @@ async def agent_query(request: AgentQueryRequest):
         if not request.api_key:
             raise HTTPException(status_code=400, detail="API key is required")
         
+        # Resolve or create session
+        session_id = request.session_id or str(uuid.uuid4())
+        
+        # Retrieve server-side history or use client-provided history
+        if session_id in CONVERSATION_STORE:
+            history = CONVERSATION_STORE[session_id]
+        elif request.conversation_history:
+            history = request.conversation_history
+        else:
+            history = []
+        
+        print(f"📜 Conversation history: {len(history)} previous turns")
+        
         # Get dataset metadata for enhanced context
         dataset_metadata = DATASET_METADATA.get(request.dataset_id, {})
         if dataset_metadata and dataset_metadata.get('success'):
             print(f"📋 Using enhanced dataset context for agent")
-            print(f"   Dataset summary: {len(dataset_metadata.get('dataset_summary', ''))} chars")
-            print(f"   Column descriptions: {len(dataset_metadata.get('columns', []))} columns")
         else:
             print("⚠️ No dataset metadata available - using basic context")
             dataset_metadata = None
@@ -3794,22 +3816,13 @@ async def agent_query(request: AgentQueryRequest):
         
         # =====================================================================
         # OPTIMIZATION: Skip planning LLM call in Ask mode
-        # In Ask mode, we KNOW the action is always ai_query, so we directly
-        # call get_text_analysis() instead of wasting an LLM call on planning.
-        # This reduces API calls from 3 to 2 (33% reduction).
         # =====================================================================
         if request.mode == "ask":
-            # Check if user wants raw analysis (no LLM refinement)
             skip_refinement = request.analysis_type == "raw"
             analysis_label = "RAW ANALYSIS" if skip_refinement else "DETAILED ANALYSIS"
-            
             print(f"🔵 ASK MODE ({analysis_label}): Skipping planning, directly executing AI query")
             
-            # Get the dataset
             dataset = DATASETS[request.dataset_id]
-            
-            # Directly call AI analysis (skips the planning LLM call)
-            # If raw analysis, also skip the refinement step
             ai_result = formulator.get_text_analysis(
                 user_query=request.user_query,
                 dataset=dataset,
@@ -3819,12 +3832,32 @@ async def agent_query(request: AgentQueryRequest):
             )
             
             print(f"✅ Ask mode AI query completed")
-            print(f"   Token usage: {ai_result.get('token_usage', {})}")
             
-            # Return as a pre-built ai_query action result
-            # This matches the format expected by the frontend
+            # Build slim canvas summary for history entry
+            canvas_summary = _build_slim_canvas_summary(request.canvas_state)
+            
+            # Store this turn in conversation history
+            history.append({
+                "role": "user",
+                "content": request.user_query,
+                "canvas_summary": canvas_summary,
+                "mode": "ask"
+            })
+            history.append({
+                "role": "assistant",
+                "content": ai_result.get("answer", ""),
+                "actions_summary": "data analysis query",
+                "mode": "ask"
+            })
+            
+            # Keep history bounded
+            if len(history) > CONVERSATION_MAX_TURNS * 2:
+                history = history[-(CONVERSATION_MAX_TURNS * 2):]
+            CONVERSATION_STORE[session_id] = history
+            
             return {
                 "success": True,
+                "session_id": session_id,
                 "actions": [{
                     "type": "ai_query",
                     "query": request.user_query,
@@ -3833,7 +3866,6 @@ async def agent_query(request: AgentQueryRequest):
                 }],
                 "reasoning": "Ask mode: Direct analytical response without planning",
                 "token_usage": ai_result.get("token_usage", {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}),
-                # Embed the AI result directly so frontend can display it
                 "ask_mode_result": {
                     "mode": "ask",
                     "query": request.user_query,
@@ -3849,24 +3881,45 @@ async def agent_query(request: AgentQueryRequest):
             }
         
         # =====================================================================
-        # CANVAS MODE: Full planning flow (3 LLM calls for ai_query actions)
+        # CANVAS MODE: Full planning flow with conversation history
         # =====================================================================
-        print("🟣 CANVAS MODE: Using full planning flow")
+        print("🟣 CANVAS MODE: Using full planning flow with conversation history")
         
-        # Generate agent actions with mode
         result = formulator.generate_agent_actions(
             query=request.user_query,
             canvas_state=request.canvas_state,
             dataset_id=request.dataset_id,
             dataset_metadata=dataset_metadata,
-            mode=request.mode
+            mode=request.mode,
+            conversation_history=history
         )
         
         print(f"✅ Agent generated {len(result.get('actions', []))} actions")
-        print(f"   Token usage: {result.get('token_usage', {})}")
+        
+        # Store this turn in conversation history
+        canvas_summary = _build_slim_canvas_summary(request.canvas_state)
+        actions_summary = _summarize_actions(result.get("actions", []))
+        
+        history.append({
+            "role": "user",
+            "content": request.user_query,
+            "canvas_summary": canvas_summary,
+            "mode": "canvas"
+        })
+        history.append({
+            "role": "assistant",
+            "content": result.get("reasoning", ""),
+            "actions_summary": actions_summary,
+            "mode": "canvas"
+        })
+        
+        if len(history) > CONVERSATION_MAX_TURNS * 2:
+            history = history[-(CONVERSATION_MAX_TURNS * 2):]
+        CONVERSATION_STORE[session_id] = history
         
         return {
             "success": True,
+            "session_id": session_id,
             "actions": result.get("actions", []),
             "reasoning": result.get("reasoning", ""),
             "token_usage": result.get("token_usage", {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0})
@@ -3879,6 +3932,223 @@ async def agent_query(request: AgentQueryRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Agent query failed: {str(e)}")
+
+
+def _build_slim_canvas_summary(canvas_state: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a lightweight canvas summary for conversation history (not the full state)."""
+    charts = canvas_state.get("charts", [])
+    kpis = canvas_state.get("kpis", [])
+    tables = canvas_state.get("tables", [])
+    return {
+        "chart_count": len(charts),
+        "kpi_count": len(kpis),
+        "table_count": len(tables),
+        "chart_ids": [c.get("id") for c in charts],
+        "chart_titles": [c.get("title", "") for c in charts],
+        "chart_types": [c.get("chartType", "bar") for c in charts],
+    }
+
+
+def _summarize_actions(actions: List[Dict[str, Any]]) -> str:
+    """Build a human-readable summary of actions taken for history storage."""
+    if not actions:
+        return "no actions"
+    parts = []
+    for a in actions:
+        t = a.get("type", "unknown")
+        if t == "create_chart":
+            dims = ", ".join(a.get("dimensions", []))
+            meas = ", ".join(a.get("measures", []))
+            parts.append(f"created {a.get('chartType','bar')} chart ({meas} by {dims})")
+        elif t == "create_kpi":
+            parts.append(f"created KPI: {a.get('query','metric')}")
+        elif t == "create_insight":
+            parts.append("added insight")
+        elif t == "move_shape":
+            parts.append(f"moved shape {a.get('shapeId','')}")
+        elif t == "highlight_shape":
+            parts.append(f"highlighted shape {a.get('shapeId','')}")
+        elif t == "align_shapes":
+            parts.append(f"aligned shapes {a.get('alignment','')}")
+        else:
+            parts.append(t)
+    return "; ".join(parts)
+
+
+@app.delete("/conversation/{session_id}")
+async def clear_conversation(session_id: str):
+    """Clear conversation history for a session."""
+    if session_id in CONVERSATION_STORE:
+        del CONVERSATION_STORE[session_id]
+    return {"success": True, "session_id": session_id}
+
+
+# =============================================================================
+# SSE Streaming Agent Endpoint
+# Real-time token streaming for the new AgentSidebarPanel
+# =============================================================================
+
+@app.post("/agent-stream")
+async def agent_stream(request: AgentQueryRequest):
+    """
+    Streaming Agent Endpoint
+    Streams the AI planning response token-by-token using Server-Sent Events (SSE).
+    The frontend reads this stream and displays tokens as they arrive.
+    
+    SSE event types:
+      - 'token': A chunk of text from the model (AI thinking / reasoning)
+      - 'actions': The final parsed JSON actions object
+      - 'done': Stream complete (includes session_id and token_usage)
+      - 'error': An error occurred
+    """
+    import uuid as _uuid
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        try:
+            # Resolve session
+            session_id = request.session_id or str(_uuid.uuid4())
+
+            # Retrieve history
+            if session_id in CONVERSATION_STORE:
+                history = CONVERSATION_STORE[session_id]
+            elif request.conversation_history:
+                history = request.conversation_history
+            else:
+                history = []
+
+            # Validate
+            if request.dataset_id not in DATASETS:
+                yield f"event: error\ndata: {json.dumps({'error': 'Dataset not found'})}\n\n"
+                return
+            if not request.api_key:
+                yield f"event: error\ndata: {json.dumps({'error': 'API key required'})}\n\n"
+                return
+
+            dataset_metadata = DATASET_METADATA.get(request.dataset_id) or {}
+            if not dataset_metadata.get('success'):
+                dataset_metadata = None
+
+            formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
+
+            # ---- ASK MODE: stream the analysis response ----
+            if request.mode == "ask":
+                skip_refinement = request.analysis_type == "raw"
+                dataset = DATASETS[request.dataset_id]
+
+                # Stream the planning tokens, then send full result
+                yield f"event: token\ndata: {json.dumps({'text': '🔍 Analyzing your question...'})}\n\n"
+                await asyncio.sleep(0)
+
+                ai_result = formulator.get_text_analysis(
+                    user_query=request.user_query,
+                    dataset=dataset,
+                    dataset_id=request.dataset_id,
+                    dataset_metadata=dataset_metadata,
+                    skip_refinement=skip_refinement
+                )
+
+                answer = ai_result.get("answer", "")
+
+                # Stream answer in ~200-char chunks to simulate token streaming
+                chunk_size = 200
+                for i in range(0, len(answer), chunk_size):
+                    chunk = answer[i:i + chunk_size]
+                    yield f"event: token\ndata: {json.dumps({'text': chunk})}\n\n"
+                    await asyncio.sleep(0.02)
+
+                # Store history
+                canvas_summary = _build_slim_canvas_summary(request.canvas_state)
+                history.extend([
+                    {"role": "user", "content": request.user_query, "canvas_summary": canvas_summary, "mode": "ask"},
+                    {"role": "assistant", "content": answer, "actions_summary": "data analysis", "mode": "ask"}
+                ])
+                if len(history) > CONVERSATION_MAX_TURNS * 2:
+                    history = history[-(CONVERSATION_MAX_TURNS * 2):]
+                CONVERSATION_STORE[session_id] = history
+
+                ask_result = {
+                    "mode": "ask",
+                    "query": request.user_query,
+                    "answer": answer,
+                    "raw_analysis": ai_result.get("raw_analysis", ""),
+                    "is_refined": ai_result.get("is_refined", False),
+                    "python_code": ai_result.get("code_steps", [""])[0] if ai_result.get("code_steps") else "",
+                    "tabular_data": ai_result.get("tabular_data", []),
+                    "has_table": ai_result.get("has_table", False),
+                    "success": ai_result.get("success", True)
+                }
+
+                yield f"event: actions\ndata: {json.dumps({'actions': [{'type': 'ai_query', 'query': request.user_query, 'position': 'center', 'reasoning': 'Ask mode'}], 'reasoning': 'Direct analysis', 'ask_mode_result': ask_result})}\n\n"
+                yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'token_usage': ai_result.get('token_usage', {})})}\n\n"
+                return
+
+            # ---- CANVAS MODE: stream reasoning then actions ----
+            yield f"event: token\ndata: {json.dumps({'text': '🧠 Understanding your request...'})}\n\n"
+            await asyncio.sleep(0)
+
+            # Build history context string (same logic as generate_agent_actions)
+            history_context = ""
+            if history:
+                recent = history[-6:] if len(history) > 6 else history
+                lines = []
+                for turn in reversed(recent):
+                    role = "User" if turn.get("role") == "user" else "Agent"
+                    lines.append(f"  [{role}]: {turn.get('content', '')}")
+                history_context = "\n📜 RECENT HISTORY:\n" + "\n".join(lines) + "\n"
+
+            result = formulator.generate_agent_actions(
+                query=request.user_query,
+                canvas_state=request.canvas_state,
+                dataset_id=request.dataset_id,
+                dataset_metadata=dataset_metadata,
+                mode=request.mode,
+                conversation_history=history
+            )
+
+            # Stream reasoning text
+            reasoning = result.get("reasoning", "")
+            if reasoning:
+                chunk_size = 150
+                for i in range(0, len(reasoning), chunk_size):
+                    yield f"event: token\ndata: {json.dumps({'text': reasoning[i:i+chunk_size]})}\n\n"
+                    await asyncio.sleep(0.015)
+
+            # Stream action summaries one by one
+            actions = result.get("actions", [])
+            for action in actions:
+                action_label = _summarize_actions([action])
+                bullet_text = "\n• " + action_label
+                yield f"event: token\ndata: {json.dumps({'text': bullet_text})}\n\n"
+                await asyncio.sleep(0.05)
+
+            # Store history
+            canvas_summary = _build_slim_canvas_summary(request.canvas_state)
+            actions_summary = _summarize_actions(actions)
+            history.extend([
+                {"role": "user", "content": request.user_query, "canvas_summary": canvas_summary, "mode": "canvas"},
+                {"role": "assistant", "content": reasoning, "actions_summary": actions_summary, "mode": "canvas"}
+            ])
+            if len(history) > CONVERSATION_MAX_TURNS * 2:
+                history = history[-(CONVERSATION_MAX_TURNS * 2):]
+            CONVERSATION_STORE[session_id] = history
+
+            yield f"event: actions\ndata: {json.dumps({'actions': actions, 'reasoning': reasoning})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'token_usage': result.get('token_usage', {})})}\n\n"
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+    )
 
 
 # =============================================================================
