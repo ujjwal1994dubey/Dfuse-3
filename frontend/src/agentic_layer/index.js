@@ -4,8 +4,10 @@
  */
 
 export { AgentChatPanel } from './AgentChatPanel';
+export { AgentSidebarPanel } from './AgentSidebarPanel';
 export { 
   getCanvasSnapshot, 
+  getViewportAwareContext,
   exportCanvasStateAsJSON, 
   downloadCanvasStateAsJSON, 
   loadCanvasStateFromJSON, 

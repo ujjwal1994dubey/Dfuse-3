@@ -14,6 +14,11 @@ import { createTldrawAgent, executeDrawingActions } from './tldrawAgent';
 import { organizeCanvas, organizeByHeuristics } from './canvasOrganizer';
 import { Loader2, AlertCircle, Trash2, ArrowUp } from 'lucide-react';
 
+// Generate a stable session ID for this browser tab session
+function generateSessionId() {
+  return 'session-' + Math.random().toString(36).slice(2, 11) + '-' + Date.now();
+}
+
 // Progress messages for each mode (defined outside component to avoid re-creation)
 const PROGRESS_MESSAGES = {
   canvas: [
@@ -72,6 +77,8 @@ export function AgentChatPanel({
   const [drawMessages, setDrawMessages] = useState([]); // Draw mode messages
   const [executionProgress, setExecutionProgress] = useState(null); // Progress tracking for multi-step workflows
   const messagesEndRef = useRef(null);
+  // Stable session ID for conversation memory (persists for the tab lifetime)
+  const sessionIdRef = useRef(generateSessionId());
 
   // Get current messages based on mode
   const currentMessages = mode === 'canvas' ? canvasMessages 
@@ -110,6 +117,12 @@ export function AgentChatPanel({
       if (confirmed) {
         setCurrentMessages([]);
         setError(null);
+        // Clear server-side history and reset session
+        const oldSessionId = sessionIdRef.current;
+        sessionIdRef.current = generateSessionId();
+        if (canvasContext?.API && oldSessionId) {
+          fetch(`${canvasContext.API}/conversation/${oldSessionId}`, { method: 'DELETE' }).catch(() => {});
+        }
       }
     }
   };
@@ -278,7 +291,14 @@ export function AgentChatPanel({
       console.log(`🤖 [${mode.toUpperCase()} MODE] Sending query:`, userMessage);
       console.log('📸 Enhanced canvas context:', enhancedContext);
 
-      // Call agent API with mode
+      // Build slim conversation history to send (last 6 turns for context)
+      const recentHistory = currentMessages.slice(-6).map(m => ({
+        role: m.type === 'user' ? 'user' : 'assistant',
+        content: m.type === 'user' ? m.content : (m.content || m.answer || ''),
+        mode: m.mode || mode,
+      }));
+
+      // Call agent API with mode and conversation history
       const response = await fetch(`${canvasContext.API}/agent-query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -288,8 +308,10 @@ export function AgentChatPanel({
           dataset_id: datasetId,
           api_key: apiKey,
           model: 'gemini-2.5-flash',
-          mode: mode, // Send current mode to backend
-          analysis_type: analysisType // 'raw' or 'detailed' for Ask mode
+          mode: mode,
+          analysis_type: analysisType,
+          session_id: sessionIdRef.current,
+          conversation_history: recentHistory,
         })
       });
 
@@ -300,6 +322,11 @@ export function AgentChatPanel({
 
       const data = await response.json();
       console.log('✅ Agent response:', data);
+
+      // Keep session_id in sync with server (server may have generated one)
+      if (data.session_id) {
+        sessionIdRef.current = data.session_id;
+      }
 
       // Track token usage
       if (data.token_usage && onTokenUsage) {
