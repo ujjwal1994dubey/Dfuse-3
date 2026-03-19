@@ -163,10 +163,11 @@ export const SemanticGroupingSchema = z.object({
  */
 export const CreateShapeSchema = z.object({
   type: z.literal(ACTION_TYPES.CREATE_SHAPE),
-  shapeType: z.enum(['rectangle', 'circle', 'line']),
-  target: z.string().optional(), // target element or position
+  shapeType: z.enum(['rectangle', 'circle', 'line', 'sticky_note']),
+  target: z.string().optional(),
   color: z.string().optional(),
   style: z.enum(['solid', 'dashed']).optional(),
+  text: z.string().optional(),
   reasoning: z.string()
 });
 
