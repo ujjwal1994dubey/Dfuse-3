@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react'
 import EChartsWrapper from './charts/EChartsWrapper';
 import TLDrawCanvas from './components/canvas/TLDrawCanvas';
 import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, ShareModal, Toast, DatasetSelector } from './components/ui';
-import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, Bot, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus, LogOut } from 'lucide-react';
+import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, Bot, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus, LogOut, Search } from 'lucide-react';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
 import { applyUniversalEnhancements } from './charts/enhancementApplier';
@@ -479,9 +479,10 @@ const TextBoxNode = React.memo(function TextBoxNode({ data, id, selected }) {
  * @param {Array} selectedValues - Currently selected filter values
  * @param {Function} onToggle - Callback when filter values are toggled
  */
-function FilterDimension({ dimension, datasetId, selectedValues, onToggle }) {
+function FilterDimension({ dimension, datasetId, selectedValues, onToggle, onClearAll }) {
   const [values, setValues] = useState([]);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     fetch(`${API}/dimension_counts`, {
@@ -499,6 +500,10 @@ function FilterDimension({ dimension, datasetId, selectedValues, onToggle }) {
     .catch(err => console.error('Failed to fetch dimension values:', err));
   }, [datasetId, dimension]);
 
+  const filteredValues = values.filter(v =>
+    v.toString().toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   return (
     <div className="border rounded-lg">
       <button
@@ -508,8 +513,15 @@ function FilterDimension({ dimension, datasetId, selectedValues, onToggle }) {
         <span className="font-medium text-gray-700">{dimension}</span>
         <div className="flex items-center space-x-2">
           {selectedValues.length > 0 && (
-            <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded-full text-xs">
+            <span className="flex items-center gap-1 bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full text-xs font-medium">
               {selectedValues.length}
+              <button
+                onClick={e => { e.stopPropagation(); onClearAll && onClearAll(); }}
+                className="hover:text-blue-600 leading-none"
+                title="Deselect all"
+              >
+                ×
+              </button>
             </span>
           )}
           <span className={`transform transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
@@ -519,19 +531,36 @@ function FilterDimension({ dimension, datasetId, selectedValues, onToggle }) {
       </button>
       
       {isExpanded && (
-        <div className="border-t border-gray-200 p-3 max-h-48 overflow-y-auto">
-          <div className="space-y-2">
-            {values.map(value => (
-              <label key={value} className="flex items-center space-x-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={selectedValues.includes(value)}
-                  onChange={() => onToggle(value)}
-                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700">{value}</span>
-              </label>
-            ))}
+        <div className="border-t border-gray-200 p-3">
+          <div className="relative mb-2">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search..."
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              onClick={e => e.stopPropagation()}
+              className="w-full pl-7 pr-2 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 bg-gray-50"
+            />
+          </div>
+          <div className="max-h-48 overflow-y-auto">
+            {filteredValues.length === 0 ? (
+              <div className="text-sm text-gray-400 py-1">No matches</div>
+            ) : (
+              <div className="space-y-2">
+                {filteredValues.map(value => (
+                  <label key={value} className="flex items-center space-x-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedValues.includes(value)}
+                      onChange={() => onToggle(value)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-700">{value}</span>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -550,10 +579,11 @@ function FilterDimension({ dimension, datasetId, selectedValues, onToggle }) {
  * @param {Array} selectedValues - Currently selected filter values
  * @param {Function} onToggle - Callback when filter values are toggled
  */
-function DimensionFilterForChart({ dimension, chartId, selectedValues, onToggle }) {
+function DimensionFilterForChart({ dimension, chartId, selectedValues, onToggle, onClearAll }) {
   const [values, setValues] = useState([]);
   const [isExpanded, setIsExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     if (!isExpanded) return;
@@ -578,6 +608,10 @@ function DimensionFilterForChart({ dimension, chartId, selectedValues, onToggle 
     });
   }, [chartId, dimension, isExpanded]);
 
+  const filteredValues = values.filter(v =>
+    v.toString().toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   return (
     <div>
       <button
@@ -587,7 +621,18 @@ function DimensionFilterForChart({ dimension, chartId, selectedValues, onToggle 
         <span className="font-medium text-gray-700">{dimension}</span>
         <div className="flex items-center space-x-2">
           {selectedValues.length > 0 && (
-            <Badge variant="primary">{selectedValues.length}</Badge>
+            <span
+              className="flex items-center gap-1 bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full text-xs font-medium"
+            >
+              {selectedValues.length}
+              <button
+                onClick={e => { e.stopPropagation(); onClearAll && onClearAll(); }}
+                className="hover:text-blue-600 leading-none"
+                title="Deselect all"
+              >
+                ×
+              </button>
+            </span>
           )}
           <span className={`transform transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
             ▼
@@ -596,24 +641,39 @@ function DimensionFilterForChart({ dimension, chartId, selectedValues, onToggle 
       </button>
       
       {isExpanded && (
-        <div className="border-t border-gray-200 p-3 max-h-48 overflow-y-auto">
-          {loading ? (
-            <div className="text-sm text-gray-500">Loading...</div>
-          ) : (
-            <div className="space-y-2">
-              {values.map(value => (
-                <label key={value} className="flex items-center space-x-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={selectedValues.includes(value)}
-                    onChange={() => onToggle(value)}
-                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                  />
-                  <span className="text-sm text-gray-700">{value}</span>
-                </label>
-              ))}
-            </div>
-          )}
+        <div className="border-t border-gray-200 p-3">
+          <div className="relative mb-2">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search..."
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              onClick={e => e.stopPropagation()}
+              className="w-full pl-7 pr-2 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 bg-gray-50"
+            />
+          </div>
+          <div className="max-h-48 overflow-y-auto">
+            {loading ? (
+              <div className="text-sm text-gray-500">Loading...</div>
+            ) : filteredValues.length === 0 ? (
+              <div className="text-sm text-gray-400 py-1">No matches</div>
+            ) : (
+              <div className="space-y-2">
+                {filteredValues.map(value => (
+                  <label key={value} className="flex items-center space-x-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedValues.includes(value)}
+                      onChange={() => onToggle(value)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-700">{value}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -2795,6 +2855,7 @@ function ChartActionsPanel({
                       chartId={selectedChart.id}
                       selectedValues={dimensionFilters[dimension] || []}
                       onToggle={(value) => handleFilterToggle(dimension, value)}
+                      onClearAll={() => setDimensionFilters(prev => ({ ...prev, [dimension]: [] }))}
                     />
                   ))}
                 </div>
@@ -3164,6 +3225,15 @@ function AppWrapper({ user, onLogout }) {
   const [analysisError, setAnalysisError] = useState(null);
   const [editingMetadata, setEditingMetadata] = useState(false);
   const [metadataDraft, setMetadataDraft] = useState(null);
+
+  // Data cleaning state
+  // cleaningStep: 'idle' | 'reviewing' | 'applying' | 'done'
+  const [cleaningReport, setCleaningReport] = useState(null);
+  const [cleaningStep, setCleaningStep] = useState('idle');
+  const [selectedFixes, setSelectedFixes] = useState({});   // { "col:fix_type": bool }
+  const [globalFixes, setGlobalFixes] = useState({});        // { remove_duplicates: bool, ... }
+  const [cleaningLoading, setCleaningLoading] = useState(false);
+  const [cleaningResult, setCleaningResult] = useState(null);
   
   // Helper function to update a specific dataset's properties
   const updateDataset = useCallback((datasetId, updates) => {
@@ -6222,7 +6292,38 @@ function AppWrapper({ user, onLogout }) {
       setAnalysisError(null);
       setEditingMetadata(false);
       setMetadataDraft(null);
-      
+
+      // --- Data cleaning flow ---
+      // Reset cleaning state for the new upload
+      setCleaningResult(null);
+      setGlobalFixes({});
+
+      const report = meta.quality_report;
+      if (report && report.has_issues) {
+        // Pre-select all suggested fixes so user just has to review + confirm
+        const preSelected = {};
+        (report.issues || []).forEach(issue => {
+          if (issue.suggested_fix) {
+            preSelected[`${issue.column}:${issue.suggested_fix}`] = true;
+          }
+        });
+        // Pre-select global fixes
+        const preGlobal = {};
+        if ((report.global_issues?.duplicates || 0) > 0) preGlobal.remove_duplicates = true;
+        if ((report.global_issues?.empty_rows || 0) > 0) preGlobal.remove_empty_rows = true;
+
+        setCleaningReport(report);
+        setSelectedFixes(preSelected);
+        setGlobalFixes(preGlobal);
+        setCleaningStep('reviewing');
+        console.log('🧹 Data quality issues found, showing cleaning review');
+      } else {
+        setCleaningReport(report || null);
+        setCleaningStep('done');
+        console.log('✅ No data quality issues detected');
+      }
+      // --- end cleaning flow ---
+
       console.log('📁 Dataset added:', newDataset);
       console.log(`📊 Total datasets: ${datasets.length + 1}`);
       
@@ -6233,6 +6334,75 @@ function AppWrapper({ user, onLogout }) {
       alert(`Failed to upload CSV: ${error.message}`);
     }
   };
+
+  // Apply the user-approved data cleaning fixes
+  const applyDatasetCleaning = useCallback(async () => {
+    if (!activeDatasetId) return;
+    setCleaningLoading(true);
+
+    try {
+      // Build fixes list from selected toggles
+      const fixes = Object.entries(selectedFixes)
+        .filter(([, enabled]) => enabled)
+        .map(([key]) => {
+          const colonIdx = key.indexOf(':');
+          return {
+            column: key.slice(0, colonIdx),
+            fix_type: key.slice(colonIdx + 1)
+          };
+        });
+
+      const res = await fetch(`${API}/dataset-clean/${activeDatasetId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fixes, global_fixes: globalFixes })
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Cleaning failed');
+      }
+
+      const result = await res.json();
+      console.log('✅ Dataset cleaned:', result);
+
+      // Update the dataset in state with recategorised dimensions/measures
+      setDatasets(prev => prev.map(d =>
+        d.id === activeDatasetId
+          ? {
+              ...d,
+              dimensions: result.dimensions,
+              measures: result.measures,
+              rows: result.rows_after
+            }
+          : d
+      ));
+
+      setCleaningResult(result);
+      setCleaningStep('done');
+    } catch (error) {
+      console.error('❌ Cleaning failed:', error);
+      alert(`Cleaning failed: ${error.message}`);
+    } finally {
+      setCleaningLoading(false);
+    }
+  }, [activeDatasetId, selectedFixes, globalFixes]);
+
+  // Toggle a single column fix on/off
+  const toggleFix = useCallback((column, fixType) => {
+    const key = `${column}:${fixType}`;
+    setSelectedFixes(prev => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  // Toggle a global fix (remove_duplicates / remove_empty_rows)
+  const toggleGlobalFix = useCallback((fixKey) => {
+    setGlobalFixes(prev => ({ ...prev, [fixKey]: !prev[fixKey] }));
+  }, []);
+
+  // Skip cleaning and proceed directly
+  const skipCleaning = useCallback(() => {
+    setCleaningStep('done');
+  }, []);
 
   const analyzeDataset = async (dataset_id = datasetId) => {
     if (!dataset_id) {
@@ -7428,6 +7598,174 @@ function AppWrapper({ user, onLogout }) {
                   </div>
                 )}
               </div>
+
+              {/* ── Data Cleaning Section ──────────────────────────────── */}
+              {activeDataset && cleaningStep === 'reviewing' && cleaningReport && (
+                <div className="border border-amber-200 rounded-lg bg-amber-50/40 overflow-hidden">
+                  {/* Header */}
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-amber-200 bg-amber-50">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">⚠️</span>
+                      <span className="font-semibold text-amber-900 text-sm">Data Quality Issues Found</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        variant="outline"
+                        className="text-xs border-amber-300 text-amber-800 bg-white"
+                      >
+                        Score: {cleaningReport.quality_score}%
+                      </Badge>
+                    </div>
+                  </div>
+
+                  <div className="p-4 space-y-3 max-h-80 overflow-y-auto">
+                    {/* Per-column issues */}
+                    {(cleaningReport.issues || []).map((issue, idx) => (
+                      <div key={idx} className="bg-white border border-amber-100 rounded-lg p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-medium text-sm text-gray-900 truncate">
+                                {issue.column}
+                              </span>
+                              <Badge
+                                variant="secondary"
+                                className={`text-xs shrink-0 ${
+                                  issue.issue_type === 'missing_values'
+                                    ? 'bg-red-100 text-red-700'
+                                    : issue.issue_type === 'type_mismatch'
+                                    ? 'bg-blue-100 text-blue-700'
+                                    : 'bg-gray-100 text-gray-700'
+                                }`}
+                              >
+                                {issue.issue_type === 'missing_values'
+                                  ? 'Placeholder values'
+                                  : issue.issue_type === 'type_mismatch'
+                                  ? 'Should be numeric'
+                                  : 'Whitespace'}
+                              </Badge>
+                              {issue.count > 0 && (
+                                <span className="text-xs text-gray-500 shrink-0">
+                                  {issue.count} rows affected
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-gray-600 mt-1 leading-snug">
+                              {issue.description}
+                            </p>
+                          </div>
+                        </div>
+
+                        {issue.suggested_fix && (
+                          <label className="flex items-center gap-2 mt-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={!!selectedFixes[`${issue.column}:${issue.suggested_fix}`]}
+                              onChange={() => toggleFix(issue.column, issue.suggested_fix)}
+                              className="w-3.5 h-3.5 rounded border-gray-300 text-blue-600"
+                            />
+                            <span className="text-xs text-gray-700">
+                              {issue.suggested_fix === 'replace_placeholders' && 'Replace "-" / "N/A" with empty (NaN)'}
+                              {issue.suggested_fix === 'convert_to_numeric' && 'Convert to number — makes this column available as a measure'}
+                              {issue.suggested_fix === 'strip_whitespace' && 'Trim leading/trailing spaces'}
+                            </span>
+                          </label>
+                        )}
+                      </div>
+                    ))}
+
+                    {/* Global issues */}
+                    {(cleaningReport.global_issues?.duplicates > 0 ||
+                      cleaningReport.global_issues?.empty_rows > 0) && (
+                      <div className="bg-white border border-amber-100 rounded-lg p-3 space-y-2">
+                        <span className="text-xs font-semibold text-gray-700">Global Issues</span>
+                        {cleaningReport.global_issues.duplicates > 0 && (
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={!!globalFixes.remove_duplicates}
+                              onChange={() => toggleGlobalFix('remove_duplicates')}
+                              className="w-3.5 h-3.5 rounded border-gray-300 text-blue-600"
+                            />
+                            <span className="text-xs text-gray-700">
+                              Remove {cleaningReport.global_issues.duplicates} duplicate row(s)
+                            </span>
+                          </label>
+                        )}
+                        {cleaningReport.global_issues.empty_rows > 0 && (
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={!!globalFixes.remove_empty_rows}
+                              onChange={() => toggleGlobalFix('remove_empty_rows')}
+                              className="w-3.5 h-3.5 rounded border-gray-300 text-blue-600"
+                            />
+                            <span className="text-xs text-gray-700">
+                              Remove {cleaningReport.global_issues.empty_rows} fully-empty row(s)
+                            </span>
+                          </label>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Action buttons */}
+                  <div className="flex gap-2 px-4 py-3 border-t border-amber-200 bg-amber-50/60">
+                    <Button
+                      onClick={applyDatasetCleaning}
+                      disabled={cleaningLoading}
+                      size="sm"
+                      className="flex-1 bg-green-600 hover:bg-green-700 text-white text-xs"
+                    >
+                      {cleaningLoading ? 'Cleaning...' : '✓ Apply Selected Fixes'}
+                    </Button>
+                    <Button
+                      onClick={skipCleaning}
+                      disabled={cleaningLoading}
+                      size="sm"
+                      variant="outline"
+                      className="text-xs border-amber-300 text-amber-800 hover:bg-amber-100"
+                    >
+                      Skip
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Cleaning done summary */}
+              {activeDataset && cleaningStep === 'done' && cleaningResult && (
+                <div className="border border-green-200 rounded-lg bg-green-50/40 px-4 py-3">
+                  <div className="flex items-start gap-2">
+                    <span className="text-base mt-0.5">✅</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-green-900">Data cleaned successfully</p>
+                      <p className="text-xs text-green-800 mt-0.5">
+                        {Object.values(cleaningResult.changes_summary || {}).slice(0, 2).join(' · ')}
+                        {Object.keys(cleaningResult.changes_summary || {}).length > 2 && ' · …'}
+                      </p>
+                      <div className="flex gap-2 mt-1 flex-wrap">
+                        <Badge variant="outline" className="text-xs border-green-300 text-green-800 bg-white">
+                          {cleaningResult.measures?.length || 0} measures detected
+                        </Badge>
+                        <Badge variant="outline" className="text-xs border-green-300 text-green-800 bg-white">
+                          Score: {cleaningResult.quality_report_after?.quality_score}%
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* No issues found banner */}
+              {activeDataset && cleaningStep === 'done' && !cleaningResult && cleaningReport && !cleaningReport.has_issues && (
+                <div className="border border-green-200 rounded-lg bg-green-50/40 px-4 py-2 flex items-center gap-2">
+                  <span>✅</span>
+                  <span className="text-xs text-green-800 font-medium">
+                    Data quality looks good — no issues detected.
+                  </span>
+                </div>
+              )}
+              {/* ── end Data Cleaning Section ──────────────────────────── */}
 
               {/* Analysis Section */}
               {datasetId && (

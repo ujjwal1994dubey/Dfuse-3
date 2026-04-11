@@ -453,17 +453,18 @@ export const ECHARTS_TYPES = {
       const xKey = payload.dimensions[0];
       const measureKeys = payload.measures;
       const statistics = payload.statistics || {};
-      
-      const categories = [...new Set(data.map(r => r[xKey]))];
-      const truncatedCategories = categories.map(c => truncateText(c));
-      
+
+      // Direct index mapping — MUST match xAxis.data order exactly.
+      // Using [...new Set()] + data.find() was previously used here but caused
+      // label/value misalignment when EChartsWrapper sampled the series array
+      // without sampling xAxis.data by the same indices.
+      const categories = data.map(r => truncateText(r[xKey]));
+      const fullLabels = data.map(r => String(r[xKey]));
+
       const series = measureKeys.map((measure, i) => ({
         name: truncateText(measure),
         type: 'bar',
-        data: categories.map(cat => {
-          const row = data.find(r => r[xKey] === cat);
-          return row ? (row[measure] || 0) : 0;
-        }),
+        data: data.map(r => r[measure] ?? 0),
         itemStyle: {
           color: DEFAULT_ECHARTS_COLORS.multiSeries[i % DEFAULT_ECHARTS_COLORS.multiSeries.length]
         },
@@ -484,7 +485,7 @@ export const ECHARTS_TYPES = {
       ];
       
       return {
-        tooltip: createGroupedBarTooltip(statistics, measureKeys, categories, categories),
+        tooltip: createGroupedBarTooltip(statistics, measureKeys, fullLabels, fullLabels),
         legend: {
           type: measureKeys.length > 10 ? 'scroll' : 'plain',
           data: measureKeys.map(m => truncateText(m)),
@@ -501,7 +502,7 @@ export const ECHARTS_TYPES = {
         },
         xAxis: {
           type: 'category',
-          data: truncatedCategories,
+          data: categories,
           axisLabel: {
             rotate: 45,
             fontSize: 11,
@@ -536,26 +537,20 @@ export const ECHARTS_TYPES = {
     createOption: (data, payload) => {
       const xKey = payload.dimensions[0];
       const [m1, m2] = payload.measures;
-      
-      const categories = [...new Set(data.map(r => r[xKey]))];
-      const truncatedCategories = categories.map(c => truncateText(c));
-      
-      const m1Values = categories.map(cat => {
-        const row = data.find(r => r[xKey] === cat);
-        return row ? (row[m1] || 0) : 0;
-      });
-      
-      const m2Values = categories.map(cat => {
-        const row = data.find(r => r[xKey] === cat);
-        return row ? (row[m2] || 0) : 0;
-      });
+
+      // Direct index mapping — same reasoning as GROUPED_BAR fix.
+      const categories = data.map(r => truncateText(r[xKey]));
+      const fullLabels = data.map(r => String(r[xKey]));
+
+      const m1Values = data.map(r => r[m1] ?? 0);
+      const m2Values = data.map(r => r[m2] ?? 0);
       
       return {
         tooltip: {
           trigger: 'axis',
           formatter: (params) => {
             const categoryIndex = params[0].dataIndex;
-            return `${categories[categoryIndex]}<br/>${m1}: ${params[0].value}<br/>${m2}: ${params[1].value}`;
+            return `${fullLabels[categoryIndex]}<br/>${m1}: ${params[0].value}<br/>${m2}: ${params[1].value}`;
           }
         },
         legend: {
@@ -584,7 +579,7 @@ export const ECHARTS_TYPES = {
         },
         xAxis: {
           type: 'category',
-          data: truncatedCategories,
+          data: categories,
           axisLabel: {
             rotate: 45,
             fontSize: 11,
@@ -1320,6 +1315,249 @@ export const ECHARTS_TYPES = {
             }
           }
         }]
+      };
+    }
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Predictive Intelligence chart types
+  // These are consumed exclusively by driver_analysis / what_if actions and
+  // do NOT participate in the standard compatibility matrix.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  DRIVER_BAR: {
+    id: 'driver_bar',
+    label: 'Driver Analysis',
+    icon: Activity,
+    // Predictive charts are never suggested by the normal chart builder
+    isSupported: () => false,
+    createOption: (data, payload) => {
+      // data rows: [{ driver: string, strength: number, direction: string, type: string }, ...]
+      // payload.r2: number, payload.low_confidence: boolean
+      const r2 = payload.r2 ?? null;
+      const lowConfidence = payload.low_confidence ?? false;
+
+      // Sort descending by absolute strength (strongest driver at top)
+      const sorted = [...data].sort((a, b) => Math.abs(b.strength) - Math.abs(a.strength));
+
+      const driverNames = sorted.map(d => String(d.driver));
+      const strengths = sorted.map(d => Number(d.strength));
+      const barColors = sorted.map(d =>
+        d.direction === 'positive' ? '#10B981' : '#EF4444'
+      );
+
+      const subtextParts = [];
+      if (r2 !== null) subtextParts.push(`Model fit: R² = ${r2.toFixed(2)}`);
+      if (lowConfidence) subtextParts.push('⚠ Weak model — treat as directional');
+
+      const graphicElements = lowConfidence
+        ? [{
+            type: 'text',
+            right: 10,
+            top: 10,
+            style: {
+              text: '⚠ Weak model',
+              fontSize: 11,
+              fill: '#F59E0B',
+              fontWeight: 'bold'
+            }
+          }]
+        : [];
+
+      return {
+        title: {
+          subtext: subtextParts.join('  |  '),
+          subtextStyle: { fontSize: 11, color: '#6B7280' }
+        },
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'shadow' },
+          formatter: (params) => {
+            const p = params[0];
+            const row = sorted[p.dataIndex] || {};
+            const sign = p.value >= 0 ? '+' : '';
+            const typeLabel = row.type === 'categorical' ? ' (η²)' : ' (r)';
+            return `<b>${p.name}</b><br/>Strength: ${sign}${p.value.toFixed(3)}${typeLabel}<br/>Direction: ${row.direction}`;
+          }
+        },
+        grid: { left: '180px', right: '80px', top: subtextParts.length ? '50px' : '20px', bottom: '20px', containLabel: false },
+        xAxis: {
+          type: 'value',
+          min: -1,
+          max: 1,
+          axisLabel: { formatter: (v) => v.toFixed(1), fontSize: 11, color: '#4B5563' },
+          splitLine: { lineStyle: { color: '#F3F4F6' } },
+          axisLine: { show: true, lineStyle: { color: '#E5E7EB' } }
+        },
+        yAxis: {
+          type: 'category',
+          data: driverNames,
+          inverse: true,
+          axisLabel: {
+            fontSize: 12,
+            color: '#374151',
+            formatter: (v) => v.length > 22 ? v.substring(0, 20) + '…' : v
+          },
+          axisLine: { lineStyle: { color: '#E5E7EB' } }
+        },
+        graphic: graphicElements,
+        series: [{
+          type: 'bar',
+          data: strengths.map((val, i) => ({
+            value: val,
+            itemStyle: { color: barColors[i], borderRadius: 3 }
+          })),
+          label: {
+            show: true,
+            position: (val) => val >= 0 ? 'right' : 'left',
+            formatter: (params) => {
+              const sign = params.value >= 0 ? '+' : '';
+              return `${sign}${params.value.toFixed(2)}`;
+            },
+            fontSize: 11,
+            color: '#374151'
+          },
+          emphasis: { itemStyle: { opacity: 0.8 } }
+        }]
+      };
+    }
+  },
+
+  WHATIF_COMPARISON: {
+    id: 'whatif_comparison',
+    label: 'What-If Comparison',
+    icon: TrendingUp,
+    isSupported: () => false,
+    createOption: (data, payload) => {
+      // data rows: [{ scenario: string, value: number }, ...]
+      // payload.delta_pct: number, payload.low_confidence: boolean, payload.r2: number
+      // payload.trend_data (optional): [{ period: string, value: number }, ...]
+      const deltaP = payload.delta_pct ?? 0;
+      const r2 = payload.r2 ?? null;
+      const lowConfidence = payload.low_confidence ?? false;
+      const trendData = payload.trend_data || null;
+
+      const scenarios = data.map(d => String(d.scenario));
+      const values = data.map(d => Number(d.value));
+
+      const baselineVal = values[0] ?? 0;
+      const simulatedVal = values[1] ?? 0;
+
+      const barColors = scenarios.map((s) =>
+        s.toLowerCase().includes('simulat') ? '#10B981' : '#94A3B8'
+      );
+
+      const subtextParts = [];
+      if (r2 !== null) subtextParts.push(`Model fit: R² = ${r2.toFixed(2)}`);
+      if (lowConfidence) subtextParts.push('⚠ Weak model');
+
+      // Delta callout graphic above the simulated bar
+      const sign = deltaP >= 0 ? '+' : '';
+      const deltaColor = deltaP >= 0 ? '#10B981' : '#EF4444';
+
+      const graphicElements = [
+        {
+          type: 'text',
+          // Positioned above the "Simulated" bar (right side of chart)
+          right: lowConfidence ? 90 : 60,
+          top: 55,
+          style: {
+            text: `${sign}${deltaP.toFixed(1)}%`,
+            fontSize: 18,
+            fontWeight: 'bold',
+            fill: deltaColor
+          }
+        }
+      ];
+
+      if (lowConfidence) {
+        graphicElements.push({
+          type: 'text',
+          left: '50%',
+          bottom: 8,
+          style: {
+            text: 'Weak model — treat as directional only',
+            fontSize: 11,
+            fill: '#D1D5DB',
+            fontWeight: 'normal'
+          }
+        });
+      }
+
+      // Build series — optional trend line
+      const seriesList = [
+        {
+          name: 'Value',
+          type: 'bar',
+          data: values.map((v, i) => ({
+            value: v,
+            itemStyle: { color: barColors[i], borderRadius: [4, 4, 0, 0] }
+          })),
+          label: {
+            show: true,
+            position: 'top',
+            formatter: (params) => params.value.toFixed(2),
+            fontSize: 12,
+            color: '#374151'
+          },
+          barMaxWidth: 80
+        }
+      ];
+
+      // Conditional trend line — only when trend_data is provided by backend
+      if (trendData && trendData.length >= 2) {
+        seriesList.push({
+          name: 'Historical Trend',
+          type: 'line',
+          yAxisIndex: 1,
+          data: trendData.map(d => d.value),
+          lineStyle: { type: 'dashed', color: '#93C5FD', width: 2 },
+          itemStyle: { color: '#93C5FD' },
+          symbol: 'circle',
+          symbolSize: 5,
+          showSymbol: false
+        });
+      }
+
+      const yAxes = [
+        {
+          type: 'value',
+          axisLabel: { fontSize: 11, color: '#4B5563' },
+          splitLine: { lineStyle: { color: '#F3F4F6' } }
+        }
+      ];
+      if (trendData && trendData.length >= 2) {
+        yAxes.push({ type: 'value', show: false });
+      }
+
+      return {
+        title: {
+          subtext: subtextParts.join('  |  '),
+          subtextStyle: { fontSize: 11, color: '#6B7280' }
+        },
+        tooltip: {
+          trigger: 'axis',
+          formatter: (params) => {
+            return params.map(p => {
+              if (p.seriesName === 'Historical Trend') {
+                return `<b>${p.name}</b>: ${p.value.toFixed(2)} (historical)`;
+              }
+              const isSimulated = p.name.toLowerCase().includes('simulat');
+              const tag = isSimulated ? ` <b style="color:${deltaColor}">(${sign}${deltaP.toFixed(1)}%)</b>` : '';
+              return `<b>${p.name}</b>: ${p.value.toFixed(2)}${tag}`;
+            }).join('<br/>');
+          }
+        },
+        grid: { left: '60px', right: '60px', top: subtextParts.length ? '55px' : '35px', bottom: '20px', containLabel: false },
+        xAxis: {
+          type: 'category',
+          data: scenarios,
+          axisLabel: { fontSize: 13, color: '#374151', fontWeight: 'bold' },
+          axisLine: { lineStyle: { color: '#E5E7EB' } }
+        },
+        yAxis: yAxes,
+        graphic: graphicElements,
+        series: seriesList
       };
     }
   }

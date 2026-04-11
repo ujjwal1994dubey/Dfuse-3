@@ -1,0 +1,74 @@
+---
+description: Enforces the four-file contract every agent action type must satisfy
+globs: frontend/src/agentic_layer/**
+alwaysApply: false
+---
+
+# Agent Action Contract
+
+Every new action type must be defined consistently across **four files**. Missing any one will cause silent failures in the agentic loop.
+
+## The Four Files
+
+### 1. `types.js` — Register the constant and its weight
+```js
+// ✅ Add to ACTION_TYPES
+export const ACTION_TYPES = {
+  MY_NEW_ACTION: 'my_new_action',
+};
+
+// ✅ Add to ACTION_WEIGHTS
+export const ACTION_WEIGHTS = {
+  [ACTION_TYPES.MY_NEW_ACTION]: 'medium', // local | light | medium | heavy
+};
+```
+
+### 2. `validation.js` — Add a Zod schema
+```js
+// ✅ Always include reasoning field
+export const MyNewActionSchema = z.object({
+  type: z.literal(ACTION_TYPES.MY_NEW_ACTION),
+  // ... action-specific fields ...
+  reasoning: z.string(), // required on every schema
+});
+
+// ✅ Add to AgentActionSchema union
+```
+
+### 3. `actionExecutor.js` — Add a handler case
+```js
+// ✅ Handler must NEVER throw — always return a result object
+case ACTION_TYPES.MY_NEW_ACTION:
+  return await myNewActionHandler(action, context);
+
+async function myNewActionHandler(action, context) {
+  try {
+    // ... implementation ...
+    return { success: true, action, result: { ... } };
+  } catch (err) {
+    return { success: false, action, error: err.message };
+  }
+}
+```
+
+### 4. `gemini_llm.py` — Document the action in the planning prompt
+Add the action's JSON shape to the Gemini system prompt so the model knows it can emit it.
+
+## Weight Tiers
+
+| Weight | Meaning | Example |
+|--------|---------|---------|
+| `local` | No API call — executes immediately | move, align, draw shapes |
+| `light` | Simple AI call | create_kpi, create_insight |
+| `medium` | Standard AI call | create_chart, ai_query |
+| `heavy` | Complex / multi-step AI call | generate_chart_insights, create_dashboard |
+
+## Never Do This
+```js
+// ❌ Magic string — breaks when action type is renamed
+if (action.type === 'create_chart') { ... }
+
+// ✅ Always import from types.js
+import { ACTION_TYPES } from './types';
+if (action.type === ACTION_TYPES.CREATE_CHART) { ... }
+```

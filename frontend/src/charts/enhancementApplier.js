@@ -16,6 +16,25 @@ import { createSliderDataZoom, createEmphasisConfig } from './visualEnhancements
  * @param {Object} payload - Chart payload with dimensions and measures
  * @returns {Object} Enhanced chart option
  */
+/**
+ * Compute a simple OLS linear trend using least-squares (no dependencies).
+ * Returns { slope, intercept } or null when insufficient data.
+ */
+function computeLinearTrend(values) {
+  const n = values.length;
+  if (n < 4) return null;
+  const xs = values.map((_, i) => i);
+  const sumX = xs.reduce((a, b) => a + b, 0);
+  const sumY = values.reduce((a, b) => a + b, 0);
+  const sumXY = xs.reduce((acc, x, i) => acc + x * values[i], 0);
+  const sumX2 = xs.reduce((acc, x) => acc + x * x, 0);
+  const denom = n * sumX2 - sumX * sumX;
+  if (denom === 0) return null;
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  return { slope, intercept };
+}
+
 export function applyUniversalEnhancements(option, chartType, statistics, data, payload) {
   if (!option) return option;
   
@@ -81,6 +100,48 @@ export function applyUniversalEnhancements(option, chartType, statistics, data, 
   if (data && data.length > 3000) {
     enhanced.progressive = 1000;
     enhanced.progressiveThreshold = 3000;
+  }
+
+  // 8. Inject linear trend line for line charts with sufficient data points
+  if (
+    chartType === 'line' &&
+    data && data.length >= 5 &&
+    enhanced.series && Array.isArray(enhanced.series)
+  ) {
+    const measureKey = payload?.measures?.[0];
+    if (measureKey) {
+      const values = data
+        .map(r => (r[measureKey] !== undefined && r[measureKey] !== null ? Number(r[measureKey]) : NaN))
+        .filter(v => !isNaN(v));
+
+      const trend = computeLinearTrend(values);
+      if (trend) {
+        const trendValues = values.map((_, i) => parseFloat((trend.slope * i + trend.intercept).toFixed(4)));
+        // Only add the trend line if it isn't already present
+        const hasTrend = enhanced.series.some(s => s.name === 'Trend');
+        if (!hasTrend) {
+          enhanced.series = [
+            ...enhanced.series,
+            {
+              name: 'Trend',
+              type: 'line',
+              data: trendValues,
+              smooth: false,
+              symbol: 'none',
+              lineStyle: { type: 'dashed', color: '#F97316', width: 1.5, opacity: 0.7 },
+              itemStyle: { color: '#F97316' },
+              tooltip: { valueFormatter: (v) => `${v.toFixed(2)} (trend)` }
+            }
+          ];
+          // Ensure legend shows the Trend series
+          if (enhanced.legend) {
+            if (enhanced.legend.data && Array.isArray(enhanced.legend.data)) {
+              enhanced.legend = { ...enhanced.legend, data: [...enhanced.legend.data, 'Trend'] };
+            }
+          }
+        }
+      }
+    }
   }
   
   return enhanced;

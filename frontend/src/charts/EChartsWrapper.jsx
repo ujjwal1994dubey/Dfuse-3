@@ -3,32 +3,57 @@ import ReactECharts from 'echarts-for-react';
 
 /**
  * Sample data for performance optimization
- * Reduces data points if dataset is too large
+ * Reduces data points if dataset is too large.
+ *
+ * IMPORTANT: series.data and xAxis.data MUST be sampled using the exact same
+ * indices, otherwise ECharts will map bar/line values to the wrong category
+ * labels (e.g. player A's bar gets player B's value).
+ * Tooltip formatter closures also capture fullLabels arrays at creation time,
+ * so they rely on the same indexing. For this reason the threshold is set very
+ * high (50 000) so that typical datasets are never sampled — ECharts handles
+ * thousands of points natively via progressive rendering.
  */
-function sampleEChartsData(option, maxPoints = 1000) {
+function sampleEChartsData(option, maxPoints = 50000) {
   if (!option || !option.series) return option;
-  
-  const sampledSeries = option.series.map(series => {
-    if (!series.data || !Array.isArray(series.data) || series.data.length <= maxPoints) {
-      return series;
-    }
-    
-    const step = Math.ceil(series.data.length / maxPoints);
-    const sampledData = [];
-    for (let i = 0; i < series.data.length; i += step) {
-      sampledData.push(series.data[i]);
-    }
-    
-    return {
-      ...series,
-      data: sampledData
-    };
-  });
-  
-  return {
-    ...option,
-    series: sampledSeries
-  };
+
+  const firstSeries = option.series[0];
+  if (
+    !firstSeries?.data ||
+    !Array.isArray(firstSeries.data) ||
+    firstSeries.data.length <= maxPoints
+  ) {
+    return option;
+  }
+
+  const step = Math.ceil(firstSeries.data.length / maxPoints);
+
+  // Build the sampled index list once and reuse for EVERY series AND xAxis.
+  const sampledIndices = [];
+  for (let i = 0; i < firstSeries.data.length; i += step) {
+    sampledIndices.push(i);
+  }
+
+  // Sample ALL series with the same indices so values stay aligned.
+  const sampledSeries = option.series.map(series => ({
+    ...series,
+    data: !Array.isArray(series.data)
+      ? series.data
+      : sampledIndices.map(i => series.data[i] ?? null)
+  }));
+
+  // Sample xAxis.data with the exact same indices (critical for alignment).
+  let sampledXAxis = option.xAxis;
+  if (option.xAxis) {
+    const axes = Array.isArray(option.xAxis) ? option.xAxis : [option.xAxis];
+    const fixed = axes.map(ax =>
+      ax.type === 'category' && Array.isArray(ax.data)
+        ? { ...ax, data: sampledIndices.map(i => ax.data[i]) }
+        : ax
+    );
+    sampledXAxis = Array.isArray(option.xAxis) ? fixed : fixed[0];
+  }
+
+  return { ...option, series: sampledSeries, xAxis: sampledXAxis };
 }
 
 /**
@@ -69,8 +94,9 @@ const EChartsWrapper = React.memo(({
       return null;
     }
     
-    // Apply data sampling for performance (only if many data points)
-    return sampleEChartsData(layout, 1000);
+    // Apply data sampling for extreme datasets only (threshold kept very high
+    // so typical charts are never sampled — see sampleEChartsData comment).
+    return sampleEChartsData(layout);
   }, [layout]);
   
   // Watch for option changes and debounce clicks during updates

@@ -515,9 +515,12 @@ export function AgentSidebarPanel({
                 donePayload = payload;
                 sessionIdRef.current = payload.session_id;
               }
-              // Error
+              // Error — check for rate limit before throwing (don't fallback on 429)
               if (payload.error) {
-                throw new Error(payload.error);
+                const is429 = payload.error.includes('429') || payload.error.toLowerCase().includes('quota') || payload.error.toLowerCase().includes('rate limit');
+                const err = new Error(payload.error);
+                if (is429) err._isRateLimit = true;
+                throw err;
               }
             } catch (parseErr) {
               // Skip malformed SSE lines
@@ -600,6 +603,18 @@ export function AgentSidebarPanel({
       if (streamErr.name === 'AbortError') {
         setLoading(false);
         setStreamingText('');
+        return;
+      }
+
+      // Don't retry on rate limit errors — the fallback would hit the same 429
+      if (streamErr._isRateLimit) {
+        setStreamingText('');
+        setLoading(false);
+        const retryMatch = streamErr.message.match(/retry.*?(\d+)s/i) || streamErr.message.match(/(\d+)\s*second/i);
+        const retryMsg = retryMatch ? ` Please retry in ~${retryMatch[1]}s.` : ' Please wait a moment and try again.';
+        setCurrentMessages(prev => [...prev, {
+          type: 'error', content: `⏱️ Rate limit reached.${retryMsg}`, timestamp: new Date(), mode,
+        }]);
         return;
       }
 

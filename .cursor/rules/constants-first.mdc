@@ -1,0 +1,88 @@
+---
+description: All magic numbers, delays, sizes, and string literals must use named constants from types.js
+globs: frontend/src/agentic_layer/**
+alwaysApply: false
+---
+
+# Constants First
+
+All configurable values in the agentic layer must be named constants defined in `types.js`. Do not hardcode numeric or string literals inline.
+
+## Sizes and Spacing → `AGENT_CONFIG`
+
+```js
+// ❌ Hardcoded dimensions
+setNodes(nodes => nodes.concat({
+  data: { width: 800, height: 400 }
+}));
+
+// ✅ Use AGENT_CONFIG
+import { AGENT_CONFIG } from './types';
+setNodes(nodes => nodes.concat({
+  data: {
+    width: AGENT_CONFIG.DEFAULT_CHART_WIDTH,
+    height: AGENT_CONFIG.DEFAULT_CHART_HEIGHT,
+  }
+}));
+```
+
+Key `AGENT_CONFIG` values:
+
+| Constant | Value | Use for |
+|----------|-------|---------|
+| `DEFAULT_CHART_WIDTH` | 800 | New chart nodes |
+| `DEFAULT_CHART_HEIGHT` | 400 | New chart nodes |
+| `CHART_HORIZONTAL_SPACING` | 850 | Spacing between charts |
+| `CHART_VERTICAL_SPACING` | 450 | Vertical chart gaps |
+| `DEFAULT_KPI_WIDTH` | 320 | KPI tile width |
+| `DEFAULT_KPI_HEIGHT` | 160 | KPI tile height |
+| `KPI_HORIZONTAL_SPACING` | 340 | Spacing between KPI tiles |
+| `MAX_ACTIONS_PER_QUERY` | 5 | Enforced in Zod schema |
+
+## Delays → `RATE_LIMIT_CONFIG`
+
+```js
+// ❌ Hardcoded delay
+await new Promise(r => setTimeout(r, 5000));
+
+// ✅ Use RATE_LIMIT_CONFIG
+import { RATE_LIMIT_CONFIG } from './types';
+await new Promise(r => setTimeout(r, RATE_LIMIT_CONFIG.MEDIUM_ACTION_DELAY));
+```
+
+Key `RATE_LIMIT_CONFIG` values:
+
+| Constant | Value | Tier |
+|----------|-------|------|
+| `LIGHT_ACTION_DELAY` | 3000ms | create_kpi, create_insight |
+| `MEDIUM_ACTION_DELAY` | 5000ms | create_chart, ai_query |
+| `HEAVY_ACTION_DELAY` | 5000ms | generate_chart_insights |
+| `BACKOFF_MAX` | 30000ms | Max exponential backoff |
+| `CIRCUIT_BREAKER_THRESHOLD` | 3 | Errors before circuit opens |
+| `CIRCUIT_BREAKER_TIMEOUT` | 60000ms | Circuit reset window |
+
+## Position Types → `POSITION_TYPES`
+
+```js
+// ❌ Hardcoded string
+if (action.position === 'right_of_chart') { ... }
+
+// ✅ Import the constant
+import { POSITION_TYPES } from './types';
+if (action.position === POSITION_TYPES.RIGHT_OF_CHART) { ... }
+```
+
+## Action Types → `ACTION_TYPES`
+
+```js
+// ❌ String literal
+case 'create_chart': ...
+
+// ✅ Constant
+import { ACTION_TYPES } from './types';
+case ACTION_TYPES.CREATE_CHART: ...
+```
+
+## Adding New Constants
+
+When a value appears more than once or is likely to be tuned, add it to `types.js` first, then reference it. Do not defer — inline literals accumulate quickly.

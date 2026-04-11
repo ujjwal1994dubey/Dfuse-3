@@ -87,11 +87,11 @@ export function ShareModal({
         aria-modal="true"
         aria-labelledby="share-modal-title"
       >
-        <div className="bg-white rounded-xl shadow-2xl overflow-hidden">
+        <div className="relative bg-white rounded-xl shadow-2xl overflow-hidden">
           {/* Close Button */}
           <button
             onClick={onClose}
-            className="absolute top-4 right-4 p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+            className="absolute top-4 right-4 z-10 p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
             aria-label="Close modal"
           >
             <X className="w-5 h-5" />

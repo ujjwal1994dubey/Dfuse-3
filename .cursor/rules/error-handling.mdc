@@ -1,0 +1,96 @@
+---
+description: Error handling conventions for frontend action handlers, backend endpoints, and LLM error classification
+globs: frontend/src/**,backend/app.py,backend/gemini_llm.py
+alwaysApply: false
+---
+
+# Error Handling Conventions
+
+## Frontend — Action Handlers Never Throw
+
+All async handlers in `actionExecutor.js` must catch internally and return a result object. The agentic loop processes results in bulk — an uncaught exception kills all subsequent actions.
+
+```js
+// ✅ Always wrap in try/catch and return a result object
+async function myActionHandler(action, context) {
+  try {
+    const result = await doWork(action, context);
+    return { success: true, action, result };
+  } catch (err) {
+    console.error(`[myAction] failed:`, err);
+    return { success: false, action, error: err.message };
+  }
+}
+
+// ❌ Never let exceptions propagate from a handler
+async function myActionHandler(action, context) {
+  const result = await doWork(); // throws → kills the whole action queue
+  return result;
+}
+```
+
+## Frontend — API Fetch Pattern
+
+```js
+// ✅ Standard fetch pattern for all API calls
+const response = await fetch(`${API}/endpoint`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload),
+});
+if (!response.ok) {
+  const error = await response.text();
+  throw new Error(`Operation failed: ${error}`);
+}
+const data = await response.json();
+```
+
+## Frontend — Validation
+
+Always use `validateActionsSafe()` — never `AgentResponseSchema.parse()` directly in production code. The safe variant returns `{success, data | error}` instead of throwing.
+
+```js
+// ✅
+const { success, data, error } = validateActionsSafe(response);
+
+// ❌
+const data = AgentResponseSchema.parse(response); // throws on bad LLM output
+```
+
+## Backend — Endpoint Errors
+
+```python
+# ✅ Use HTTPException for all user-facing errors
+from fastapi import HTTPException
+raise HTTPException(status_code=400, detail="Dataset not found")
+
+# ❌ Never return 200 with an error payload
+return {"status": "error", "message": "Dataset not found"}  # misleads clients
+```
+
+## Backend — Tracking is Fail-Open
+
+Supabase session/auth tracking must never block the primary response path.
+
+```python
+# ✅ Tracking failures are silent — they log but never re-raise
+try:
+    supabase.table("user_sessions").insert({...}).execute()
+except Exception as e:
+    print(f"[tracking] failed silently: {e}")
+# primary response continues regardless
+```
+
+## Backend — LLM Error Classification
+
+Raw Gemini exception messages must not reach the frontend. Classify before surfacing:
+
+```python
+# ✅ In gemini_llm.py — classify by message content
+if "API_KEY" in str(e) or "authentication" in str(e).lower():
+    raise HTTPException(status_code=401, detail="auth_error: invalid API key")
+elif "quota" in str(e).lower() or "429" in str(e):
+    raise HTTPException(status_code=429, detail="rate_limit_error: quota exceeded")
+else:
+    raise HTTPException(status_code=500, detail="api_error: LLM request failed")
+```

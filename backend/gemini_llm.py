@@ -1234,6 +1234,10 @@ DATA VISUALIZATION ACTIONS:
 - create_dashboard: Multi-element coordinated layout (3+ items)
 - arrange_elements: Rearrange specific elements with layout strategy (grid, hero, flow, comparison, kpi-dashboard)
 
+PREDICTIVE INTELLIGENCE ACTIONS:
+- driver_analysis: Identify variables that most influence a target metric (uses correlation + ANOVA)
+- what_if: Simulate the impact of changing a driver variable on the target metric (requires prior driver_analysis)
+
 DECISION LOGIC:
 - "show X by Y", "create chart" → create_chart
 - "organize in [layout]", "arrange [strategy]" → arrange_elements (specify strategy: grid/hero/flow/comparison)
@@ -1331,6 +1335,8 @@ ACTION SELECTION (choose based on query intent):
 - Align: "align [charts] to the left/right/top/bottom/center" → align_shapes
 - Distribute evenly: "spread [charts] evenly", "distribute [charts]" → distribute_shapes
 - Delete: NOT SUPPORTED → suggest manual deletion + reorganize
+- Driver analysis: "what drives X", "what factors influence X", "what impacts X", "key drivers of X", "why is X high/low" → driver_analysis
+- What-if simulation: "what if I change X by Y%", "simulate X", "if X increases by Y", "impact of changing X" → what_if (only if model_key exists in conversation or driver_analysis was just run)
 
 DERIVED METRIC DETECTION (check FIRST, before chart type selection):
 If the query contains any of: "per", "/", "divided by", "ratio", "rate", "per unit", "per match", "per game", "per day", "per player", "growth %", "margin", "% of", "efficiency", "yield"
@@ -1356,16 +1362,32 @@ CREATE_CHART OPTIONAL FIELDS (use when the query implies data manipulation):
   Use when: query targets a subset — "Electronics only", "North region", "Q2 data"
 - "sort_order": control result ordering → "measure_desc" | "measure_asc" | "ascending" | "descending" | "dataset"
   Use when: "top categories", "ranked by profit", "alphabetical"
+- "top_k": integer — keep only the top N rows after aggregation, sorted by the first measure
+  Use when: query implies ranking ("top 5 batsmen", "best 10 products", "highest earners", "worst performers")
+  Smart default: when ranking intent is clear but no explicit N is given, use top_k: 10
+  Always pair with sort_order: "measure_desc" (for top/best/highest) or "measure_asc" (for bottom/worst/lowest)
+  Do NOT use top_k when query says "all", "every", "full list", or when the dimension has few unique values
+- "filter_condition": pandas query string for numeric range or threshold conditions applied AFTER aggregation
+  Use when: query has a numeric threshold — "strike rate > 140", "sales > 1M", "average > 40", "rating between 4 and 5"
+  Syntax: standard pandas query syntax e.g. "SR > 140 and Average > 40", "Sales > 1000000"
+  Column name rules:
+    - Use EXACT column names from the Dimensions/Measures lists above — never invent names
+    - For column names that contain spaces, wrap them in backticks: `Strike Rate` > 140
+    - NEVER use underscore substitutes — if the column is "Strike Rate", write `Strike Rate`, NOT Strike_Rate
+    - Example: columns "Strike Rate" and "Batting Average" → filter_condition: "`Strike Rate` > 140 and `Batting Average` > 40"
+  IMPORTANT: Use filter_condition for numeric threshold filters; use filters (categorical) only for named category values like "Electronics" or "North"
+  filter_condition and top_k can be combined — filter_condition runs first, then top_k trims the result
 - "transform_prompt": natural language description of a derived column or row manipulation AFTER aggregation
   Use when: query requires a computed metric not available as a raw column — ratio, rate, percentage, per-unit, growth, margin
-  Examples: "profit per unit sold", "revenue growth %", "profit margin = profit / revenue", "top 5 by profit", "normalize by total"
+  Examples: "profit per unit sold", "revenue growth %", "profit margin = profit / revenue", "normalize by total"
   DO NOT use transform_prompt for simple aggregations (sum/avg) — those are handled by agg field
+  DO NOT use transform_prompt for top-N or numeric threshold — use top_k and filter_condition instead
   IMPORTANT: When using transform_prompt, include ALL source columns needed for the formula in measures[]
 
 ACTION SCHEMAS:
-1. create_chart: {{"type": "create_chart", "dimensions": ["dim"], "measures": ["measure"], "chartType": "bar", "agg": "sum", "filters": {{}}, "sort_order": "dataset", "transform_prompt": "optional: derived column description", "position": "center", "reasoning": "why"}}
+1. create_chart: {{"type": "create_chart", "dimensions": ["dim"], "measures": ["measure"], "chartType": "bar", "agg": "sum", "filters": {{}}, "sort_order": "dataset", "top_k": 10, "filter_condition": "optional pandas query", "transform_prompt": "optional: derived column description", "position": "center", "reasoning": "why"}}
 2. create_kpi: {{"type": "create_kpi", "query": "description", "value": 12345.67, "formatted_value": "12,345.67", "explanation": "brief explanation", "position": "center", "reasoning": "why"}}
-3. create_dashboard: {{"type": "create_dashboard", "dashboardType": "sales|executive|operations|analysis|general", "layoutStrategy": "grid|hero|flow|comparison|kpi-dashboard", "elements": [{{"type": "chart|kpi|insight", "dimensions": ["dim"], "measures": ["meas"], "chartType": "bar", "agg": "sum", "filters": {{}}, "sort_order": "dataset", "transform_prompt": "optional", "reasoning": "why"}}], "reasoning": "overall reasoning"}}
+3. create_dashboard: {{"type": "create_dashboard", "dashboardType": "sales|executive|operations|analysis|general", "layoutStrategy": "grid|hero|flow|comparison|kpi-dashboard", "elements": [{{"type": "chart|kpi|insight", "dimensions": ["dim"], "measures": ["meas"], "chartType": "bar", "agg": "sum", "filters": {{}}, "sort_order": "dataset", "top_k": 10, "filter_condition": "optional pandas query", "transform_prompt": "optional", "reasoning": "why"}}], "reasoning": "overall reasoning"}}
 4. ai_query: {{"type": "ai_query", "query": "analytical question", "position": "center", "reasoning": "why"}}
 5. create_insight: {{"type": "create_insight", "text": "insight text", "position": "center", "reasoning": "why"}}
 6. generate_chart_insights: {{"type": "generate_chart_insights", "chartId": "existing-id", "position": "center", "reasoning": "why"}}
@@ -1381,6 +1403,19 @@ ACTION SCHEMAS:
 16. align_shapes: {{"type": "align_shapes", "shapeIds": ["id1", "id2", "id3"], "alignment": "left|right|top|bottom|center-horizontal|center-vertical", "reasoning": "why"}}
 17. distribute_shapes: {{"type": "distribute_shapes", "shapeIds": ["id1", "id2", "id3"], "direction": "horizontal|vertical", "reasoning": "why"}}
 18. smart_place: {{"type": "smart_place", "suggestedX": 0, "suggestedY": 0, "reasoning": "why this position"}}
+19. driver_analysis: {{"type": "driver_analysis", "target_column": "ColumnName", "dataset_id": "{dataset_id}", "filters": {{}}, "position": "center", "reasoning": "why"}}
+    - Use when: query asks what drives, influences, or impacts a specific metric
+    - target_column MUST be a numeric measure column from the dataset
+    - filters is optional; use same format as create_chart filters (categorical dict)
+20. what_if: {{"type": "what_if", "target_column": "ColumnName", "model_key": "key-from-driver-analysis", "changes": {{"column_name": "+20%"}}, "driver_chart_id": "optional-driver-chart-id", "position": "center", "reasoning": "why"}}
+    - Use when: query simulates impact of changing a variable
+    - model_key MUST come from a prior driver_analysis result (from conversation history)
+    - changes: dict of {{ column: value_or_string }} — three formats:
+        - Percentage change: "+20%" or "-10%" (relative to baseline mean)
+        - Absolute delta: "+1000" or "-500" (add/subtract from baseline mean) — USE THIS when user says "increase by N" or "decrease by N"
+        - Absolute target value: 150 (set to this exact value) — only use when user specifies an exact target level
+        - NEVER send a plain integer for "increase/decrease by N" — always use the "+N" or "-N" string form
+    - If model_key is not known, run driver_analysis first instead
 
 KPI CALCULATION RULES:
 - For create_kpi, you MUST compute the value from MEASURE STATISTICS above
@@ -1418,6 +1453,26 @@ EXAMPLE 8 - "show {m1} per {m2} by {dim1}" (derived column via transform):
 EXAMPLE 9 - "show {m1} for {dim1} = X only" (filtered subset):
 {{"actions": [{{"type": "create_chart", "dimensions": ["{dim1}"], "measures": ["{m1}"], "chartType": "bar", "position": "center", "filters": {{"{dim2}": ["specific_value"]}}, "sort_order": "measure_desc", "reasoning": "Filter to specific subset and rank by value"}}], "reasoning": "Subset analysis with ranking"}}
 
+EXAMPLE 10 - "show top batsmen by runs" (ranking intent, no explicit N → top_k default 10):
+{{"actions": [{{"type": "create_chart", "dimensions": ["{dim1}"], "measures": ["{m1}"], "chartType": "bar", "sort_order": "measure_desc", "top_k": 10, "position": "center", "reasoning": "Ranking query — top 10 by default to keep chart focused"}}], "reasoning": "Top-N ranking chart"}}
+
+EXAMPLE 11 - "show players with strike rate > 140 and average > 40" (numeric threshold → filter_condition):
+If the columns are named with spaces (e.g. "Strike Rate", "Batting Average"):
+  filter_condition: "`Strike Rate` > 140 and `Batting Average` > 40"
+If the columns have no spaces (e.g. "SR", "Average"):
+  filter_condition: "SR > 140 and Average > 40"
+Full action example:
+{{"actions": [{{"type": "create_chart", "dimensions": ["{dim1}"], "measures": ["{m1}", "{m2}"], "chartType": "scatter", "filter_condition": "`{m1}` > 140 and `{m2}` > 40", "position": "center", "reasoning": "Numeric threshold filter to isolate qualifying players"}}], "reasoning": "Filtered subset using numeric conditions"}}
+
+SMART DATA REDUCTION RULES (apply BEFORE choosing action type):
+- "top N [items]" or "best N" or "highest N" or "worst N" or "lowest N" → top_k: N, sort_order: "measure_desc" (or "measure_asc" for worst/lowest)
+- "top [items]" or "best [items]" or "highest [items]" with NO explicit N → top_k: 10, sort_order: "measure_desc" (default 10)
+- "bottom [items]" or "lowest [items]" with NO explicit N → top_k: 10, sort_order: "measure_asc"
+- "[col] > value", "[col] < value", "[col] between X and Y", "above X", "below X", "exceeding X" → filter_condition with pandas query syntax
+- "compare X with Y" or "highlight those with [condition]" → use filter_condition (single filtered chart), NOT create_dashboard
+- "all [items]", "every [item]", "full list" → no top_k
+- top_k and filter_condition can be combined: filter first, then trim to top N
+
 CRITICAL RULES:
 1. create_chart MUST have at least 1 dimension AND at least 1 measure from the lists above
 2. Use EXACT column names from Dimensions/Measures lists - do not invent column names
@@ -1427,8 +1482,10 @@ CRITICAL RULES:
 6. For "vs" or "and" queries comparing multiple metrics side by side, use 2+ measures with scatter/grouped_bar/multi_series_bar
    EXCEPTION: "X per Y", "X divided by Y", "ratio of X to Y", "X per match/unit/game/day" → use transform_prompt (single derived column), NOT a multi-measure chart
 7. Use transform_prompt for derived/computed columns (ratios, rates, per-unit, margins, growth %)
-8. Use filters when the query targets a named subset of data (specific category, region, time period)
-9. Use agg when the query implies avg/min/max/count aggregation instead of sum"""
+8. Use filters when the query targets a named categorical subset of data (specific category, region, time period)
+9. Use agg when the query implies avg/min/max/count aggregation instead of sum
+10. Use top_k for ranking/top-N queries — do NOT use transform_prompt for this
+11. Use filter_condition for numeric threshold conditions — do NOT use the categorical filters field for this"""
 
             # Build conversation history section to inject into the prompt
             history_context = ""
@@ -1736,6 +1793,19 @@ CRITICAL RULES:
                     action["suggestedY"] = float(action.get("suggestedY", 0))
                 except (TypeError, ValueError):
                     continue
+
+            elif action_type == "driver_analysis":
+                if not action.get("target_column"):
+                    continue
+                if not action.get("dataset_id"):
+                    continue
+
+            elif action_type == "what_if":
+                if not action.get("target_column"):
+                    continue
+                if not action.get("changes") or not isinstance(action.get("changes"), dict):
+                    continue
+                # model_key may be absent if LLM forgot it — allowed, frontend will handle gracefully
 
             normalized.append(action)
         

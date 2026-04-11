@@ -1,0 +1,70 @@
+---
+description: Prohibits dead code, debug artifacts, and migration leftovers specific to this codebase
+globs: frontend/src/App.jsx,frontend/src/charts/**,frontend/src/agentic_layer/**,backend/app.py
+alwaysApply: false
+---
+
+# No Dead Code
+
+## ECharts Only — No Plotly Remnants
+
+ECharts replaced Plotly completely. Do not add or restore Plotly-era code:
+
+```js
+// ❌ Dead Plotly patterns — remove on sight
+sampleData(figure)
+sanitizeLayout(layout)
+DEFAULT_LAYOUT
+DEFAULT_COLORS
+trace.x / trace.y          // Plotly trace structure
+paper_bgcolor / plot_bgcolor  // Plotly layout keys
+```
+
+All chart options must use the ECharts format (`series`, `xAxis`, `yAxis`, `legend`, etc.).
+
+## No Rollback Comments
+
+Use git history for rollback — do not leave commented-out code with rollback annotations:
+
+```js
+// ❌
+// import AgentChatPanel from './AgentChatPanel'; // kept for rollback
+// const [showOldPanel, setShowOldPanel] = useState(false);
+```
+
+If an import is commented out, delete it. If a component is not rendered anywhere, delete it (or properly archive it in git).
+
+## No Debug-Only Listeners or Logs in Production Components
+
+```js
+// ❌ Debug listener left in EChartsWrapper that only console.logs
+chart.getZr().on('click', (params) => {
+  console.log('ZRender click:', params); // never used for real functionality
+});
+```
+
+Event listeners must drive real behaviour. Remove any that only log.
+
+## No CORS Toggles Hardcoded in Source
+
+```python
+# ❌ Development toggle left in production code
+# allow_origins=["*"]   ← commented out but visible in app.py
+allow_origins=[os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")]
+```
+
+Use environment variables for origin configuration. Do not leave commented wildcard origins.
+
+## Shared Utilities — No Duplication
+
+Utility functions used in more than one file belong in `src/lib/utils.js`:
+
+```js
+// ❌ Defined in both App.jsx and echartsRegistry.js
+function truncateText(text, maxLength = 20) { ... }
+
+// ✅ Define once, import everywhere
+import { truncateText } from '../../lib/utils';
+```
+
+Before adding a utility function, check if it already exists in `src/lib/utils.js`.

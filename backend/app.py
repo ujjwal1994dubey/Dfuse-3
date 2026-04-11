@@ -14,10 +14,22 @@ import json
 import os
 import asyncio
 import requests
+import hashlib
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from gemini_llm import GeminiDataFormulator
 from supabase import create_client, Client
+
+# Predictive / statistical imports
+try:
+    from scipy import stats as scipy_stats
+    from sklearn.linear_model import LinearRegression
+    from sklearn.preprocessing import StandardScaler
+    PREDICTIVE_AVAILABLE = True
+    print("✅ scipy + scikit-learn loaded — predictive endpoints enabled")
+except ImportError as _pred_err:
+    PREDICTIVE_AVAILABLE = False
+    print(f"⚠️  scipy/scikit-learn not installed — predictive endpoints disabled: {_pred_err}")
 
 # Load environment variables from .env file (for local development)
 load_dotenv()
@@ -69,6 +81,21 @@ CHARTS: Dict[str, Dict[str, Any]] = {}
 CHART_INSIGHTS_CACHE: Dict[str, Dict[str, Any]] = {}  # Cache generated chart insights
 CONVERSATION_STORE: Dict[str, List[Dict[str, Any]]] = {}  # session_id -> list of conversation turns
 CONVERSATION_MAX_TURNS = 10  # Keep last N turns in context (keeps token count bounded)
+REGRESSION_MODELS: Dict[str, Dict[str, Any]] = {}  # Cache OLS models for What-If analysis
+# REGRESSION_MODELS key: "{dataset_id}::{target_column}::{filters_hash}"
+# value: { feature_names, coefficients, intercept, r2, baseline_means, baseline_stds,
+#           historical_min, historical_max, target_baseline, timestamp }
+
+# -----------------------
+# Data Cleaning Constants
+# -----------------------
+MISSING_VALUE_PATTERNS = {
+    "-", "--", "---",
+    "N/A", "NA", "n/a", "na",
+    "NULL", "null", "Null",
+    "#N/A", "#VALUE!", "#REF!", "#DIV/0!",
+    " ", "  "
+}
 
 
 # Add this right after line 28 (after the CHARTS dictionary):
@@ -341,6 +368,8 @@ class ChartCreate(BaseModel):
     originalMeasure: Optional[str] = None  # Original measure for histograms (before binning)
     filters: Optional[Dict[str, List[str]]] = None  # Dimension filters for chart-level filtering
     sort_order: Optional[str] = "dataset"  # Sort order for categorical data: "dataset", "ascending", "descending"
+    top_k: Optional[int] = None  # Keep only top N rows by first measure after aggregation
+    filter_condition: Optional[str] = None  # Pandas query string for numeric range filters e.g. "Strike_Rate > 140"
 
 class FuseRequest(BaseModel):
     chart1_id: str
@@ -693,6 +722,215 @@ def _categorize_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
     
     return {"dimensions": dimensions, "measures": measures}
 
+
+def _scan_dataset_quality(df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Data Quality Scanner
+    Scans a DataFrame for common data quality issues and returns a structured report.
+
+    Detects:
+      - Placeholder values ("-", "N/A", "NULL", etc.) in columns
+      - String columns that should be numeric (type mismatch)
+      - Leading/trailing whitespace in string columns
+      - Duplicate rows
+      - Fully-empty rows
+
+    Returns a dict with:
+      - issues: list of per-column issue dicts
+      - global_issues: dict with duplicate/empty row counts
+      - quality_score: 0-100 float
+      - has_issues: bool
+    """
+    issues = []
+
+    for col in df.columns:
+        series = df[col]
+
+        # --- Placeholder detection ---
+        placeholder_mask = series.isin(MISSING_VALUE_PATTERNS)
+        placeholder_count = int(placeholder_mask.sum())
+
+        if placeholder_count > 0:
+            sample_vals = [str(v) for v in series[placeholder_mask].unique().tolist()[:3]]
+            issues.append({
+                "column": col,
+                "issue_type": "missing_values",
+                "count": placeholder_count,
+                "sample_values": sample_vals,
+                "suggested_fix": "replace_placeholders",
+                "description": (
+                    f"{placeholder_count} placeholder value(s) found "
+                    f"(e.g. {', '.join(sample_vals)}). These prevent numeric conversion."
+                )
+            })
+
+        # --- Type mismatch: string column that should be numeric ---
+        if series.dtype == object:
+            # Strip placeholders from sample before testing numeric conversion
+            cleaned_sample = series.replace(list(MISSING_VALUE_PATTERNS), np.nan).dropna().head(30)
+            if len(cleaned_sample) > 0:
+                numeric_converted = pd.to_numeric(cleaned_sample, errors="coerce")
+                valid_ratio = numeric_converted.notna().sum() / len(cleaned_sample)
+
+                if valid_ratio >= 0.5:
+                    sample_vals = [str(v) for v in cleaned_sample.unique().tolist()[:3]]
+                    # Only add type mismatch if we haven't already flagged placeholders for this col
+                    already_flagged = any(
+                        i["column"] == col and i["issue_type"] == "missing_values"
+                        for i in issues
+                    )
+                    issues.append({
+                        "column": col,
+                        "issue_type": "type_mismatch",
+                        "count": 0,
+                        "sample_values": sample_vals,
+                        "suggested_fix": "convert_to_numeric",
+                        "description": (
+                            f"Stored as text but contains numeric data "
+                            f"(e.g. {', '.join(sample_vals)}). "
+                            f"Converting will make it available as a measure."
+                        ),
+                        "requires_placeholder_fix_first": already_flagged
+                    })
+
+        # --- Whitespace detection (string columns only) ---
+        if series.dtype == object:
+            non_null = series.dropna()
+            if len(non_null) > 0:
+                has_whitespace = non_null.astype(str).str.strip().ne(non_null.astype(str)).any()
+                if has_whitespace:
+                    ws_count = int(non_null.astype(str).str.strip().ne(non_null.astype(str)).sum())
+                    sample_vals = [
+                        repr(v) for v in
+                        non_null[non_null.astype(str).str.strip().ne(non_null.astype(str))].unique().tolist()[:3]
+                    ]
+                    issues.append({
+                        "column": col,
+                        "issue_type": "whitespace",
+                        "count": ws_count,
+                        "sample_values": sample_vals,
+                        "suggested_fix": "strip_whitespace",
+                        "description": f"{ws_count} value(s) have leading/trailing whitespace."
+                    })
+
+    # --- Global issues ---
+    duplicate_count = int(df.duplicated().sum())
+    empty_row_count = int(df.isna().all(axis=1).sum())
+
+    global_issues = {
+        "duplicates": duplicate_count,
+        "empty_rows": empty_row_count
+    }
+
+    # --- Quality score (simple heuristic) ---
+    total_cells = len(df) * len(df.columns) if len(df.columns) > 0 else 1
+    issue_weight = sum(i["count"] for i in issues if i["count"] > 0)
+    issue_weight += duplicate_count * 2 + empty_row_count * 2
+    # Also penalise type mismatch columns heavily
+    type_mismatch_cols = sum(1 for i in issues if i["issue_type"] == "type_mismatch")
+    issue_weight += type_mismatch_cols * max(10, int(total_cells * 0.01))
+
+    quality_score = max(0.0, min(100.0, 100.0 - (issue_weight / total_cells * 100)))
+
+    print(f"🔍 Quality scan: {len(issues)} column issue(s), "
+          f"{duplicate_count} duplicates, score={quality_score:.1f}")
+
+    return {
+        "issues": issues,
+        "global_issues": global_issues,
+        "quality_score": round(quality_score, 1),
+        "has_issues": len(issues) > 0 or duplicate_count > 0 or empty_row_count > 0
+    }
+
+
+def _apply_cleaning_fixes(
+    df: pd.DataFrame,
+    fixes: List[Dict[str, str]],
+    global_fixes: Dict[str, bool]
+) -> tuple:
+    """
+    Data Cleaning Engine
+    Applies user-approved fixes to a DataFrame deterministically.
+
+    Args:
+        df: Source DataFrame (will be copied internally)
+        fixes: List of {column, fix_type} dicts
+        global_fixes: Dict of {remove_duplicates, remove_empty_rows} booleans
+
+    Returns:
+        (cleaned_df, changes_summary) tuple
+          - cleaned_df: new DataFrame with fixes applied
+          - changes_summary: dict describing what changed
+    """
+    df_clean = df.copy()
+    changes: Dict[str, str] = {}
+    rows_before = len(df_clean)
+
+    # Group fixes by column so we apply them in the right order per column
+    fixes_by_col: Dict[str, List[str]] = {}
+    for fix in fixes:
+        col = fix.get("column", "")
+        ft = fix.get("fix_type", "")
+        if col and ft:
+            fixes_by_col.setdefault(col, []).append(ft)
+
+    for col, fix_types in fixes_by_col.items():
+        if col not in df_clean.columns:
+            continue
+
+        # Always replace placeholders before type conversion
+        ordered = sorted(fix_types, key=lambda x: 0 if x == "replace_placeholders" else 1)
+
+        for fix_type in ordered:
+            original_dtype = str(df_clean[col].dtype)
+
+            if fix_type == "replace_placeholders":
+                before = int(df_clean[col].isin(MISSING_VALUE_PATTERNS).sum())
+                df_clean[col] = df_clean[col].replace(list(MISSING_VALUE_PATTERNS), np.nan)
+                changes[f"{col}:placeholders"] = f"Replaced {before} placeholder(s) with NaN"
+
+            elif fix_type == "convert_to_numeric":
+                df_clean[col] = pd.to_numeric(
+                    df_clean[col].replace(list(MISSING_VALUE_PATTERNS), np.nan),
+                    errors="coerce"
+                )
+                new_dtype = str(df_clean[col].dtype)
+                if new_dtype != original_dtype:
+                    changes[f"{col}:type"] = f"{original_dtype} → {new_dtype}"
+                else:
+                    changes[f"{col}:type"] = f"Attempted conversion (dtype remained {new_dtype})"
+
+            elif fix_type == "strip_whitespace":
+                if df_clean[col].dtype == object:
+                    df_clean[col] = df_clean[col].str.strip()
+                    changes[f"{col}:whitespace"] = "Stripped leading/trailing whitespace"
+
+    # Global fixes
+    if global_fixes.get("remove_duplicates"):
+        before = len(df_clean)
+        df_clean = df_clean.drop_duplicates()
+        removed = before - len(df_clean)
+        if removed > 0:
+            changes["global:duplicates"] = f"Removed {removed} duplicate row(s)"
+
+    if global_fixes.get("remove_empty_rows"):
+        before = len(df_clean)
+        df_clean = df_clean.dropna(how="all")
+        removed = before - len(df_clean)
+        if removed > 0:
+            changes["global:empty_rows"] = f"Removed {removed} fully-empty row(s)"
+
+    rows_after = len(df_clean)
+    if rows_before != rows_after:
+        changes["global:row_count"] = f"{rows_before} → {rows_after} rows"
+
+    print(f"🧹 Cleaning applied: {len(changes)} change(s), "
+          f"{rows_before}→{rows_after} rows, "
+          f"{len(fixes_by_col)} column(s) fixed")
+
+    return df_clean, changes
+
+
 def _clean_dataframe_for_json(df: pd.DataFrame) -> pd.DataFrame:
     """
     Clean DataFrame for JSON Serialization
@@ -896,6 +1134,31 @@ def _apply_filters(df: pd.DataFrame, filters: Dict[str, List[str]]) -> pd.DataFr
     return filtered_df
 
 
+def _normalize_filter_condition(condition: str, df_columns: list) -> str:
+    """
+    Normalize column names in a pandas query condition string.
+
+    Handles three cases Gemini can produce:
+      1. Underscore variant  — "Strike_Rate > 140"  → "`Strike Rate` > 140"
+      2. Bare spaced name    — "Strike Rate > 140"  → "`Strike Rate` > 140"
+      3. Already backticked  — "`Strike Rate` > 140" → unchanged
+
+    Columns are processed longest-first to prevent partial-name substitutions
+    (e.g. "Batting Average" must not shadow "Average").
+    """
+    normalized = condition
+    spaced_cols = [c for c in df_columns if ' ' in c]
+    for col in sorted(spaced_cols, key=len, reverse=True):
+        underscore_variant = col.replace(' ', '_')
+        # Replace underscore variant first (e.g. Strike_Rate → `Strike Rate`)
+        if underscore_variant in normalized:
+            normalized = normalized.replace(underscore_variant, f'`{col}`')
+        # Wrap bare spaced name not already backtick-wrapped
+        if col in normalized and f'`{col}`' not in normalized:
+            normalized = normalized.replace(col, f'`{col}`')
+    return normalized
+
+
 def _apply_filter_transformation(df: pd.DataFrame, condition: str) -> pd.DataFrame:
     """
     Apply filter transformation using pandas query.
@@ -908,13 +1171,15 @@ def _apply_filter_transformation(df: pd.DataFrame, condition: str) -> pd.DataFra
         Filtered DataFrame
     """
     try:
-        # Use pandas query for safe filtering
-        filtered_df = df.query(condition)
-        print(f"✅ Filter applied: {condition}, rows: {len(df)} → {len(filtered_df)}")
+        normalized = _normalize_filter_condition(condition, list(df.columns))
+        if normalized != condition:
+            print(f"🔧 Normalized filter: '{condition}' → '{normalized}'")
+        filtered_df = df.query(normalized)
+        print(f"✅ Filter applied: {normalized}, rows: {len(df)} → {len(filtered_df)}")
         return filtered_df
     except Exception as e:
         print(f"❌ Filter failed: {condition}, error: {str(e)}")
-        raise ValueError(f"Invalid filter condition: {condition}. Error: {str(e)}")
+        raise ValueError(f"Invalid filter condition: '{condition}'. Error: {str(e)}")
 
 
 def _add_calculated_column(df: pd.DataFrame, name: str, formula: str) -> pd.DataFrame:
@@ -1194,6 +1459,11 @@ async def upload_dataset(file: UploadFile = File(...)):
         dataset_id = str(uuid.uuid4())
         DATASETS[dataset_id] = df
         
+        # Invalidate any cached regression models that belonged to a previous upload
+        stale_keys = [k for k in REGRESSION_MODELS if k.startswith(f"{dataset_id}::")]
+        for k in stale_keys:
+            del REGRESSION_MODELS[k]
+        
         # Store original filename for analysis
         dataset_metadata = {
             "filename": file.filename,
@@ -1207,21 +1477,27 @@ async def upload_dataset(file: UploadFile = File(...)):
         
         # Automatically categorize columns
         categorized = _categorize_columns(df)
-        
+
+        # Scan data quality and include report in response
+        quality_report = _scan_dataset_quality(df)
+
         print(f"📁 Dataset uploaded successfully:")
         print(f"   File: {file.filename}")
         print(f"   Dataset ID: {dataset_id}")
         print(f"   Shape: {df.shape}")
         print(f"   Dimensions: {len(categorized['dimensions'])}")
         print(f"   Measures: {len(categorized['measures'])}")
-        
+        print(f"   Quality score: {quality_report['quality_score']}")
+        print(f"   Issues found: {len(quality_report['issues'])}")
+
         return {
             "dataset_id": dataset_id,
             "filename": file.filename,
             "columns": list(df.columns),  # Keep for backward compatibility
             "dimensions": categorized["dimensions"],
             "measures": categorized["measures"],
-            "rows": len(df)
+            "rows": len(df),
+            "quality_report": quality_report
         }
         
     except pd.errors.EmptyDataError:
@@ -1231,6 +1507,80 @@ async def upload_dataset(file: UploadFile = File(...)):
     except Exception as e:
         print(f"❌ Upload failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+class DatasetCleanRequest(BaseModel):
+    fixes: List[Dict[str, str]]               # [{column, fix_type}]
+    global_fixes: Dict[str, bool] = {}        # {remove_duplicates, remove_empty_rows}
+
+
+@app.post("/dataset-clean/{dataset_id}")
+async def clean_dataset(dataset_id: str, request: DatasetCleanRequest):
+    """
+    Dataset Cleaning Endpoint
+    Applies user-approved fixes to the in-memory DataFrame for a given dataset.
+    After cleaning, re-runs column categorisation so that previously mis-typed
+    columns (e.g. Strike Rate stored as string with '-' placeholders) are now
+    correctly classified as measures.
+
+    Args:
+        dataset_id: UUID of the dataset to clean
+        request.fixes: List of {column, fix_type} dicts approved by the user
+        request.global_fixes: {remove_duplicates, remove_empty_rows} booleans
+
+    Returns:
+        rows_before, rows_after, columns_fixed, changes_summary,
+        dimensions (updated), measures (updated), quality_report_after
+    """
+    if dataset_id not in DATASETS:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    try:
+        raw_df = DATASETS[dataset_id]
+        rows_before = len(raw_df)
+
+        cleaned_df, changes = _apply_cleaning_fixes(
+            raw_df, request.fixes, request.global_fixes
+        )
+
+        # Replace in-memory store with cleaned version
+        DATASETS[dataset_id] = cleaned_df
+
+        # Re-categorise columns — this is the critical step that fixes 14D/1M
+        recategorized = _categorize_columns(cleaned_df)
+
+        # Store updated categorisation in metadata
+        if dataset_id in DATASET_METADATA:
+            DATASET_METADATA[dataset_id]["dimensions"] = recategorized["dimensions"]
+            DATASET_METADATA[dataset_id]["measures"] = recategorized["measures"]
+            DATASET_METADATA[dataset_id]["cleaned"] = True
+            DATASET_METADATA[dataset_id]["cleaning_changes"] = changes
+
+        # Post-cleaning quality scan
+        quality_report_after = _scan_dataset_quality(cleaned_df)
+
+        print(f"✅ Dataset {dataset_id} cleaned:")
+        print(f"   Rows: {rows_before} → {len(cleaned_df)}")
+        print(f"   New dimensions: {len(recategorized['dimensions'])}")
+        print(f"   New measures: {len(recategorized['measures'])}")
+        print(f"   Post-clean quality score: {quality_report_after['quality_score']}")
+
+        return {
+            "success": True,
+            "rows_before": rows_before,
+            "rows_after": len(cleaned_df),
+            "columns_fixed": list({f.get("column") for f in request.fixes if f.get("column")}),
+            "changes_summary": changes,
+            "dimensions": recategorized["dimensions"],
+            "measures": recategorized["measures"],
+            "quality_report_after": quality_report_after
+        }
+
+    except Exception as e:
+        print(f"❌ Dataset cleaning failed for {dataset_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Cleaning failed: {str(e)}")
 
 
 @app.delete("/datasets/{dataset_id}")
@@ -1624,7 +1974,7 @@ async def create_chart(spec: ChartCreate):
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     # Debug logging
-    print(f"📊 /charts endpoint received: dimensions={spec.dimensions}, measures={spec.measures}, agg={spec.agg}, table_provided={spec.table is not None}, filters={spec.filters}, sort_order={spec.sort_order}")
+    print(f"📊 /charts endpoint received: dimensions={spec.dimensions}, measures={spec.measures}, agg={spec.agg}, table_provided={spec.table is not None}, filters={spec.filters}, sort_order={spec.sort_order}, top_k={spec.top_k}, filter_condition={spec.filter_condition}")
     if spec.table is not None:
         print(f"   Table has {len(spec.table)} rows")
     
@@ -1635,14 +1985,36 @@ async def create_chart(spec: ChartCreate):
         # Aggregate from dataset
         df = DATASETS[spec.dataset_id]
         
-        # Apply filters before aggregation (Filter Early, Aggregate Later)
+        # Apply categorical filter before aggregation (Filter Early, Aggregate Later)
         if spec.filters:
             print(f"🔍 Applying filters: {spec.filters}")
             original_rows = len(df)
             df = _apply_filters(df, spec.filters)
             print(f"   Filtered from {original_rows} to {len(df)} rows")
         
+        # Apply numeric range filter before aggregation so all raw columns are available
+        # (e.g. filter_condition "Ave > 50 and SR > 90" needs columns that may not be in measures)
+        if spec.filter_condition:
+            print(f"🔍 Applying filter_condition (pre-agg): {spec.filter_condition}")
+            pre_filter_rows = len(df)
+            try:
+                df = _apply_filter_transformation(df, spec.filter_condition)
+                print(f"   filter_condition: {pre_filter_rows} → {len(df)} rows")
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        
         table = _agg(df, spec.dimensions, spec.measures, spec.agg, spec.sort_order or "dataset")
+        
+        # Apply top-K limit after aggregation (reuses transform helper)
+        if spec.top_k and spec.measures:
+            order = 'asc' if (spec.sort_order or '').endswith('_asc') else 'desc'
+            print(f"🔢 Applying top_k={spec.top_k} by {spec.measures[0]} ({order})")
+            pre_topk_rows = len(table)
+            try:
+                table = _apply_top_k(table, spec.top_k, spec.measures[0], order)
+                print(f"   top_k: {pre_topk_rows} → {len(table)} rows")
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"top_k failed: {str(e)}")
         
         # Clean NaN/Inf values before JSON serialization
         table_clean = _clean_dataframe_for_json(table)
@@ -1675,7 +2047,9 @@ async def create_chart(spec: ChartCreate):
         "statistics": chart_statistics,  # Statistical metadata for visual enhancements
         "originalMeasure": spec.originalMeasure,  # Store original measure for histograms
         "filters": spec.filters or {},  # Store filters for persistence and reapplication
-        "sort_order": spec.sort_order or "dataset"  # Store sort order for persistence
+        "sort_order": spec.sort_order or "dataset",  # Store sort order for persistence
+        "top_k": spec.top_k,  # Store top-K limit for persistence
+        "filter_condition": spec.filter_condition  # Store numeric range condition for persistence
     }
     return CHARTS[chart_id]
 
@@ -4362,4 +4736,392 @@ async def get_snapshot_from_gist(gist_id: str):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to load snapshot: {str(e)}")
+
+
+# =============================================================================
+# Predictive Intelligence Endpoints
+# =============================================================================
+
+class DriverAnalysisRequest(BaseModel):
+    dataset_id: str
+    target_column: str
+    api_key: str
+    filters: Optional[Dict[str, List[Any]]] = None
+    model: Optional[str] = "gemini-2.5-flash"
+
+
+class WhatIfRequest(BaseModel):
+    model_key: str
+    target_column: str
+    changes: Dict[str, Any]   # e.g. { "caption_length": "+20%" } or { "hashtags": 15 }
+    api_key: str
+    model: Optional[str] = "gemini-2.5-flash"
+
+
+def _build_filters_hash(filters: Optional[Dict]) -> str:
+    """Stable hash for a filters dict used as part of the REGRESSION_MODELS cache key."""
+    if not filters:
+        return "nofilter"
+    serialised = json.dumps(filters, sort_keys=True)
+    return hashlib.md5(serialised.encode()).hexdigest()[:8]
+
+
+@app.post("/predict/drivers")
+async def predict_drivers(req: DriverAnalysisRequest):
+    """
+    Driver Analysis Endpoint
+    Identifies the variables that most influence a target metric.
+
+    Logic:
+    - Numeric columns  → Pearson correlation coefficient (r)
+    - Categorical columns → one-way ANOVA, converted to η² (eta-squared) for
+      a comparable [0,1] effect-size score
+    - Top-5 drivers ranked by absolute strength are returned
+    - A simple OLS model is fitted on numeric drivers and cached for What-If simulation
+    """
+    if not PREDICTIVE_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="scipy and scikit-learn are required for predictive endpoints. Install them and restart."
+        )
+
+    if req.dataset_id not in DATASETS:
+        raise HTTPException(status_code=404, detail=f"Dataset {req.dataset_id} not found")
+
+    df = DATASETS[req.dataset_id].copy()
+
+    # Apply categorical filters
+    if req.filters:
+        for col, values in req.filters.items():
+            if col in df.columns and values:
+                df = df[df[col].isin(values)]
+
+    if req.target_column not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.target_column}' not found in dataset")
+
+    target = df[req.target_column].dropna()
+    if not pd.api.types.is_numeric_dtype(target):
+        raise HTTPException(status_code=400, detail=f"Target column '{req.target_column}' must be numeric")
+
+    print(f"🔍 Driver analysis: target='{req.target_column}', {len(df)} rows after filters")
+
+    drivers = []
+    numeric_driver_cols = []
+
+    for col in df.columns:
+        if col == req.target_column:
+            continue
+
+        col_data = df[col]
+
+        # --- Numeric column → Pearson r ---
+        if pd.api.types.is_numeric_dtype(col_data):
+            combined = pd.concat([col_data, df[req.target_column]], axis=1).dropna()
+            if len(combined) < 5:
+                continue
+            r, p_value = scipy_stats.pearsonr(combined.iloc[:, 0], combined.iloc[:, 1])
+            if np.isnan(r):
+                continue
+            drivers.append({
+                "column": col,
+                "strength": round(float(r), 4),
+                "direction": "positive" if r >= 0 else "negative",
+                "type": "numeric",
+                "p_value": round(float(p_value), 4)
+            })
+            numeric_driver_cols.append(col)
+
+        # --- Categorical column → one-way ANOVA → η² ---
+        elif col_data.dtype in ['object', 'category']:
+            groups = [
+                df.loc[col_data == val, req.target_column].dropna().values
+                for val in col_data.dropna().unique()
+            ]
+            groups = [g for g in groups if len(g) >= 2]
+            if len(groups) < 2:
+                continue
+            try:
+                f_stat, p_value = scipy_stats.f_oneway(*groups)
+                if np.isnan(f_stat):
+                    continue
+                # η² = SS_between / SS_total ≈ F*(k-1) / (F*(k-1) + N-k)
+                k = len(groups)
+                n = sum(len(g) for g in groups)
+                eta_sq = (f_stat * (k - 1)) / (f_stat * (k - 1) + (n - k))
+                eta_sq = min(eta_sq, 1.0)  # clamp to [0,1]
+                drivers.append({
+                    "column": col,
+                    "strength": round(float(eta_sq), 4),
+                    "direction": "positive",  # η² has no direction
+                    "type": "categorical",
+                    "p_value": round(float(p_value), 4)
+                })
+            except Exception:
+                continue
+
+    if not drivers:
+        raise HTTPException(status_code=400, detail="No valid driver columns found for analysis")
+
+    # Rank by absolute strength and keep top 5
+    drivers.sort(key=lambda d: abs(d["strength"]), reverse=True)
+    top_drivers = drivers[:5]
+
+    # --- Fit OLS on top numeric drivers for What-If simulation ---
+    r2 = None
+    model_key = None
+    numeric_top = [d["column"] for d in top_drivers if d["type"] == "numeric"]
+
+    # Exclude accounting-derived features (|r| > 0.95) that create tautological models.
+    # e.g. Profit = Revenue - Cost, so including Profit when target=Revenue gives R²≈1
+    # but assigns near-zero coefficients to all other variables, making what-if useless.
+    OLS_TAUTOLOGY_THRESHOLD = 0.95
+    numeric_top_for_ols = [
+        d["column"] for d in top_drivers
+        if d["type"] == "numeric" and abs(d["strength"]) < OLS_TAUTOLOGY_THRESHOLD
+    ]
+    # Fall back to full set only if filtering removed everything (unlikely but safe)
+    if not numeric_top_for_ols:
+        numeric_top_for_ols = numeric_top
+        print("⚠️ All numeric drivers exceeded the tautology threshold — using full set for OLS.")
+    else:
+        excluded = set(numeric_top) - set(numeric_top_for_ols)
+        if excluded:
+            print(f"⚠️ Excluded from OLS (|r|>={OLS_TAUTOLOGY_THRESHOLD}, likely accounting identity): {excluded}")
+
+    if len(numeric_top_for_ols) >= 1:
+        feature_df = df[numeric_top_for_ols + [req.target_column]].dropna()
+        X = feature_df[numeric_top_for_ols].values
+        y = feature_df[req.target_column].values
+
+        ols = LinearRegression()
+        ols.fit(X, y)
+        r2 = round(float(ols.score(X, y)), 4)
+
+        # Build cache key and store model
+        filters_hash = _build_filters_hash(req.filters)
+        model_key = f"{req.dataset_id}::{req.target_column}::{filters_hash}"
+
+        REGRESSION_MODELS[model_key] = {
+            "feature_names": numeric_top_for_ols,
+            "coefficients": [round(float(c), 6) for c in ols.coef_],
+            "intercept": round(float(ols.intercept_), 6),
+            "r2": r2,
+            "baseline_means": {col: round(float(df[col].mean()), 6) for col in numeric_top_for_ols},
+            "baseline_stds": {col: round(float(df[col].std()), 6) for col in numeric_top_for_ols},
+            "historical_min": {col: round(float(df[col].min()), 6) for col in numeric_top_for_ols},
+            "historical_max": {col: round(float(df[col].max()), 6) for col in numeric_top_for_ols},
+            "target_baseline": round(float(df[req.target_column].mean()), 6),
+            "timestamp": datetime.now().isoformat()
+        }
+        print(f"✅ OLS fitted: features={numeric_top_for_ols}, R²={r2}, model_key={model_key}")
+
+    # --- Generate narrative ---
+    narrative = _build_driver_narrative(top_drivers, req.target_column, r2)
+
+    print(f"✅ Driver analysis complete: {len(top_drivers)} drivers found")
+    return {
+        "success": True,
+        "target_column": req.target_column,
+        "drivers": top_drivers,
+        "r2": r2,
+        "low_confidence": (r2 is not None and r2 < 0.3),
+        "model_key": model_key,
+        "narrative": narrative,
+        "total_drivers_checked": len(drivers)
+    }
+
+
+def _build_driver_narrative(drivers: List[Dict], target_col: str, r2: Optional[float]) -> str:
+    """Lightweight template-based narrative for driver analysis."""
+    if not drivers:
+        return f"No significant drivers found for {target_col}."
+
+    top = drivers[0]
+    parts = [f"**{top['column']}** is the strongest driver of {target_col} "
+             f"(r = {top['strength']:+.2f}, {top['direction']})"]
+
+    if len(drivers) > 1:
+        second = drivers[1]
+        parts.append(f"followed by **{second['column']}** (r = {second['strength']:+.2f})")
+
+    if len(drivers) > 2:
+        others = [d['column'] for d in drivers[2:]]
+        parts.append(f"Other notable drivers: {', '.join(others)}")
+
+    if r2 is not None:
+        confidence = "strong" if r2 >= 0.6 else ("moderate" if r2 >= 0.3 else "weak")
+        parts.append(f"Model fit (R² = {r2:.2f}) is {confidence} — "
+                     + ("results are reliable." if r2 >= 0.3 else
+                        "treat as directional guidance only."))
+
+    return ". ".join(parts) + "."
+
+
+@app.post("/predict/what-if")
+async def predict_what_if(req: WhatIfRequest):
+    """
+    What-If Simulation Endpoint
+    Simulates the impact of changing one or more driver variables on the target metric.
+
+    Requires a prior call to /predict/drivers to warm up the model cache.
+    Changes can be expressed as:
+      - Absolute value:    { "hashtags": 15 }
+      - Percentage change: { "caption_length": "+20%" } or "-10%"
+    """
+    if not PREDICTIVE_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="scipy and scikit-learn are required for predictive endpoints."
+        )
+
+    model_cache = REGRESSION_MODELS.get(req.model_key)
+    if not model_cache:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No cached model found for key '{req.model_key}'. Run driver analysis first."
+        )
+
+    feature_names = model_cache["feature_names"]
+    coefficients = model_cache["coefficients"]
+    intercept = model_cache["intercept"]
+    r2 = model_cache["r2"]
+    baseline_means = model_cache["baseline_means"]
+    baseline_stds = model_cache["baseline_stds"]
+    hist_min = model_cache["historical_min"]
+    hist_max = model_cache["historical_max"]
+    target_baseline = model_cache["target_baseline"]
+
+    # --- Parse changes and build new feature vector ---
+    new_values = dict(baseline_means)  # start from baseline
+    warnings = []
+    applied_changes = {}
+
+    for col, change in req.changes.items():
+        if col not in feature_names:
+            warnings.append(f"Column '{col}' is not a driver in the model — ignored.")
+            continue
+
+        current = baseline_means[col]
+        std = baseline_stds.get(col, 0)
+
+        # Resolve the new value — three formats supported:
+        #   "+20%" / "-10%"  → percentage change from baseline mean
+        #   "+1000" / "-500" → absolute delta added to baseline mean
+        #   150              → set to this absolute value
+        if isinstance(change, str):
+            s = change.strip()
+            if s.endswith('%'):
+                pct_str = s.rstrip('%')
+                try:
+                    pct = float(pct_str) / 100.0
+                except ValueError:
+                    warnings.append(f"Invalid percentage '{change}' for '{col}' — ignored.")
+                    continue
+                if abs(pct) > 1.0:
+                    warnings.append(f"Change of {change} for '{col}' exceeds 100% — clamped to ±100%.")
+                    pct = max(-1.0, min(1.0, pct))
+                proposed = current * (1 + pct)
+            elif s.startswith('+') or (s.startswith('-') and len(s) > 1 and s[1:].replace('.', '', 1).isdigit()):
+                # Explicit delta: "+1000" means add 1000 to the current baseline mean
+                try:
+                    proposed = current + float(s)
+                except ValueError:
+                    warnings.append(f"Invalid delta '{change}' for '{col}' — ignored.")
+                    continue
+            else:
+                try:
+                    proposed = float(s)
+                except ValueError:
+                    warnings.append(f"Could not parse change value '{change}' for '{col}' — ignored.")
+                    continue
+        else:
+            try:
+                proposed = float(change)
+            except (TypeError, ValueError):
+                warnings.append(f"Could not parse change value '{change}' for '{col}' — ignored.")
+                continue
+
+        # Clamp to historical ± 2σ
+        lo = hist_min[col] - 2 * std
+        hi = hist_max[col] + 2 * std
+        clamped = max(lo, min(hi, proposed))
+        if abs(clamped - proposed) > 1e-9:
+            warnings.append(
+                f"Value for '{col}' ({proposed:.2f}) was outside historical range "
+                f"[{lo:.2f}, {hi:.2f}] and was clamped to {clamped:.2f}."
+            )
+
+        new_values[col] = clamped
+        applied_changes[col] = {
+            "from": round(current, 4),
+            "to": round(clamped, 4),
+            "delta_pct": round((clamped - current) / current * 100, 2) if current != 0 else 0
+        }
+
+    # --- Predict using OLS ---
+    x_new = np.array([new_values[f] for f in feature_names], dtype=float)
+    predicted = float(np.dot(x_new, coefficients) + intercept)
+
+    # Clamp prediction to [target_baseline - 3σ, target_baseline + 3σ] range
+    dataset_id_from_key = req.model_key.split("::")[0]
+    if dataset_id_from_key in DATASETS:
+        target_std = float(DATASETS[dataset_id_from_key][req.target_column].std())
+        lo_pred = target_baseline - 3 * target_std
+        hi_pred = target_baseline + 3 * target_std
+        predicted = max(lo_pred, min(hi_pred, predicted))
+
+    delta_pct = round((predicted - target_baseline) / target_baseline * 100, 2) if target_baseline != 0 else 0.0
+
+    low_confidence = r2 < 0.3
+    narrative = _build_whatif_narrative(
+        req.target_column, target_baseline, predicted, delta_pct,
+        applied_changes, r2, low_confidence, warnings
+    )
+
+    print(f"✅ What-If: baseline={target_baseline:.4f}, predicted={predicted:.4f}, delta={delta_pct:+.1f}%")
+    return {
+        "success": True,
+        "target_column": req.target_column,
+        "baseline": round(target_baseline, 4),
+        "predicted": round(predicted, 4),
+        "delta_pct": delta_pct,
+        "r2": r2,
+        "low_confidence": low_confidence,
+        "applied_changes": applied_changes,
+        "warnings": warnings,
+        "narrative": narrative
+    }
+
+
+def _build_whatif_narrative(
+    target_col: str, baseline: float, predicted: float, delta_pct: float,
+    applied_changes: Dict, r2: float, low_confidence: bool, warnings: List[str]
+) -> str:
+    """Lightweight template-based narrative for what-if simulation."""
+    if not applied_changes:
+        return f"No valid changes could be applied. Check that the column names match the driver model."
+
+    change_parts = []
+    for col, ch in applied_changes.items():
+        sign = "+" if ch["delta_pct"] >= 0 else ""
+        change_parts.append(f"{col} by {sign}{ch['delta_pct']:.1f}%")
+
+    changes_str = " and ".join(change_parts)
+    direction = "increase" if delta_pct >= 0 else "decrease"
+    sign = "+" if delta_pct >= 0 else ""
+
+    narrative = (
+        f"Changing {changes_str} could {direction} **{target_col}** "
+        f"from {baseline:.2f} to {predicted:.2f} ({sign}{delta_pct:.1f}%)."
+    )
+
+    if low_confidence:
+        narrative += f" ⚠️ Weak model fit (R² = {r2:.2f}) — treat this as a directional estimate only."
+    else:
+        narrative += f" Model fit: R² = {r2:.2f}."
+
+    if warnings:
+        narrative += " Note: " + "; ".join(warnings)
+
+    return narrative
 

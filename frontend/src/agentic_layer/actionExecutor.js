@@ -146,6 +146,10 @@ async function executeAction(action, context) {
       return distributeShapesAction(action, context);
     case ACTION_TYPES.SMART_PLACE:
       return smartPlaceAction(action, context);
+    case ACTION_TYPES.DRIVER_ANALYSIS:
+      return await driverAnalysisAction(action, context);
+    case ACTION_TYPES.WHAT_IF:
+      return await whatIfAction(action, context);
     default:
       throw new Error(`Unknown action type: ${action.type}`);
   }
@@ -167,7 +171,9 @@ async function createChartAction(action, context) {
       measures: action.measures,
       agg: action.agg || 'sum',
       filters: action.filters || {},
-      sort_order: action.sort_order || 'dataset'
+      sort_order: action.sort_order || 'dataset',
+      top_k: action.top_k || null,
+      filter_condition: action.filter_condition || null
     })
   });
   
@@ -1563,6 +1569,320 @@ function highlightElementAction(action, context) {
   };
 }
 
+// =============================================================================
+// Predictive Intelligence Actions
+// =============================================================================
+
+/**
+ * Driver Analysis — identifies variables that most influence a target metric.
+ * Calls POST /predict/drivers, renders a driver_bar chart + insight textbox.
+ */
+async function driverAnalysisAction(action, context) {
+  const { API, apiKey, datasetId, setNodes, getViewportCenter, nodes, trackChartCreatedByAI } = context;
+
+  if (!apiKey) throw new Error('API key is required for driver analysis');
+
+  const response = await fetch(`${API}/predict/drivers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      dataset_id: action.dataset_id || datasetId,
+      target_column: action.target_column,
+      api_key: apiKey,
+      filters: action.filters || null,
+      model: 'gemini-2.5-flash'
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Driver analysis failed: ${err}`);
+  }
+
+  const result = await response.json();
+  if (!result.success) throw new Error(result.detail || 'Driver analysis returned an error');
+
+  // ── Build chart-compatible data ──────────────────────────────────────────
+  const driverData = (result.drivers || []).map(d => ({
+    driver: d.column,
+    strength: d.strength,
+    direction: d.direction,
+    type: d.type
+  }));
+
+  const chartPayload = {
+    dimensions: ['driver'],
+    measures: ['strength'],
+    statistics: {},
+    r2: result.r2,
+    low_confidence: result.low_confidence
+  };
+
+  const { ECHARTS_TYPES: ET } = await import('../charts/echartsRegistry');
+  const option = ET.DRIVER_BAR.createOption(driverData, chartPayload);
+
+  const position = getViewportCenter();
+  const chartId = `driver-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const chartWidth = AGENT_CONFIG.DEFAULT_CHART_WIDTH;
+  const chartHeight = AGENT_CONFIG.DEFAULT_CHART_HEIGHT;
+
+  setNodes(nodes => nodes.concat({
+    id: chartId,
+    type: 'chart',
+    position,
+    draggable: true,
+    selectable: false,
+    data: {
+      title: `Top Drivers of ${action.target_column}`,
+      figure: { data: [], layout: option },
+      chartType: 'driver_bar',
+      dimensions: ['driver'],
+      measures: ['strength'],
+      table: driverData,
+      statistics: {},
+      datasetId: action.dataset_id || datasetId,
+      selected: false,
+      width: chartWidth,
+      height: chartHeight,
+      // Store predictive metadata for What-If chaining
+      predictiveMeta: {
+        type: 'driver_analysis',
+        target_column: action.target_column,
+        model_key: result.model_key,
+        r2: result.r2,
+        low_confidence: result.low_confidence
+      },
+      createdBy: 'agent',
+      createdByQuery: context.currentQuery || null,
+      createdAt: new Date().toISOString(),
+      isNewlyCreated: true
+    }
+  }));
+
+  // ── Place insight textbox to the right ───────────────────────────────────
+  if (result.narrative) {
+    const { createShapeId } = await import('@tldraw/tldraw');
+    const { editor } = context;
+    if (editor) {
+      const textboxId = createShapeId();
+      const textboxX = position.x + chartWidth + 40;
+      const textboxY = position.y;
+
+      editor.createShape({
+        id: textboxId,
+        type: 'textbox',
+        x: textboxX,
+        y: textboxY,
+        props: {
+          w: 280,
+          h: 200,
+          text: result.narrative,
+          fontSize: 13,
+          isAIInsights: true,
+          chartTitle: `Drivers of ${action.target_column}`
+        }
+      });
+    }
+  }
+
+  if (trackChartCreatedByAI) trackChartCreatedByAI();
+
+  console.log(`✅ Driver analysis chart created: ${chartId}, drivers: ${result.drivers?.length}, R²: ${result.r2}`);
+
+  return {
+    chartId,
+    position,
+    driverCount: result.drivers?.length ?? 0,
+    model_key: result.model_key,
+    r2: result.r2,
+    low_confidence: result.low_confidence,
+    narrative: result.narrative
+  };
+}
+
+/**
+ * What-If Simulation — simulates the impact of changing driver variables.
+ * Calls POST /predict/what-if, renders a whatif_comparison chart + delta KPI.
+ */
+async function whatIfAction(action, context, _isRetry = false) {
+  const { API, apiKey, datasetId, setNodes, nodes, getViewportCenter, trackChartCreatedByAI } = context;
+
+  if (!apiKey) throw new Error('API key is required for what-if simulation');
+
+  // If no model_key at all, run driver analysis first to warm up the cache
+  if (!action.model_key) {
+    console.warn('⚠️ No model_key — running driver analysis first to build the model cache...');
+    const driverResult = await driverAnalysisAction({
+      type: 'driver_analysis',
+      target_column: action.target_column,
+      dataset_id: action.dataset_id || datasetId,
+      reasoning: 'Auto-triggered: building model cache required for what-if simulation'
+    }, context);
+    action.model_key = driverResult.model_key;
+    action.driver_chart_id = action.driver_chart_id || driverResult.chartId;
+  }
+
+  const response = await fetch(`${API}/predict/what-if`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model_key: action.model_key,
+      target_column: action.target_column,
+      changes: action.changes || {},
+      api_key: apiKey,
+      model: 'gemini-2.5-flash'
+    })
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    let errBody = {};
+    try { errBody = JSON.parse(errText); } catch (_) {}
+
+    // Cache miss after server restart — re-run driver analysis once to rebuild, then retry
+    if (!_isRetry && response.status === 404 && errBody.detail?.includes('No cached model')) {
+      console.warn('⚠️ Model cache miss (server restarted?) — re-running driver analysis to rebuild cache...');
+      const driverResult = await driverAnalysisAction({
+        type: 'driver_analysis',
+        target_column: action.target_column,
+        dataset_id: action.dataset_id || datasetId,
+        reasoning: 'Auto-recovery: rebuilding model cache for what-if simulation'
+      }, context);
+      action.model_key = driverResult.model_key;
+      action.driver_chart_id = action.driver_chart_id || driverResult.chartId;
+      return whatIfAction(action, context, true);
+    }
+
+    throw new Error(`What-if simulation failed: ${errText}`);
+  }
+
+  const result = await response.json();
+  if (!result.success) throw new Error(result.detail || 'What-if returned an error');
+
+  // ── Build chart data: two bars — Baseline | Simulated ────────────────────
+  const chartData = [
+    { scenario: 'Baseline', value: result.baseline },
+    { scenario: 'Simulated', value: result.predicted }
+  ];
+
+  const chartPayload = {
+    dimensions: ['scenario'],
+    measures: ['value'],
+    statistics: {},
+    delta_pct: result.delta_pct,
+    r2: result.r2,
+    low_confidence: result.low_confidence,
+    trend_data: result.trend_data || null
+  };
+
+  const { ECHARTS_TYPES: ET } = await import('../charts/echartsRegistry');
+  const option = ET.WHATIF_COMPARISON.createOption(chartData, chartPayload);
+
+  // ── Position: to the right of driver chart if available ──────────────────
+  let position = getViewportCenter();
+  if (action.driver_chart_id) {
+    const driverNode = findNodeById(action.driver_chart_id, nodes);
+    if (driverNode) {
+      position = {
+        x: driverNode.position.x + AGENT_CONFIG.CHART_HORIZONTAL_SPACING,
+        y: driverNode.position.y
+      };
+    }
+  }
+
+  const chartId = `whatif-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const chartWidth = AGENT_CONFIG.DEFAULT_CHART_WIDTH;
+  const chartHeight = AGENT_CONFIG.DEFAULT_CHART_HEIGHT;
+
+  setNodes(nodes => nodes.concat({
+    id: chartId,
+    type: 'chart',
+    position,
+    draggable: true,
+    selectable: false,
+    data: {
+      title: `What-If: ${action.target_column}`,
+      figure: { data: [], layout: option },
+      chartType: 'whatif_comparison',
+      dimensions: ['scenario'],
+      measures: ['value'],
+      table: chartData,
+      statistics: {},
+      datasetId: datasetId,
+      selected: false,
+      width: chartWidth,
+      height: chartHeight,
+      predictiveMeta: {
+        type: 'what_if',
+        target_column: action.target_column,
+        baseline: result.baseline,
+        predicted: result.predicted,
+        delta_pct: result.delta_pct,
+        r2: result.r2,
+        low_confidence: result.low_confidence
+      },
+      createdBy: 'agent',
+      createdByQuery: context.currentQuery || null,
+      createdAt: new Date().toISOString(),
+      isNewlyCreated: true
+    }
+  }));
+
+  // ── Delta KPI badge above the what-if chart ───────────────────────────────
+  const sign = result.delta_pct >= 0 ? '+' : '';
+  const deltaFormatted = `${sign}${result.delta_pct.toFixed(1)}%`;
+
+  const kpiAction = {
+    type: ACTION_TYPES.CREATE_KPI,
+    query: `Impact on ${action.target_column}`,
+    value: result.delta_pct,
+    formatted_value: deltaFormatted,
+    explanation: `Simulated change vs. baseline`,
+    position: 'center',
+    reasoning: 'Delta badge for what-if result',
+    width: AGENT_CONFIG.DEFAULT_KPI_WIDTH,
+    height: AGENT_CONFIG.DEFAULT_KPI_HEIGHT
+  };
+
+  // Place KPI directly above the what-if chart
+  const kpiPosition = {
+    x: position.x + (chartWidth - AGENT_CONFIG.DEFAULT_KPI_WIDTH) / 2,
+    y: position.y - AGENT_CONFIG.DEFAULT_KPI_HEIGHT - 20
+  };
+  const kpiId = `kpi-delta-${Date.now()}`;
+  setNodes(nodes => nodes.concat({
+    id: kpiId,
+    type: 'kpi',
+    position: kpiPosition,
+    draggable: true,
+    selectable: false,
+    data: {
+      query: kpiAction.query,
+      value: result.delta_pct,
+      formattedValue: deltaFormatted,
+      explanation: kpiAction.explanation,
+      title: `Impact on ${action.target_column}`,
+      width: AGENT_CONFIG.DEFAULT_KPI_WIDTH,
+      height: AGENT_CONFIG.DEFAULT_KPI_HEIGHT
+    }
+  }));
+
+  if (trackChartCreatedByAI) trackChartCreatedByAI();
+
+  console.log(`✅ What-if chart created: ${chartId}, delta: ${deltaFormatted}`);
+
+  return {
+    chartId,
+    kpiId,
+    position,
+    baseline: result.baseline,
+    predicted: result.predicted,
+    delta_pct: result.delta_pct,
+    low_confidence: result.low_confidence,
+    narrative: result.narrative
+  };
+}
+
 /**
  * Generate success message for action result
  */
@@ -1606,6 +1926,10 @@ function getSuccessMessage(action, result) {
       return `✅ Distributed ${result.count} shapes (${action.direction})`;
     case ACTION_TYPES.SMART_PLACE:
       return `✅ Placed shape at (${result.x}, ${result.y})`;
+    case ACTION_TYPES.DRIVER_ANALYSIS:
+      return `✅ Driver analysis: ${result.driverCount} drivers found for ${action.target_column}`;
+    case ACTION_TYPES.WHAT_IF:
+      return `✅ What-If: ${action.target_column} ${result.delta_pct >= 0 ? '+' : ''}${result.delta_pct?.toFixed(1)}%`;
     default:
       return '✅ Action completed';
   }

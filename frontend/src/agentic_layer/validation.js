@@ -22,8 +22,10 @@ export const CreateChartActionSchema = z.object({
   ]),
   referenceChartId: z.string().optional(),
   agg: z.string().optional(),
-  filters: z.record(z.array(z.string())).optional(),
+  filters: z.record(z.string(), z.array(z.string())).optional(),
   sort_order: z.string().optional(),
+  top_k: z.number().int().positive().optional(),
+  filter_condition: z.string().optional(),
   transform_prompt: z.string().optional(),
   reasoning: z.string()
 });
@@ -118,8 +120,10 @@ export const CreateDashboardActionSchema = z.object({
     text: z.string().optional(),
     chartType: z.string().optional(),
     agg: z.string().optional(),
-    filters: z.record(z.array(z.string())).optional(),
+    filters: z.record(z.string(), z.array(z.string())).optional(),
     sort_order: z.string().optional(),
+    top_k: z.number().int().positive().optional(),
+    filter_condition: z.string().optional(),
     transform_prompt: z.string().optional(),
     reasoning: z.string()
   })),
@@ -263,6 +267,44 @@ export const SmartPlaceSchema = z.object({
 });
 
 /**
+ * Schema for driver_analysis action
+ * Identifies variables that most influence a target metric via correlation / ANOVA.
+ */
+export const DriverAnalysisActionSchema = z.object({
+  type: z.literal(ACTION_TYPES.DRIVER_ANALYSIS),
+  target_column: z.string().min(1, "Target column required"),
+  dataset_id: z.string().min(1, "Dataset ID required"),
+  filters: z.record(z.string(), z.array(z.string())).optional(),
+  position: z.enum([
+    POSITION_TYPES.CENTER,
+    POSITION_TYPES.RIGHT_OF_CHART,
+    POSITION_TYPES.BELOW_CHART,
+    POSITION_TYPES.AUTO
+  ]).optional(),
+  reasoning: z.string()
+});
+
+/**
+ * Schema for what_if action
+ * Simulates the impact of changing driver variables on a target metric.
+ * Requires a prior driver_analysis to have warmed up the model cache (model_key).
+ */
+export const WhatIfActionSchema = z.object({
+  type: z.literal(ACTION_TYPES.WHAT_IF),
+  target_column: z.string().min(1, "Target column required"),
+  model_key: z.string().optional(),  // from prior driver_analysis; optional — handler will error gracefully if absent
+  changes: z.record(z.string(), z.union([z.string(), z.number()])), // e.g. { hashtags: "+20%" } or { caption_length: 150 }
+  driver_chart_id: z.string().optional(), // ID of the driver_analysis chart on canvas (for spatial placement)
+  position: z.enum([
+    POSITION_TYPES.CENTER,
+    POSITION_TYPES.RIGHT_OF_CHART,
+    POSITION_TYPES.BELOW_CHART,
+    POSITION_TYPES.AUTO
+  ]).optional(),
+  reasoning: z.string()
+});
+
+/**
  * Union schema for any agent action
  */
 export const AgentActionSchema = z.union([
@@ -284,7 +326,9 @@ export const AgentActionSchema = z.union([
   HighlightShapeSchema,
   AlignShapesSchema,
   DistributeShapesSchema,
-  SmartPlaceSchema
+  SmartPlaceSchema,
+  DriverAnalysisActionSchema,
+  WhatIfActionSchema
 ]);
 
 /**

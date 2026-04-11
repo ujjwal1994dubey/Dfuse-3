@@ -19,12 +19,15 @@ export const ACTION_TYPES = {
   CREATE_TEXT: 'create_text',
   CREATE_ARROW: 'create_arrow',
   HIGHLIGHT_ELEMENT: 'highlight_element',
-  // Spatial manipulation actions (new)
+  // Spatial manipulation actions
   MOVE_SHAPE: 'move_shape',
   HIGHLIGHT_SHAPE: 'highlight_shape',
   ALIGN_SHAPES: 'align_shapes',
   DISTRIBUTE_SHAPES: 'distribute_shapes',
   SMART_PLACE: 'smart_place',
+  // Predictive intelligence actions
+  DRIVER_ANALYSIS: 'driver_analysis',
+  WHAT_IF: 'what_if',
 };
 
 export const POSITION_TYPES = {
@@ -98,5 +101,8 @@ export const ACTION_WEIGHTS = {
   [ACTION_TYPES.ALIGN_SHAPES]: 'local',
   [ACTION_TYPES.DISTRIBUTE_SHAPES]: 'local',
   [ACTION_TYPES.SMART_PLACE]: 'local',
+  // Predictive actions — medium (single API call + chart rendering)
+  [ACTION_TYPES.DRIVER_ANALYSIS]: 'medium',
+  [ACTION_TYPES.WHAT_IF]: 'medium',
 };
 
