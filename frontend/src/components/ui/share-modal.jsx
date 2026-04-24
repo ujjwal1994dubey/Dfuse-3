@@ -73,20 +73,25 @@ export function ShareModal({
 
   return (
     <>
-      {/* Backdrop */}
-      <div 
-        className="fixed inset-0 bg-black/50 z-[1040] animate-fadeIn"
-        onClick={onClose}
-        aria-hidden="true"
-      />
-      
-      {/* Modal */}
-      <div 
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[1050] w-full max-w-md animate-scaleIn"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="share-modal-title"
+      {/* Single viewport-covering wrapper — prevents TLDraw pointer capture */}
+      <div
+        className="fixed inset-0 z-[1300] flex items-center justify-center"
+        onPointerDown={(e) => e.stopPropagation()}
       >
+        {/* Backdrop */}
+        <div
+          className="absolute inset-0 bg-black/50 animate-fadeIn"
+          onClick={onClose}
+          aria-hidden="true"
+        />
+
+        {/* Modal */}
+        <div
+          className="relative z-10 w-full max-w-md animate-scaleIn"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="share-modal-title"
+        >
         <div className="bg-white rounded-xl shadow-2xl overflow-hidden">
           {/* Close Button */}
           <button
@@ -187,6 +192,7 @@ export function ShareModal({
             )}
           </div>
         </div>
+        </div>
       </div>
 
       {/* Animation Styles */}
@@ -198,11 +204,11 @@ export function ShareModal({
         @keyframes scaleIn {
           from { 
             opacity: 0; 
-            transform: translate(-50%, -50%) scale(0.95);
+            transform: scale(0.95);
           }
           to { 
             opacity: 1; 
-            transform: translate(-50%, -50%) scale(1);
+            transform: scale(1);
           }
         }
         .animate-fadeIn {

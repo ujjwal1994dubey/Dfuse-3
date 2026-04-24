@@ -1,5 +1,5 @@
 import React from 'react';
-import { Database, X, Check } from 'lucide-react';
+import { Database, X, Check, GitMerge } from 'lucide-react';
 
 /**
  * DatasetSelector Component
@@ -39,6 +39,7 @@ export function DatasetSelector({ datasets, activeDatasetId, onSelect, onRemove 
         {datasets.map(dataset => {
           const isActive = dataset.id === activeDatasetId;
           const hasAnalysis = !!dataset.analysis;
+          const isMerged = !!dataset.isMerged;
           
           return (
             <div 
@@ -47,27 +48,42 @@ export function DatasetSelector({ datasets, activeDatasetId, onSelect, onRemove 
                 dataset-item group flex items-center justify-between p-2 rounded-md cursor-pointer
                 transition-all duration-150 ease-in-out
                 ${isActive 
-                  ? 'bg-blue-50 border border-blue-200 shadow-sm' 
+                  ? isMerged
+                    ? 'bg-violet-50 border border-violet-200 shadow-sm'
+                    : 'bg-blue-50 border border-blue-200 shadow-sm'
                   : 'bg-gray-50 border border-transparent hover:bg-gray-100 hover:border-gray-200'
                 }
               `}
               onClick={() => onSelect(dataset.id)}
-              title={`${dataset.filename}\n${dataset.rows?.toLocaleString() || '?'} rows\n${dataset.dimensions?.length || 0} dimensions, ${dataset.measures?.length || 0} measures`}
+              title={isMerged
+                ? `Merged view: ${dataset.filename}\n${dataset.rows?.toLocaleString() || '?'} rows · ${dataset.dimensions?.length || 0}D / ${dataset.measures?.length || 0}M\nSources: ${dataset.sourceDatasets?.join(' + ')}`
+                : `${dataset.filename}\n${dataset.rows?.toLocaleString() || '?'} rows\n${dataset.dimensions?.length || 0} dimensions, ${dataset.measures?.length || 0} measures`}
             >
               <div className="flex items-center gap-2 min-w-0 flex-1">
                 {/* Active indicator */}
                 <div className={`
                   w-2 h-2 rounded-full flex-shrink-0
-                  ${isActive ? 'bg-blue-500' : 'bg-gray-300'}
+                  ${isActive ? (isMerged ? 'bg-violet-500' : 'bg-blue-500') : 'bg-gray-300'}
                 `} />
                 
                 <div className="min-w-0 flex-1">
-                  {/* Filename */}
-                  <div className={`
-                    text-sm font-medium truncate
-                    ${isActive ? 'text-blue-700' : 'text-gray-700'}
-                  `}>
-                    {dataset.filename}
+                  {/* Filename row with optional merged badge */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <div className={`
+                      text-sm font-medium truncate
+                      ${isActive ? (isMerged ? 'text-violet-700' : 'text-blue-700') : 'text-gray-700'}
+                    `}>
+                      {dataset.filename}
+                    </div>
+                    {isMerged && (
+                      <span className={`
+                        inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0
+                        ${isActive ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-500'}
+                      `}>
+                        <GitMerge className="w-2.5 h-2.5" />
+                        Merged
+                      </span>
+                    )}
                   </div>
                   
                   {/* Stats row */}
@@ -75,7 +91,7 @@ export function DatasetSelector({ datasets, activeDatasetId, onSelect, onRemove 
                     <span>{dataset.rows?.toLocaleString() || '?'} rows</span>
                     <span>•</span>
                     <span>{dataset.dimensions?.length || 0}D / {dataset.measures?.length || 0}M</span>
-                    {hasAnalysis && (
+                    {hasAnalysis && !isMerged && (
                       <>
                         <span>•</span>
                         <Check className="w-3 h-3 text-green-500" title="Analyzed" />

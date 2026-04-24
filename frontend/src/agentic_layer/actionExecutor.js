@@ -11,6 +11,29 @@ import { executeDrawingActions } from './tldrawAgent';
 import { rateLimiter } from './rateLimiter';
 
 /**
+ * Get live shape bounds from the TLDraw editor.
+ * Falls back to stale React node position/size if the shape is not found.
+ * Mirrors the pattern already used in canvasSnapshot.js → enrichWithBounds().
+ */
+function getLiveShapeBounds(nodeId, editor, fallbackNode) {
+  if (editor) {
+    try {
+      const shape = editor.getShape(`shape:${nodeId}`);
+      if (shape) {
+        const b = editor.getShapePageBounds(shape);
+        return { x: b.x, y: b.y, w: b.w, h: b.h };
+      }
+    } catch (_) {}
+  }
+  return {
+    x: fallbackNode.position.x,
+    y: fallbackNode.position.y,
+    w: fallbackNode.data?.width  || 800,
+    h: fallbackNode.data?.height || 400,
+  };
+}
+
+/**
  * Execute multiple actions in sequence
  * @param {Array} actions - Array of validated actions to execute
  * @param {Object} context - Execution context with API, datasetId, setNodes, currentQuery, etc.
@@ -155,7 +178,7 @@ async function executeAction(action, context) {
  * Create a chart on the canvas
  */
 async function createChartAction(action, context) {
-  const { API, datasetId, apiKey, setNodes, figureFromPayload, trackChartCreatedByAI } = context;
+  const { API, datasetId, apiKey, model, setNodes, figureFromPayload, trackChartCreatedByAI } = context;
   
   // Step 1: Create base chart — pass all AI-supplied data parameters
   const response = await fetch(`${API}/charts`, {
@@ -190,7 +213,7 @@ async function createChartAction(action, context) {
           chart_id: chart.chart_id,
           user_prompt: action.transform_prompt,
           api_key: apiKey,
-          model: 'gemini-2.5-flash'
+          model: model || 'gemini-2.5-flash'
         })
       });
       
@@ -302,7 +325,7 @@ async function createChartAction(action, context) {
  * Falls back to /ai-calculate-metric endpoint only if no pre-computed value
  */
 async function createKPIAction(action, context) {
-  const { API, datasetId, apiKey, setNodes, getViewportCenter, kpiIndex = 0, useAbsolutePosition = false } = context;
+  const { API, datasetId, apiKey, model, setNodes, getViewportCenter, kpiIndex = 0, useAbsolutePosition = false } = context;
   
   let value, formattedValue, explanation;
   
@@ -327,7 +350,7 @@ async function createKPIAction(action, context) {
         user_query: action.query,
         dataset_id: datasetId,
         api_key: apiKey,
-        model: 'gemini-2.5-flash'
+        model: model || 'gemini-2.5-flash'
       })
     });
     
@@ -521,7 +544,7 @@ function createInsightAction(action, context) {
  * Calculate position for new element based on position type
  */
 function calculatePosition(positionType, action, context) {
-  const { getViewportCenter, nodes, referenceChartId } = context;
+  const { getViewportCenter, nodes, referenceChartId, editor } = context;
   
   // Use referenceChartId from context if not in action
   const chartIdToUse = action.referenceChartId || referenceChartId;
@@ -535,9 +558,10 @@ function calculatePosition(positionType, action, context) {
       if (chartIdToUse) {
         const refChart = findNodeById(chartIdToUse, nodes);
         if (refChart) {
+          const bounds = getLiveShapeBounds(refChart.id, editor, refChart);
           return {
-            x: refChart.position.x + AGENT_CONFIG.CHART_HORIZONTAL_SPACING,
-            y: refChart.position.y
+            x: bounds.x + AGENT_CONFIG.CHART_HORIZONTAL_SPACING,
+            y: bounds.y
           };
         }
       }
@@ -548,9 +572,10 @@ function calculatePosition(positionType, action, context) {
       if (chartIdToUse) {
         const refChart = findNodeById(chartIdToUse, nodes);
         if (refChart) {
+          const bounds = getLiveShapeBounds(refChart.id, editor, refChart);
           return {
-            x: refChart.position.x,
-            y: refChart.position.y + AGENT_CONFIG.CHART_VERTICAL_SPACING
+            x: bounds.x,
+            y: bounds.y + AGENT_CONFIG.CHART_VERTICAL_SPACING
           };
         }
       }
@@ -573,7 +598,7 @@ function findNodeById(nodeId, nodes) {
  * Generate AI insights for an existing chart
  */
 async function generateChartInsightsAction(action, context) {
-  const { API, apiKey, nodes, trackAIInsight, editor } = context;
+  const { API, apiKey, model, nodes, trackAIInsight, editor } = context;
   
   if (!apiKey) {
     throw new Error('API key is required for generating insights');
@@ -597,7 +622,7 @@ async function generateChartInsightsAction(action, context) {
       chart_id: action.chartId,
       api_key: apiKey,
       user_context: action.userContext || '',
-      model: 'gemini-2.5-flash'
+      model: model || 'gemini-2.5-flash'
     })
   });
   
@@ -681,7 +706,7 @@ async function generateChartInsightsAction(action, context) {
  * Answer free-form AI query about data
  */
 async function aiQueryAction(action, context) {
-  const { API, apiKey, datasetId, setNodes, nodes, editor, mode } = context;
+  const { API, apiKey, datasetId, model, setNodes, nodes, editor, mode } = context;
   
   if (!apiKey) {
     throw new Error('API key is required for AI queries');
@@ -710,7 +735,7 @@ async function aiQueryAction(action, context) {
   const requestPayload = {
     user_query: action.query,
     api_key: apiKey,
-    model: 'gemini-2.5-flash'
+    model: model || 'gemini-2.5-flash'
   };
   
   if (chartIdToUse) {
@@ -820,7 +845,7 @@ async function aiQueryAction(action, context) {
  * Show table for a chart's underlying data
  */
 async function showTableAction(action, context) {
-  const { setNodes, nodes, trackTableCreated } = context;
+  const { setNodes, nodes, editor, trackTableCreated } = context;
   
   // Find the chart
   const chartNode = nodes.find(n => n.id === action.chartId);
@@ -837,10 +862,11 @@ async function showTableAction(action, context) {
   const headers = Object.keys(chartTable[0]);
   const rows = chartTable.map(row => headers.map(h => row[h]));
   
-  // Position table to the right of chart
+  // Position table to the right of chart using live TLDraw bounds
+  const chartBounds = getLiveShapeBounds(chartNode.id, editor, chartNode);
   const tablePosition = {
-    x: chartNode.position.x + AGENT_CONFIG.TABLE_HORIZONTAL_SPACING,
-    y: chartNode.position.y
+    x: chartBounds.x + AGENT_CONFIG.TABLE_HORIZONTAL_SPACING,
+    y: chartBounds.y
   };
   
   // Use custom size if provided (for future dashboard table support)
@@ -955,6 +981,9 @@ async function createDashboardAction(action, context) {
       try {
         const result = await createChartAction(chartAction, {
           ...context,
+          // Prefer the element-level datasetId (ephemeral dataset from unified agent)
+          // over the global context datasetId
+          datasetId: element.datasetId || context.datasetId,
           getViewportCenter: () => absolutePosition
         });
         createdElements.push(result);
@@ -1533,16 +1562,20 @@ function highlightElementAction(action, context) {
   
   const highlightType = action.highlightType || 'box';
   const color = action.color || 'yellow';
-  
+
+  // Use live TLDraw bounds so the highlight tracks the shape's current position
+  // even if the user moved it after creation.
+  const bounds = getLiveShapeBounds(targetNode.id, editor, targetNode);
+
   // Create highlight shape around target
   const drawingAction = {
     type: 'create_shape',
     shape: 'rectangle', // Use 'rectangle' not 'geo'
     props: {
-      x: targetNode.position.x - 20,
-      y: targetNode.position.y - 20,
-      w: (targetNode.data?.width || 800) + 40,
-      h: (targetNode.data?.height || 400) + 40,
+      x: bounds.x - 20,
+      y: bounds.y - 20,
+      w: bounds.w + 40,
+      h: bounds.h + 40,
       color: color,
       fill: highlightType === 'background' ? 'semi' : 'none',
       dash: highlightType === 'box' ? 'dashed' : 'solid',

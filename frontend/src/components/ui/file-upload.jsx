@@ -3,7 +3,7 @@ import { cn } from "../../lib/utils"
 import { Button } from "./button"
 import { Upload } from "lucide-react"
 
-const FileUpload = React.forwardRef(({ className, onFileChange, accept, children, ...props }, ref) => {
+const FileUpload = React.forwardRef(({ className, onFileChange, onFilesChange, accept, multiple, children, ...props }, ref) => {
   const inputRef = React.useRef(null)
 
   const handleClick = () => {
@@ -11,21 +11,26 @@ const FileUpload = React.forwardRef(({ className, onFileChange, accept, children
   }
 
   const handleChange = (event) => {
-    const file = event.target.files?.[0]
-    if (file && onFileChange) {
-      onFileChange(file)
+    const files = event.target.files
+    if (!files || files.length === 0) return
+    if (multiple && onFilesChange) {
+      onFilesChange(Array.from(files))
+    } else if (onFileChange) {
+      onFileChange(files[0])
     }
+    // Reset so the same file(s) can be re-selected
+    event.target.value = ''
   }
 
   return (
-    <div className={cn("", className)} {...props}>
+    <div className={cn("", className)}>
       <input
         ref={inputRef}
         type="file"
         accept={accept}
+        multiple={multiple}
         onChange={handleChange}
         className="hidden"
-        {...props}
       />
       <Button
         type="button"

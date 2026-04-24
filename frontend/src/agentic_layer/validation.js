@@ -106,10 +106,11 @@ export const ShowTableSchema = z.object({
  */
 export const CreateDashboardActionSchema = z.object({
   type: z.literal(ACTION_TYPES.CREATE_DASHBOARD),
-  dashboardType: z.enum(['sales', 'executive', 'operations', 'analysis', 'general']).optional(),
+  dashboardType: z.enum(['sales', 'executive', 'operations', 'analysis', 'general', 'unified']).optional(),
   layoutStrategy: z.enum(['grid', 'hero', 'flow', 'comparison', 'kpi-dashboard']).optional(),
   elements: z.array(z.object({
     type: z.enum(['chart', 'kpi', 'insight']),
+    datasetId: z.string().optional(),
     dimensions: z.array(z.string()).optional(),
     measures: z.array(z.string()).optional(),
     query: z.string().optional(),
@@ -121,8 +122,15 @@ export const CreateDashboardActionSchema = z.object({
     filters: z.record(z.array(z.string())).optional(),
     sort_order: z.string().optional(),
     transform_prompt: z.string().optional(),
-    reasoning: z.string()
+    reasoning: z.string().optional()
   })),
+  analyses_detail: z.array(z.object({
+    question:    z.string(),
+    insight:     z.string().optional(),
+    python_code: z.string().optional(),
+    chart_type:  z.string().optional(),
+    success:     z.boolean().optional(),
+  })).optional(),
   reasoning: z.string()
 });
 

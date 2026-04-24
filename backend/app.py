@@ -16,7 +16,7 @@ import asyncio
 import requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from gemini_llm import GeminiDataFormulator
+from gemini_llm import GeminiDataFormulator, build_merged_dataset, find_primary_dataset
 from supabase import create_client, Client
 
 # Load environment variables from .env file (for local development)
@@ -69,9 +69,78 @@ CHARTS: Dict[str, Dict[str, Any]] = {}
 CHART_INSIGHTS_CACHE: Dict[str, Dict[str, Any]] = {}  # Cache generated chart insights
 CONVERSATION_STORE: Dict[str, List[Dict[str, Any]]] = {}  # session_id -> list of conversation turns
 CONVERSATION_MAX_TURNS = 10  # Keep last N turns in context (keeps token count bounded)
+DATASET_RELATIONSHIPS: List[Dict[str, Any]] = []  # Cross-dataset relationship links
+MERGED_DATASETS: Dict[str, Dict[str, Any]] = {}   # merged_id -> {primary_id, source_names, ...}
+
+def build_schema_context(
+    dataset_ids: List[str],
+    datasets: Dict[str, pd.DataFrame],
+    dataset_metadata: Dict[str, Any],
+    relationships: List[Dict[str, Any]],
+) -> dict:
+    """
+    Builds a compact schema context dict for plan_query().
+    Uses only column names (no sample data) to keep the prompt small.
+    """
+    ds_context: Dict[str, Any] = {}
+    for did in dataset_ids:
+        if did not in datasets:
+            continue
+        df   = datasets[did]
+        meta = dataset_metadata.get(did, {})
+        ds_context[did] = {
+            "name":    meta.get("dataset_name") or meta.get("filename") or did[:8],
+            "columns": list(df.columns),
+            "column_descriptions": {
+                c["name"]: c.get("description", "")
+                for c in meta.get("columns", [])
+                if c.get("description")
+            },
+        }
+    id_set = set(dataset_ids)
+    relevant_rels = [
+        r for r in relationships
+        if r.get("dataset_a_id") in id_set
+        and r.get("dataset_b_id") in id_set
+        and r.get("status") == "accepted"
+    ]
+    return {"datasets": ds_context, "relationships": relevant_rels}
 
 
-# Add this right after line 28 (after the CHARTS dictionary):
+# Keywords used to classify result columns as dimensions or measures
+_DIM_KEYWORDS  = {"id", "identifier", "code", "name", "category",
+                  "type", "date", "region", "country", "status", "label",
+                  "group", "segment", "class", "brand", "product", "city",
+                  "state", "gender", "department", "location", "month",
+                  "year", "quarter", "week", "day", "period"}
+_MEAS_KEYWORDS = {"amount", "revenue", "price", "total", "count",
+                  "quantity", "rate", "percent", "ratio", "sales",
+                  "cost", "profit", "value", "score", "avg", "average",
+                  "sum", "budget", "spend", "income", "loss", "gain",
+                  "margin", "fee", "salary", "weight", "distance", "age"}
+
+
+def _infer_col_type(col: str, result_df: "pd.DataFrame", source_col_lookup: dict) -> str:
+    """
+    Infer whether a result column is a 'dimension' or 'measure'.
+
+    Priority:
+      1. AI/user-edited description from source DATASET_METADATA (keyword match)
+      2. Column name itself (keyword match)
+      3. dtype fallback (non-numeric → dimension, numeric → measure)
+    """
+    desc = source_col_lookup.get(col, "").lower()
+    col_lower = col.lower()
+    combined = f"{desc} {col_lower}"
+
+    if any(k in combined for k in _DIM_KEYWORDS):
+        return "dimension"
+    if any(k in combined for k in _MEAS_KEYWORDS):
+        return "measure"
+
+    dtype = result_df[col].dtype
+    return "dimension" if not pd.api.types.is_numeric_dtype(dtype) else "measure"
+
 
 @app.get("/")
 async def root():
@@ -83,6 +152,40 @@ async def health_check():
 
 # -----------------------
 # User Authentication & Tracking
+# -----------------------
+# Local JSON fallback store (used when Supabase tables don't exist yet)
+# Data is persisted in backend/local_store.json between server restarts.
+# -----------------------
+_LOCAL_STORE_PATH = os.path.join(os.path.dirname(__file__), "local_store.json")
+
+def _load_local_store() -> dict:
+    try:
+        if os.path.exists(_LOCAL_STORE_PATH):
+            with open(_LOCAL_STORE_PATH, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"canvases": {}, "schemas": {}}
+
+def _save_local_store(store: dict):
+    try:
+        with open(_LOCAL_STORE_PATH, "w") as f:
+            json.dump(store, f, indent=2)
+    except Exception as e:
+        print(f"⚠️  Could not save local store: {e}")
+
+_local_store = _load_local_store()
+
+
+def _is_supabase_table_error(e: Exception) -> bool:
+    """Return True if the exception is a Supabase/PostgreSQL 'table not found', schema cache, or RLS error."""
+    msg = str(e).lower()
+    return any(k in msg for k in (
+        "does not exist", "42p01", "pgrst205", "schema cache",
+        "could not find the table", "relation", "permission denied", "rls"
+    ))
+
+
 # -----------------------
 class UserLoginRequest(BaseModel):
     id: str
@@ -329,6 +432,435 @@ async def get_session_history(email: Optional[str] = None, limit: int = 50):
     return {"success": False, "error": "Supabase not configured"}
 
 # -----------------------
+# Canvas CRUD
+# -----------------------
+
+class CanvasCreateRequest(BaseModel):
+    user_id: str
+    name: str = "Untitled Canvas"
+
+class CanvasUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    canvas_state: Optional[dict] = None
+    node_count: Optional[int] = None
+    thumbnail_svg: Optional[str] = None
+
+@app.get("/canvases")
+async def list_canvases(user_id: str):
+    """List all canvases for a user. Falls back to local JSON store when Supabase table is unavailable."""
+    if supabase:
+        try:
+            result = supabase.table("canvases")\
+                .select("id,user_id,name,node_count,thumbnail_svg,created_at,updated_at")\
+                .eq("user_id", user_id)\
+                .order("updated_at", desc=True)\
+                .execute()
+            return {"success": True, "data": result.data}
+        except Exception as e:
+            if not _is_supabase_table_error(e):
+                raise HTTPException(status_code=500, detail=str(e))
+            print(f"⚠️  Supabase canvases table unavailable, using local store: {e}")
+    # Local fallback
+    canvases = [c for c in _local_store.get("canvases", {}).values() if c.get("user_id") == user_id]
+    canvases.sort(key=lambda c: c.get("updated_at", ""), reverse=True)
+    return {"success": True, "data": canvases}
+
+@app.post("/canvases")
+async def create_canvas(req: CanvasCreateRequest):
+    """Create a new canvas record. Falls back to local JSON store when Supabase table is unavailable."""
+    if supabase:
+        try:
+            result = supabase.table("canvases").insert({
+                "user_id": req.user_id,
+                "name": req.name,
+                "canvas_state": {},
+                "node_count": 0,
+            }).execute()
+            if result.data:
+                return {"success": True, "data": result.data[0]}
+            raise HTTPException(status_code=500, detail="Insert returned no data")
+        except HTTPException:
+            raise
+        except Exception as e:
+            if not _is_supabase_table_error(e):
+                raise HTTPException(status_code=500, detail=str(e))
+            print(f"⚠️  Supabase canvases table unavailable, using local store: {e}")
+    # Local fallback
+    now = datetime.now().isoformat()
+    record = {
+        "id": str(uuid.uuid4()),
+        "user_id": req.user_id,
+        "name": req.name,
+        "canvas_state": {},
+        "node_count": 0,
+        "thumbnail_svg": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    _local_store.setdefault("canvases", {})[record["id"]] = record
+    _save_local_store(_local_store)
+    return {"success": True, "data": record}
+
+@app.get("/canvases/{canvas_id}")
+async def get_canvas(canvas_id: str):
+    """Get a single canvas including its full state. Falls back to local JSON store."""
+    if supabase:
+        try:
+            result = supabase.table("canvases").select("*").eq("id", canvas_id).execute()
+            if not result.data:
+                raise HTTPException(status_code=404, detail="Canvas not found")
+            return {"success": True, "data": result.data[0]}
+        except HTTPException:
+            raise
+        except Exception as e:
+            if not _is_supabase_table_error(e):
+                raise HTTPException(status_code=500, detail=str(e))
+            print(f"⚠️  Supabase canvases table unavailable, using local store: {e}")
+    # Local fallback
+    record = _local_store.get("canvases", {}).get(canvas_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    return {"success": True, "data": record}
+
+@app.put("/canvases/{canvas_id}")
+async def update_canvas(canvas_id: str, req: CanvasUpdateRequest):
+    """Update canvas name, state, node count, or thumbnail. Falls back to local JSON store."""
+    from datetime import timezone
+    now = datetime.now(timezone.utc).isoformat()
+    if supabase:
+        try:
+            updates = {"updated_at": now}
+            if req.name is not None:
+                updates["name"] = req.name
+            if req.canvas_state is not None:
+                updates["canvas_state"] = req.canvas_state
+            if req.node_count is not None:
+                updates["node_count"] = req.node_count
+            if req.thumbnail_svg is not None:
+                updates["thumbnail_svg"] = req.thumbnail_svg
+            result = supabase.table("canvases").update(updates).eq("id", canvas_id).execute()
+            if not result.data:
+                raise HTTPException(status_code=404, detail="Canvas not found")
+            return {"success": True, "data": result.data[0]}
+        except HTTPException:
+            raise
+        except Exception as e:
+            if not _is_supabase_table_error(e):
+                raise HTTPException(status_code=500, detail=str(e))
+            print(f"⚠️  Supabase canvases table unavailable, using local store: {e}")
+    # Local fallback
+    record = _local_store.get("canvases", {}).get(canvas_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    if req.name is not None:
+        record["name"] = req.name
+    if req.canvas_state is not None:
+        record["canvas_state"] = req.canvas_state
+    if req.node_count is not None:
+        record["node_count"] = req.node_count
+    if req.thumbnail_svg is not None:
+        record["thumbnail_svg"] = req.thumbnail_svg
+    record["updated_at"] = now
+    _save_local_store(_local_store)
+    return {"success": True, "data": record}
+
+@app.delete("/canvases/{canvas_id}")
+async def delete_canvas(canvas_id: str):
+    """Delete a canvas. Falls back to local JSON store."""
+    if supabase:
+        try:
+            supabase.table("canvases").delete().eq("id", canvas_id).execute()
+            return {"success": True}
+        except Exception as e:
+            if not _is_supabase_table_error(e):
+                raise HTTPException(status_code=500, detail=str(e))
+            print(f"⚠️  Supabase canvases table unavailable, using local store: {e}")
+    # Local fallback
+    _local_store.get("canvases", {}).pop(canvas_id, None)
+    _save_local_store(_local_store)
+    return {"success": True}
+
+# -----------------------
+# Schema CRUD
+# -----------------------
+
+class SchemaCreateRequest(BaseModel):
+    user_id: str
+    name: str = "Untitled Schema"
+    file_count: int = 0
+    record_count: int = 0
+    relationships: Optional[List[dict]] = []
+    merged_dataset_id: Optional[str] = None
+
+class SchemaUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    relationships: Optional[List[dict]] = None
+    merged_dataset_id: Optional[str] = None
+
+@app.get("/schemas")
+async def list_schemas(user_id: str):
+    """List all schemas for a user. Falls back to local JSON store when Supabase table is unavailable."""
+    if supabase:
+        try:
+            result = supabase.table("schemas")\
+                .select("*")\
+                .eq("user_id", user_id)\
+                .order("created_at", desc=True)\
+                .execute()
+            return {"success": True, "data": result.data}
+        except Exception as e:
+            if not _is_supabase_table_error(e):
+                raise HTTPException(status_code=500, detail=str(e))
+            print(f"⚠️  Supabase schemas table unavailable, using local store: {e}")
+    # Local fallback
+    schemas = [s for s in _local_store.get("schemas", {}).values() if s.get("user_id") == user_id]
+    schemas.sort(key=lambda s: s.get("created_at", ""), reverse=True)
+    return {"success": True, "data": schemas}
+
+@app.post("/schemas")
+async def create_schema(req: SchemaCreateRequest):
+    """Save a new schema record after flat-table creation. Falls back to local JSON store."""
+    if supabase:
+        try:
+            result = supabase.table("schemas").insert({
+                "user_id": req.user_id,
+                "name": req.name,
+                "file_count": req.file_count,
+                "record_count": req.record_count,
+                "relationships": req.relationships or [],
+                "merged_dataset_id": req.merged_dataset_id,
+            }).execute()
+            if result.data:
+                return {"success": True, "data": result.data[0]}
+            raise HTTPException(status_code=500, detail="Insert returned no data")
+        except HTTPException:
+            raise
+        except Exception as e:
+            if not _is_supabase_table_error(e):
+                raise HTTPException(status_code=500, detail=str(e))
+            print(f"⚠️  Supabase schemas table unavailable, using local store: {e}")
+    # Local fallback
+    now = datetime.now().isoformat()
+    record = {
+        "id": str(uuid.uuid4()),
+        "user_id": req.user_id,
+        "name": req.name,
+        "file_count": req.file_count,
+        "record_count": req.record_count,
+        "relationships": req.relationships or [],
+        "merged_dataset_id": req.merged_dataset_id,
+        "created_at": now,
+        "updated_at": now,
+    }
+    _local_store.setdefault("schemas", {})[record["id"]] = record
+    _save_local_store(_local_store)
+    print(f"✅ Schema saved to local store: {record['name']} ({record['id']})")
+    return {"success": True, "data": record}
+
+@app.get("/schemas/{schema_id}")
+async def get_schema(schema_id: str):
+    """Get a single schema. Falls back to local JSON store."""
+    if supabase:
+        try:
+            result = supabase.table("schemas").select("*").eq("id", schema_id).execute()
+            if not result.data:
+                raise HTTPException(status_code=404, detail="Schema not found")
+            return {"success": True, "data": result.data[0]}
+        except HTTPException:
+            raise
+        except Exception as e:
+            if not _is_supabase_table_error(e):
+                raise HTTPException(status_code=500, detail=str(e))
+            print(f"⚠️  Supabase schemas table unavailable, using local store: {e}")
+    # Local fallback
+    record = _local_store.get("schemas", {}).get(schema_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Schema not found")
+    return {"success": True, "data": record}
+
+@app.post("/schemas/{schema_id}/connect")
+async def connect_schema_to_session(schema_id: str):
+    """
+    Connect a schema to the current session.
+
+    Matches each source file referenced in the schema's relationships to a
+    currently-uploaded dataset (by filename, case-insensitive, .csv-agnostic).
+    If all source files are found in the session, builds a merged dataset on-demand
+    and returns it so the frontend can set it as the active dataset.
+
+    Returns:
+        { success: True,  merged_dataset: {...} }          — all files matched
+        { success: False, missing_files: ["orders.csv"] }  — some files not uploaded
+    """
+    # ── 1. Load schema record ─────────────────────────────────────────────────
+    schema_record = None
+    if supabase:
+        try:
+            result = supabase.table("schemas").select("*").eq("id", schema_id).execute()
+            if result.data:
+                schema_record = result.data[0]
+        except Exception:
+            pass
+    if schema_record is None:
+        schema_record = _local_store.get("schemas", {}).get(schema_id)
+    if not schema_record:
+        raise HTTPException(status_code=404, detail="Schema not found")
+
+    relationships = schema_record.get("relationships") or []
+    if not relationships:
+        raise HTTPException(status_code=400, detail="Schema has no relationships defined.")
+
+    # ── 2. Collect unique source file names from relationships ────────────────
+    # Each relationship has dataset_a_name / dataset_b_name (the original CSV filenames)
+    source_names: set = set()
+    for rel in relationships:
+        if rel.get("dataset_a_name"):
+            source_names.add(rel["dataset_a_name"].strip())
+        if rel.get("dataset_b_name"):
+            source_names.add(rel["dataset_b_name"].strip())
+
+    def _norm(name: str) -> str:
+        """Normalise filename for matching: lowercase, strip .csv/.xlsx extension."""
+        return re.sub(r'\.(csv|xlsx?)$', '', name.strip().lower())
+
+    # ── 3. Match source names to current session datasets ─────────────────────
+    session_by_norm: Dict[str, str] = {}  # normalised_name → dataset_id
+    for did, meta in DATASET_METADATA.items():
+        if did in MERGED_DATASETS:
+            continue  # skip merged pseudo-datasets
+        fname = meta.get("filename") or meta.get("dataset_name") or ""
+        session_by_norm[_norm(fname)] = did
+
+    resolved: Dict[str, str] = {}   # original_name → current_session_dataset_id
+    missing: List[str] = []
+    for name in source_names:
+        sid = session_by_norm.get(_norm(name))
+        if sid:
+            resolved[name] = sid
+        else:
+            missing.append(name)
+
+    if missing:
+        print(f"⚠️  /schemas/{schema_id}/connect: missing files in session: {missing}")
+        return {"success": False, "missing_files": missing}
+
+    print(f"✅ /schemas/{schema_id}/connect: all source files resolved — {list(resolved.keys())}")
+
+    # ── 4. Build resolved relationships with current session IDs ──────────────
+    resolved_rels: List[Dict[str, Any]] = []
+    for rel in relationships:
+        a_name = rel.get("dataset_a_name", "")
+        b_name = rel.get("dataset_b_name", "")
+        new_a_id = resolved.get(a_name.strip()) or resolved.get(_norm(a_name))
+        new_b_id = resolved.get(b_name.strip()) or resolved.get(_norm(b_name))
+        if not new_a_id or not new_b_id:
+            continue
+        resolved_rels.append({
+            **rel,
+            "dataset_a_id": new_a_id,
+            "dataset_b_id": new_b_id,
+            "status": "accepted",
+            "link_id": str(uuid.uuid4()),
+        })
+
+    if not resolved_rels:
+        raise HTTPException(status_code=400, detail="Could not resolve any relationships from uploaded datasets.")
+
+    # ── 5. Inject resolved relationships into session DATASET_RELATIONSHIPS ───
+    # Remove stale entries for these dataset IDs, then add the resolved ones
+    resolved_ids = set(resolved.values())
+    DATASET_RELATIONSHIPS[:] = [
+        r for r in DATASET_RELATIONSHIPS
+        if r.get("dataset_a_id") not in resolved_ids
+        and r.get("dataset_b_id") not in resolved_ids
+    ]
+    DATASET_RELATIONSHIPS.extend(resolved_rels)
+
+    # ── 6. Build source dataset info from session metadata ────────────────────
+    source_datasets = []
+    for name, did in resolved.items():
+        df   = DATASETS.get(did)
+        meta = DATASET_METADATA.get(did, {})
+        dims = [c for c in (df.columns if df is not None else [])
+                if df is not None and (df[c].dtype == object or str(df[c].dtype).startswith("datetime"))]
+        meas = [c for c in (df.columns if df is not None else [])
+                if df is not None and df[c].dtype in ["int64", "float64"]]
+        source_datasets.append({
+            "id":         did,
+            "filename":   meta.get("filename") or name,
+            "dimensions": dims,
+            "measures":   meas,
+            "rows":       len(df) if df is not None else 0,
+            "isMerged":   False,
+        })
+
+    print(
+        f"✅ Schema '{schema_record['name']}' connected — "
+        f"{len(source_datasets)} source tables, {len(resolved_rels)} relationships injected"
+    )
+    return {
+        "success":              True,
+        "source_datasets":      source_datasets,
+        "resolved_relationships": resolved_rels,
+        "schema_name":          schema_record.get("name", ""),
+    }
+
+
+@app.put("/schemas/{schema_id}")
+async def update_schema(schema_id: str, req: SchemaUpdateRequest):
+    """Update a schema's metadata. Falls back to local JSON store."""
+    from datetime import timezone
+    now = datetime.now(timezone.utc).isoformat()
+    if supabase:
+        try:
+            updates = {"updated_at": now}
+            if req.name is not None:
+                updates["name"] = req.name
+            if req.relationships is not None:
+                updates["relationships"] = req.relationships
+            if req.merged_dataset_id is not None:
+                updates["merged_dataset_id"] = req.merged_dataset_id
+            result = supabase.table("schemas").update(updates).eq("id", schema_id).execute()
+            if not result.data:
+                raise HTTPException(status_code=404, detail="Schema not found")
+            return {"success": True, "data": result.data[0]}
+        except HTTPException:
+            raise
+        except Exception as e:
+            if not _is_supabase_table_error(e):
+                raise HTTPException(status_code=500, detail=str(e))
+            print(f"⚠️  Supabase schemas table unavailable, using local store: {e}")
+    # Local fallback
+    record = _local_store.get("schemas", {}).get(schema_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Schema not found")
+    if req.name is not None:
+        record["name"] = req.name
+    if req.relationships is not None:
+        record["relationships"] = req.relationships
+    if req.merged_dataset_id is not None:
+        record["merged_dataset_id"] = req.merged_dataset_id
+    record["updated_at"] = now
+    _save_local_store(_local_store)
+    return {"success": True, "data": record}
+
+@app.delete("/schemas/{schema_id}")
+async def delete_schema(schema_id: str):
+    """Delete a schema record. Falls back to local JSON store."""
+    if supabase:
+        try:
+            supabase.table("schemas").delete().eq("id", schema_id).execute()
+            return {"success": True}
+        except Exception as e:
+            if not _is_supabase_table_error(e):
+                raise HTTPException(status_code=500, detail=str(e))
+            print(f"⚠️  Supabase schemas table unavailable, using local store: {e}")
+    # Local fallback
+    _local_store.get("schemas", {}).pop(schema_id, None)
+    _save_local_store(_local_store)
+    return {"success": True}
+
+# -----------------------
 # Models
 # -----------------------
 class ChartCreate(BaseModel):
@@ -341,6 +873,13 @@ class ChartCreate(BaseModel):
     originalMeasure: Optional[str] = None  # Original measure for histograms (before binning)
     filters: Optional[Dict[str, List[str]]] = None  # Dimension filters for chart-level filtering
     sort_order: Optional[str] = "dataset"  # Sort order for categorical data: "dataset", "ascending", "descending"
+    is_derived: bool = False  # True for query-engine–generated charts with pre-joined/aggregated data
+
+class SmartChartRequest(BaseModel):
+    user_request: str                     # Natural language chart description
+    dataset_id: Optional[str] = None      # Optional hint — falls back to all loaded datasets
+    api_key: Optional[str] = None
+    model: str = "gemini-2.5-flash"
 
 class FuseRequest(BaseModel):
     chart1_id: str
@@ -379,6 +918,7 @@ class AIExploreRequest(BaseModel):
     user_query: str
     api_key: Optional[str] = None
     model: str = "gemini-2.5-flash"
+    confirmed_relationships: Optional[List[Dict[str, Any]]] = None  # Cross-dataset schema links
 
 class ChartTransformRequest(BaseModel):
     """Request model for chart transformation"""
@@ -447,6 +987,25 @@ class AgentQueryRequest(BaseModel):
     analysis_type: str = "detailed"  # 'raw' or 'detailed' (Ask mode only)
     session_id: Optional[str] = None  # Persistent session for conversation memory
     conversation_history: Optional[List[Dict[str, Any]]] = None  # Previous turns from client
+    confirmed_relationships: Optional[List[Dict[str, Any]]] = None  # Cross-dataset schema links
+
+class EnrichRelationshipsRequest(BaseModel):
+    api_key: Optional[str] = None
+    model: str = "gemini-2.5-flash"
+
+class BatchAnalyzeRequest(BaseModel):
+    dataset_ids: Optional[List[str]] = None  # None = all loaded source datasets
+    api_key: Optional[str] = None
+    model: str = "gemini-2.5-flash"
+
+class ConfirmRelationshipsRequest(BaseModel):
+    decisions: Dict[str, str]  # {link_id: "accepted" | "rejected"}
+    edited_links: Optional[Dict[str, Dict[str, str]]] = None  # {link_id: {col_a, col_b}}
+    build_merge: bool = True  # set False in schema-creation flow to skip eager flat-table build
+
+class JoinPreviewRequest(BaseModel):
+    primary_dataset_id: str
+    confirmed_relationships: List[Dict[str, Any]]
 
 # -----------------------
 # Helpers
@@ -1214,14 +1773,36 @@ async def upload_dataset(file: UploadFile = File(...)):
         print(f"   Shape: {df.shape}")
         print(f"   Dimensions: {len(categorized['dimensions'])}")
         print(f"   Measures: {len(categorized['measures'])}")
-        
+
+        # Auto-detect relationships when 2+ datasets are loaded
+        relationships_detected = []
+        if len(DATASETS) >= 2:
+            print(f"🔗 Auto-detecting cross-dataset relationships ({len(DATASETS)} datasets loaded)...")
+            new_links = _detect_relationships(DATASETS)
+            # Preserve previously confirmed/rejected decisions for existing link pairs
+            existing_decisions: Dict[str, str] = {
+                f"{l['dataset_a_id']}:{l['col_a']}:{l['dataset_b_id']}:{l['col_b']}": l["status"]
+                for l in DATASET_RELATIONSHIPS
+                if l["status"] in ("accepted", "rejected")
+            }
+            for lnk in new_links:
+                pair_key = f"{lnk['dataset_a_id']}:{lnk['col_a']}:{lnk['dataset_b_id']}:{lnk['col_b']}"
+                if pair_key in existing_decisions:
+                    lnk["status"] = existing_decisions[pair_key]
+            DATASET_RELATIONSHIPS.clear()
+            DATASET_RELATIONSHIPS.extend(new_links)
+            relationships_detected = [l for l in new_links if l["status"] == "pending_confirmation"]
+            print(f"   Found {len(new_links)} candidate links, {len(relationships_detected)} pending confirmation")
+
         return {
             "dataset_id": dataset_id,
             "filename": file.filename,
             "columns": list(df.columns),  # Keep for backward compatibility
             "dimensions": categorized["dimensions"],
             "measures": categorized["measures"],
-            "rows": len(df)
+            "rows": len(df),
+            "relationships_detected": len(relationships_detected) > 0,
+            "pending_relationship_count": len(relationships_detected),
         }
         
     except pd.errors.EmptyDataError:
@@ -1266,9 +1847,29 @@ async def delete_dataset(dataset_id: str):
         ]
         for chart_id in charts_to_remove:
             del CHARTS[chart_id]
-        
+
+        # Remove relationship links involving this dataset
+        links_before = len(DATASET_RELATIONSHIPS)
+        DATASET_RELATIONSHIPS[:] = [
+            l for l in DATASET_RELATIONSHIPS
+            if l.get("dataset_a_id") != dataset_id and l.get("dataset_b_id") != dataset_id
+        ]
+        links_removed = links_before - len(DATASET_RELATIONSHIPS)
+
+        # Remove any merged datasets that were built from this dataset
+        merged_to_remove = [
+            mid for mid, info in MERGED_DATASETS.items()
+            if info.get("primary_id") == dataset_id
+        ]
+        for mid in merged_to_remove:
+            DATASETS.pop(mid, None)
+            DATASET_METADATA.pop(mid, None)
+            del MERGED_DATASETS[mid]
+
         print(f"🗑️ Dataset {dataset_id} deleted successfully")
         print(f"   Charts removed: {len(charts_to_remove)}")
+        print(f"   Relationship links removed: {links_removed}")
+        print(f"   Merged views removed: {len(merged_to_remove)}")
         
         return {
             "success": True,
@@ -1308,6 +1909,636 @@ async def list_datasets():
         })
     
     return {"datasets": dataset_list}
+
+
+@app.get("/datasets/{dataset_id}/meta")
+async def get_dataset_meta(dataset_id: str):
+    """
+    Return stored metadata for an existing dataset.
+    Used by SchemaPicker to reconnect a saved schema's merged dataset to the canvas.
+    
+    Returns filename, rows, dimensions, and measures for the given dataset_id.
+    Looks first in the in-memory DATASETS store, then falls back to DATASET_METADATA.
+    """
+    if dataset_id in DATASETS:
+        df = DATASETS[dataset_id]
+        metadata = DATASET_METADATA.get(dataset_id, {})
+        categorized = _categorize_columns(df)
+        return {
+            "dataset_id": dataset_id,
+            "filename": metadata.get("filename", "Unknown"),
+            "rows": len(df),
+            "dimensions": categorized["dimensions"],
+            "measures": categorized["measures"],
+        }
+
+    # If dataset was persisted to Supabase but not in memory, attempt DB lookup
+    if supabase:
+        try:
+            result = supabase.table("datasets").select("*").eq("id", dataset_id).execute()
+            if result.data:
+                d = result.data[0]
+                return {
+                    "dataset_id": d["id"],
+                    "filename": d.get("filename", "Unknown"),
+                    "rows": d.get("rows", 0),
+                    "dimensions": d.get("dimensions") or [],
+                    "measures": d.get("measures") or [],
+                }
+        except Exception:
+            pass
+
+    raise HTTPException(status_code=404, detail="Dataset not found")
+
+
+# -----------------------
+# Cross-Dataset Relationship Endpoints
+# -----------------------
+
+@app.post("/detect-relationships")
+async def detect_relationships_endpoint():
+    """
+    Run relationship detection across all currently loaded datasets.
+    Stores candidates (status: pending_confirmation) in DATASET_RELATIONSHIPS.
+    Existing accepted/rejected decisions are preserved.
+    """
+    # Only consider original source datasets — exclude merged/flat tables
+    source_datasets = {k: v for k, v in DATASETS.items() if k not in MERGED_DATASETS}
+
+    if len(source_datasets) < 2:
+        return {"relationships": [], "message": "Need at least 2 source datasets to detect relationships"}
+
+    new_links = _detect_relationships(source_datasets)
+
+    # Preserve prior confirmed/rejected decisions
+    existing_decisions: Dict[str, str] = {
+        f"{l['dataset_a_id']}:{l['col_a']}:{l['dataset_b_id']}:{l['col_b']}": l["status"]
+        for l in DATASET_RELATIONSHIPS
+        if l["status"] in ("accepted", "rejected")
+    }
+    for lnk in new_links:
+        pair_key = f"{lnk['dataset_a_id']}:{lnk['col_a']}:{lnk['dataset_b_id']}:{lnk['col_b']}"
+        if pair_key in existing_decisions:
+            lnk["status"] = existing_decisions[pair_key]
+
+    DATASET_RELATIONSHIPS.clear()
+    DATASET_RELATIONSHIPS.extend(new_links)
+    print(f"🔗 /detect-relationships: found {len(new_links)} candidate links")
+    return {"relationships": new_links}
+
+
+@app.get("/relationships")
+async def get_relationships():
+    """Return the full relationship list (all statuses)."""
+    return {"relationships": DATASET_RELATIONSHIPS}
+
+
+@app.post("/enrich-relationships")
+async def enrich_relationships(request: EnrichRelationshipsRequest):
+    """
+    Use Gemini to add a natural-language ai_description to each pending link.
+    Skips links that already have a non-empty description.
+    """
+    pending = [l for l in DATASET_RELATIONSHIPS if not l.get("ai_description")]
+    if not pending:
+        return {"enriched": 0, "relationships": DATASET_RELATIONSHIPS}
+
+    if not request.api_key:
+        # Fill in generic descriptions without calling Gemini
+        for lnk in pending:
+            card = lnk["cardinality"]
+            lnk["ai_description"] = (
+                f"'{lnk['col_a']}' in {lnk['dataset_a_name']} appears to link to "
+                f"'{lnk['col_b']}' in {lnk['dataset_b_name']} ({card} relationship, "
+                f"{lnk['overlap_pct']*100:.0f}% value overlap)."
+            )
+        return {"enriched": len(pending), "relationships": DATASET_RELATIONSHIPS}
+
+    try:
+        from gemini_llm import GeminiDataFormulator
+        formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
+
+        links_text = "\n".join([
+            f"- Link {i+1}: {l['dataset_a_name']}.{l['col_a']} → {l['dataset_b_name']}.{l['col_b']} "
+            f"(cardinality: {l['cardinality']}, overlap: {l['overlap_pct']*100:.0f}%, match: {l['match_type']})"
+            for i, l in enumerate(pending)
+        ])
+
+        prompt = f"""You are a data engineer reviewing potential relationships between database tables.
+For each link below, write ONE concise sentence (max 20 words) explaining what the relationship means in business terms.
+Output ONLY valid JSON: an array of strings in the same order as the links.
+
+LINKS:
+{links_text}
+
+Output format: ["description 1", "description 2", ...]"""
+
+        response_text, token_usage = formulator.run_gemini_with_usage(prompt, operation="Relationship Enrichment")
+        cleaned = response_text.strip()
+        if "```json" in cleaned:
+            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+        elif "```" in cleaned:
+            cleaned = cleaned.split("```")[1].strip()
+
+        descriptions = json.loads(cleaned)
+        for i, lnk in enumerate(pending):
+            if i < len(descriptions):
+                lnk["ai_description"] = descriptions[i]
+
+        print(f"✅ Enriched {len(pending)} relationship links with AI descriptions")
+        return {"enriched": len(pending), "relationships": DATASET_RELATIONSHIPS, "token_usage": token_usage}
+    except Exception as e:
+        print(f"⚠️ AI enrichment failed, using generic descriptions: {e}")
+        for lnk in pending:
+            card = lnk["cardinality"]
+            lnk["ai_description"] = (
+                f"'{lnk['col_a']}' in {lnk['dataset_a_name']} appears to link to "
+                f"'{lnk['col_b']}' in {lnk['dataset_b_name']} ({card} relationship, "
+                f"{lnk['overlap_pct']*100:.0f}% value overlap)."
+            )
+
+    return {"enriched": len(pending), "relationships": DATASET_RELATIONSHIPS}
+
+
+@app.post("/batch-analyze")
+async def batch_analyze(request: BatchAnalyzeRequest):
+    """
+    Batch Analysis Endpoint — single LLM call for all datasets.
+
+    Replaces N sequential /analyze-dataset calls + /enrich-relationships with
+    one combined Gemini prompt, regardless of how many CSV files are loaded.
+
+    Pipeline:
+      1. Resolve scope (source datasets only, no merged pseudo-datasets)
+      2. Compute column statistics per dataset (dtype, unique_count, sample values) — no LLM
+      3. Detect cross-dataset relationships via _detect_relationships() — no LLM
+      4. Build one combined prompt and make a SINGLE Gemini call
+      5. Parse response: persist DATASET_METADATA + ai_description on each link
+      6. Return analyses dict + relationships + token_usage
+
+    Fallback: if the LLM call or JSON parsing fails, fills generic descriptions
+    so the workflow is never blocked.
+    """
+    # ── 1. Resolve scope ──────────────────────────────────────────────────────
+    scope_ids = request.dataset_ids or list(DATASETS.keys())
+    source_datasets = {
+        did: DATASETS[did]
+        for did in scope_ids
+        if did in DATASETS and did not in MERGED_DATASETS
+    }
+
+    if not source_datasets:
+        raise HTTPException(
+            status_code=400,
+            detail="No valid datasets found. Please upload CSV files first."
+        )
+
+    print(f"\n🔍 /batch-analyze: {len(source_datasets)} dataset(s)")
+
+    # ── 2. Statistical profiling per dataset (no LLM) ─────────────────────────
+    # Mirrors the column-stat loop in _analyze_dataset_with_ai()
+    all_col_stats: Dict[str, List[Dict[str, Any]]] = {}
+
+    for did, df in source_datasets.items():
+        col_stats = []
+        for col in df.columns:
+            series = df[col]
+            missing_pct  = round(series.isnull().mean() * 100, 2)
+            unique_count = int(series.nunique())
+            total_count  = int(len(series))
+            non_null     = series.dropna()
+            sample_size  = min(3, len(non_null))
+            sample_values = non_null.sample(sample_size).tolist() if sample_size > 0 else []
+            variance = None
+            if pd.api.types.is_numeric_dtype(series):
+                v = series.var()
+                variance = float(v) if v == v else None  # guard NaN
+
+            col_stats.append({
+                "name":         col,
+                "dtype":        str(series.dtype),
+                "missing_pct":  missing_pct,
+                "unique_count": unique_count,
+                "total_count":  total_count,
+                "variance":     variance,
+                "sample_values": sample_values,
+                "description":  "",   # filled after LLM call
+            })
+        all_col_stats[did] = col_stats
+
+    # ── 3. Relationship detection (no LLM) ────────────────────────────────────
+    new_links = _detect_relationships(source_datasets)
+
+    # Preserve prior confirmed/rejected decisions
+    existing_decisions: Dict[str, str] = {
+        f"{l['dataset_a_id']}:{l['col_a']}:{l['dataset_b_id']}:{l['col_b']}": l["status"]
+        for l in DATASET_RELATIONSHIPS
+        if l["status"] in ("accepted", "rejected")
+    }
+    for lnk in new_links:
+        pair_key = f"{lnk['dataset_a_id']}:{lnk['col_a']}:{lnk['dataset_b_id']}:{lnk['col_b']}"
+        if pair_key in existing_decisions:
+            lnk["status"] = existing_decisions[pair_key]
+
+    DATASET_RELATIONSHIPS.clear()
+    DATASET_RELATIONSHIPS.extend(new_links)
+    print(f"   Detected {len(new_links)} relationship candidate(s)")
+
+    # Helper: build generic descriptions without LLM
+    def _generic_col_desc(col_info: Dict[str, Any]) -> str:
+        dtype = col_info["dtype"]
+        uc    = col_info["unique_count"]
+        if dtype in ("object", "string"):
+            return f"Text column with {uc} unique values"
+        elif dtype.startswith("int") or dtype.startswith("float"):
+            return f"Numeric column with {uc} unique values"
+        elif "date" in dtype or "time" in dtype:
+            return f"Date/time column with {uc} unique values"
+        return f"Data column ({dtype}) with {uc} unique values"
+
+    def _generic_rel_desc(lnk: Dict[str, Any]) -> str:
+        card = lnk.get("cardinality", "")
+        return (
+            f"'{lnk['col_a']}' in {lnk['dataset_a_name']} links to "
+            f"'{lnk['col_b']}' in {lnk['dataset_b_name']} ({card} relationship, "
+            f"{lnk.get('overlap_pct', 0)*100:.0f}% value overlap)."
+        )
+
+    # ── 4. Build combined prompt and call Gemini (single call) ────────────────
+    token_usage: Dict[str, int] = {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+    ai_success  = False
+
+    if request.api_key:
+        try:
+            from gemini_llm import GeminiDataFormulator
+            formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
+
+            # Build dataset blocks (cap at 3 sample rows, 3 sample values per col)
+            dataset_blocks = []
+            for idx, (did, df) in enumerate(source_datasets.items(), start=1):
+                meta      = DATASET_METADATA.get(did, {})
+                filename  = meta.get("filename") or meta.get("dataset_name") or did[:8]
+                col_stats = all_col_stats[did]
+                sample_rows = df.head(3).to_dict(orient="records")
+
+                col_lines = "\n".join(
+                    f"- {c['name']}: {c['dtype']}, {c['unique_count']} unique, "
+                    f"Sample: {c['sample_values']}"
+                    for c in col_stats
+                )
+                row_lines = "\n".join(
+                    f"  {row}" for row in sample_rows
+                )
+                dataset_blocks.append(
+                    f"DATASET {idx} — {filename}  ({len(df):,} rows)\n"
+                    f"Dataset ID: {did}\n"
+                    f"Columns:\n{col_lines}\n"
+                    f"Sample rows (first 3):\n{row_lines}"
+                )
+
+            datasets_section = "\n\n".join(dataset_blocks)
+
+            # Build relationship block
+            if new_links:
+                rel_lines = "\n".join(
+                    f"- Link {i+1}: {l['dataset_a_name']}.{l['col_a']} → "
+                    f"{l['dataset_b_name']}.{l['col_b']} "
+                    f"({l.get('cardinality','?')}, {l.get('overlap_pct',0)*100:.0f}% overlap, "
+                    f"{l.get('match_type','?')} match)"
+                    for i, l in enumerate(new_links)
+                )
+                rels_section = f"DETECTED RELATIONSHIPS:\n{rel_lines}"
+            else:
+                rels_section = "DETECTED RELATIONSHIPS:\nNone detected."
+
+            # Dataset ID list for the output format instruction
+            id_template = "\n".join(
+                f'    "{did}": {{"dataset_summary": "...", "columns": [{{"name": "col", "description": "..."}}]}}'
+                for did in source_datasets
+            )
+
+            prompt = f"""You are an expert data analyst and data engineer.
+
+Analyze these {len(source_datasets)} dataset(s) and their detected relationships in ONE response.
+
+{datasets_section}
+
+{rels_section}
+
+INSTRUCTIONS:
+1. For EACH dataset: write a meaningful 2-3 sentence dataset_summary describing the real-world context.
+   For EACH column: write one short business/domain description (not just the data type).
+2. For EACH relationship link (in the same order listed above): write ONE sentence (max 20 words) in business terms explaining what the relationship means.
+
+Output ONLY valid JSON — no markdown fences, no extra text:
+{{
+  "datasets": {{
+{id_template}
+  }},
+  "relationships": ["description for link 1", "description for link 2", ...]
+}}
+
+Use the exact dataset IDs shown above as keys in "datasets".
+If there are no relationships, return an empty array for "relationships"."""
+
+            response_text, token_usage = formulator.run_gemini_with_usage(prompt, operation="Batch Analysis")
+
+            # Strip markdown fences if present
+            cleaned = response_text.strip()
+            if "```json" in cleaned:
+                cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+            elif "```" in cleaned:
+                cleaned = cleaned.split("```")[1].strip()
+
+            ai_data = json.loads(cleaned)
+            ai_success = True
+            print(f"   Single Gemini call succeeded | tokens={token_usage.get('totalTokens', 0)}")
+
+            # Apply AI dataset descriptions
+            for did, ds_result in ai_data.get("datasets", {}).items():
+                if did not in all_col_stats:
+                    continue
+                ai_summary = ds_result.get("dataset_summary", "")
+                ai_cols    = {c["name"]: c["description"] for c in ds_result.get("columns", [])}
+                for col_info in all_col_stats[did]:
+                    col_info["description"] = ai_cols.get(col_info["name"], _generic_col_desc(col_info))
+                all_col_stats[did]  # already updated in-place
+
+                # Persist in DATASET_METADATA
+                existing_meta = DATASET_METADATA.get(did, {})
+                DATASET_METADATA[did] = {
+                    **existing_meta,
+                    "dataset_name":    existing_meta.get("dataset_name") or existing_meta.get("filename") or did[:8],
+                    "dataset_summary": ai_summary,
+                    "columns":         all_col_stats[did],
+                    "success":         True,
+                }
+
+            # Apply AI relationship descriptions
+            ai_rel_descs = ai_data.get("relationships", [])
+            for i, lnk in enumerate(new_links):
+                lnk["ai_description"] = (
+                    ai_rel_descs[i] if i < len(ai_rel_descs) else _generic_rel_desc(lnk)
+                )
+
+        except Exception as exc:
+            print(f"⚠️  /batch-analyze LLM call failed ({exc}), using generic descriptions")
+            ai_success = False
+
+    # ── 5. Fallback: fill generic descriptions where missing ──────────────────
+    if not ai_success:
+        for did, col_stats in all_col_stats.items():
+            for col_info in col_stats:
+                if not col_info.get("description"):
+                    col_info["description"] = _generic_col_desc(col_info)
+
+            existing_meta = DATASET_METADATA.get(did, {})
+            filename      = existing_meta.get("filename") or existing_meta.get("dataset_name") or did[:8]
+            df            = source_datasets[did]
+            DATASET_METADATA[did] = {
+                **existing_meta,
+                "dataset_name":    existing_meta.get("dataset_name") or filename,
+                "dataset_summary": f"Dataset '{filename}' with {len(df):,} rows and {len(df.columns)} columns.",
+                "columns":         col_stats,
+                "success":         True,
+            }
+
+        for lnk in new_links:
+            if not lnk.get("ai_description"):
+                lnk["ai_description"] = _generic_rel_desc(lnk)
+
+    # ── 6. Build and return response ──────────────────────────────────────────
+    analyses_out: Dict[str, Any] = {}
+    for did in source_datasets:
+        meta = DATASET_METADATA.get(did, {})
+        analyses_out[did] = {
+            "dataset_summary": meta.get("dataset_summary", ""),
+            "columns":         meta.get("columns", all_col_stats.get(did, [])),
+            "success":         True,
+        }
+
+    print(f"✅ /batch-analyze done | ai={ai_success} | datasets={len(analyses_out)} | links={len(new_links)}")
+
+    return {
+        "analyses":      analyses_out,
+        "relationships": DATASET_RELATIONSHIPS,
+        "token_usage":   token_usage,
+        "ai_success":    ai_success,
+    }
+
+
+@app.patch("/relationships/confirm")
+async def confirm_relationships(request: ConfirmRelationshipsRequest):
+    """
+    Apply user Accept/Reject decisions to relationship links.
+    Payload: { decisions: { link_id: "accepted" | "rejected" } }
+    Only 'accepted' links are used by the LLM.
+    After applying decisions, builds merged datasets for every primary dataset
+    involved in an accepted link and registers them in DATASETS.
+    """
+    updated = 0
+    edited_links = request.edited_links or {}
+    for lnk in DATASET_RELATIONSHIPS:
+        link_id = lnk["link_id"]
+        # Apply column overrides from user edits before writing status
+        if link_id in edited_links:
+            override = edited_links[link_id]
+            if override.get("col_a"):
+                lnk["col_a"] = override["col_a"]
+            if override.get("col_b"):
+                lnk["col_b"] = override["col_b"]
+        decision = request.decisions.get(link_id)
+        if decision in ("accepted", "rejected"):
+            lnk["status"] = decision
+            updated += 1
+
+    accepted = [l for l in DATASET_RELATIONSHIPS if l["status"] == "accepted"]
+    print(f"✅ /relationships/confirm: {updated} decisions applied, {len(accepted)} accepted links")
+
+    # --- Build one master merged view via BFS from the most-connected dataset ----
+    merged_datasets_response = []
+
+    if accepted and request.build_merge:
+        # Clear any stale merged entries from a previous confirmation
+        stale_ids = list(MERGED_DATASETS.keys())
+        for stale_id in stale_ids:
+            DATASETS.pop(stale_id, None)
+            DATASET_METADATA.pop(stale_id, None)
+            del MERGED_DATASETS[stale_id]
+
+        # Find the best starting point (most relationship links = central node)
+        primary_id = find_primary_dataset(accepted, DATASETS)
+
+        if primary_id:
+            merged_df, merge_desc = build_merged_dataset(primary_id, accepted, DATASETS)
+
+            if merged_df is not None:
+                # Collect all source dataset names reachable from the accepted links
+                # (preserving encounter order so the primary name comes first)
+                source_names: List[str] = []
+                seen_names: set = set()
+                # Start with primary name
+                for lnk in accepted:
+                    if lnk["dataset_a_id"] == primary_id:
+                        pname = lnk.get("dataset_a_name", primary_id[:8])
+                    elif lnk["dataset_b_id"] == primary_id:
+                        pname = lnk.get("dataset_b_name", primary_id[:8])
+                    else:
+                        continue
+                    if pname not in seen_names:
+                        source_names.append(pname)
+                        seen_names.add(pname)
+                    break
+                # Add all other names from accepted links
+                for lnk in accepted:
+                    for name_key, id_key in [("dataset_a_name", "dataset_a_id"), ("dataset_b_name", "dataset_b_id")]:
+                        n = lnk.get(name_key, lnk.get(id_key, "")[:8])
+                        if n and n not in seen_names:
+                            source_names.append(n)
+                            seen_names.add(n)
+
+                merged_id = str(uuid.uuid4())
+                DATASETS[merged_id] = merged_df
+
+                # Infer dimensions / measures from dtypes
+                dimensions = [
+                    c for c in merged_df.columns
+                    if merged_df[c].dtype == object or str(merged_df[c].dtype).startswith("datetime")
+                ]
+                measures = [
+                    c for c in merged_df.columns
+                    if merged_df[c].dtype in ["int64", "float64"]
+                ]
+                filename = " + ".join(source_names)
+
+                MERGED_DATASETS[merged_id] = {
+                    "primary_id": primary_id,
+                    "source_names": source_names,
+                    "merge_info": merge_desc,
+                }
+
+                # Register metadata so all endpoints that read DATASET_METADATA work
+                DATASET_METADATA[merged_id] = {
+                    "filename": filename,
+                    "success": True,
+                    "dataset_summary": f"Merged view: {filename}. {merge_desc}",
+                    "columns": [
+                        {"name": c, "type": "dimension" if c in dimensions else "measure", "description": ""}
+                        for c in merged_df.columns
+                    ],
+                }
+
+                merged_datasets_response.append({
+                    "id": merged_id,
+                    "filename": filename,
+                    "dimensions": dimensions,
+                    "measures": measures,
+                    "rows": len(merged_df),
+                    "isMerged": True,
+                    "sourceDatasets": source_names,
+                    "merge_info": merge_desc,
+                    "uploadedAt": datetime.utcnow().isoformat(),
+                })
+                print(
+                    f"✅ Master merged dataset '{filename}' → {merged_id[:8]} "
+                    f"({len(merged_df)} rows, {len(merged_df.columns)} cols, "
+                    f"{len(source_names)} source datasets)"
+                )
+            else:
+                print("⚠️ build_merged_dataset returned None — no merge performed")
+
+    return {
+        "updated": updated,
+        "accepted_count": len(accepted),
+        "relationships": DATASET_RELATIONSHIPS,
+        "merged_datasets": merged_datasets_response,
+    }
+
+
+@app.get("/dataset-quality/{dataset_id}")
+async def dataset_quality(dataset_id: str):
+    """
+    Fast quality scan using pandas only — no Gemini, responds in <200ms.
+    Returns missing value warnings, type mismatches, duplicate counts, and per-column stats.
+    """
+    if dataset_id not in DATASETS:
+        raise HTTPException(status_code=404, detail=f"Dataset '{dataset_id}' not found")
+
+    df = DATASETS[dataset_id]
+    issues = []
+
+    for col in df.columns:
+        missing_pct = df[col].isnull().mean() * 100
+        if missing_pct > 5:
+            issues.append({
+                "column": col,
+                "type": "missing",
+                "pct": round(missing_pct, 1),
+                "message": f"{round(missing_pct, 1)}% missing values",
+            })
+        # Detect numeric stored as string
+        if df[col].dtype == object:
+            numeric_ratio = pd.to_numeric(df[col], errors="coerce").notna().mean()
+            if numeric_ratio > 0.8:
+                issues.append({
+                    "column": col,
+                    "type": "type_mismatch",
+                    "hint": "Likely numeric",
+                    "message": f"Column appears numeric but stored as text",
+                })
+
+    # Duplicate detection on a sample to avoid O(n×m) on large files
+    sample = df.head(50_000)
+    dup_count = int(sample.duplicated().sum())
+
+    return {
+        "dataset_id": dataset_id,
+        "rows": len(df),
+        "columns": len(df.columns),
+        "duplicate_rows": dup_count,
+        "issues": issues,
+        "column_stats": [
+            {
+                "name": c,
+                "dtype": str(df[c].dtype),
+                "missing_pct": round(df[c].isnull().mean() * 100, 1),
+                "unique_count": int(df[c].nunique()),
+                "sample_values": [
+                    str(v) for v in df[c].dropna().head(3).tolist()
+                ],
+            }
+            for c in df.columns
+        ],
+    }
+
+
+@app.post("/join-preview")
+async def join_preview(request: JoinPreviewRequest):
+    """
+    Returns the first 20 rows of the proposed join without materializing it.
+    Uses the same BFS merge logic as /relationships/confirm.
+    """
+    if request.primary_dataset_id not in DATASETS:
+        return {"success": False, "rows": [], "columns": [], "description": "Primary dataset not found"}
+
+    merged_df, desc = build_merged_dataset(
+        request.primary_dataset_id,
+        request.confirmed_relationships,
+        DATASETS,
+    )
+
+    if merged_df is None:
+        return {"success": False, "rows": [], "columns": [], "description": "Could not merge datasets with given relationships"}
+
+    preview_df = _clean_dataframe_for_json(merged_df.head(20))
+    return {
+        "success": True,
+        "columns": list(merged_df.columns),
+        "rows": preview_df.to_dict(orient="records"),
+        "total_rows": len(merged_df),
+        "total_columns": len(merged_df.columns),
+        "description": desc,
+    }
 
 
 def _analyze_dataset_with_ai(df: pd.DataFrame, dataset_name: str, api_key: Optional[str] = None, model: str = "gemini-2.5-flash") -> Dict[str, Any]:
@@ -1419,7 +2650,7 @@ Output ONLY valid JSON in this EXACT format:
 }}"""
 
             try:
-                ai_response, token_usage = ai_formulator.run_gemini_with_usage(prompt)
+                ai_response, token_usage = ai_formulator.run_gemini_with_usage(prompt, operation="Dataset Analysis")
                 
                 print(f"🤖 Raw AI Response: {ai_response[:200]}...")
                 
@@ -1560,6 +2791,186 @@ Output ONLY valid JSON in this EXACT format:
         }
 
 
+def _jaccard_similarity(a: str, b: str) -> float:
+    """Compute Jaccard similarity between two strings using character bigrams."""
+    if not a or not b:
+        return 0.0
+    set_a = set(a[i:i+2] for i in range(len(a) - 1)) or {a}
+    set_b = set(b[i:i+2] for i in range(len(b) - 1)) or {b}
+    if not set_a and not set_b:
+        return 1.0
+    intersection = len(set_a & set_b)
+    union = len(set_a | set_b)
+    return intersection / union if union else 0.0
+
+
+def _infer_broad_type(series: pd.Series) -> str:
+    """Return 'numeric', 'datetime', or 'string' for a pandas Series."""
+    if pd.api.types.is_numeric_dtype(series):
+        return "numeric"
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "datetime"
+    return "string"
+
+
+def _infer_cardinality(series_a: pd.Series, series_b: pd.Series) -> str:
+    """Infer relationship cardinality between two join-key columns."""
+    a_dup = series_a.duplicated().any()
+    b_dup = series_b.duplicated().any()
+    if not a_dup and not b_dup:
+        return "1:1"
+    if not a_dup and b_dup:
+        return "1:M"
+    if a_dup and not b_dup:
+        return "M:1"
+    return "M:M"
+
+
+_KEY_PATTERNS = re.compile(r'(^id$|_id$|^id_|_key$|_code$|_ref$|_fk$|_num$|number$)', re.IGNORECASE)
+
+def _is_likely_key_column(col_name: str) -> bool:
+    """Return True if the column name looks like a primary/foreign key."""
+    return bool(_KEY_PATTERNS.search(col_name.strip()))
+
+
+def _detect_relationships(datasets: Dict[str, pd.DataFrame]) -> List[Dict[str, Any]]:
+    """
+    Cross-Dataset Relationship Detector
+
+    For every pair of loaded DataFrames, finds candidate join columns by:
+    1. Exact column-name match (case-insensitive, stripped)
+    2. Fuzzy name match (bigram Jaccard similarity > 0.80)
+    3. Value overlap >= 50% when types are compatible
+
+    Returns a list of RelationshipLink dicts with status 'pending_confirmation'.
+    """
+    links: List[Dict[str, Any]] = []
+    ids = list(datasets.keys())
+
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            id_a, id_b = ids[i], ids[j]
+            df_a, df_b = datasets[id_a], datasets[id_b]
+            name_a = DATASET_METADATA.get(id_a, {}).get("filename", id_a[:8])
+            name_b = DATASET_METADATA.get(id_b, {}).get("filename", id_b[:8])
+
+            # Skip pairs that are the same file uploaded twice under different UUIDs
+            if name_a == name_b:
+                continue
+
+            for col_a in df_a.columns:
+                for col_b in df_b.columns:
+                    # Only emit a link if at least one column looks like an FK/PK.
+                    # This suppresses spurious matches on non-key columns
+                    # (e.g. name→name, email→email, city→city).
+                    if not (_is_likely_key_column(col_a) or _is_likely_key_column(col_b)):
+                        continue
+
+                    type_a = _infer_broad_type(df_a[col_a])
+                    type_b = _infer_broad_type(df_b[col_b])
+
+                    # Skip incompatible type pairings
+                    if type_a != type_b:
+                        continue
+
+                    norm_a = col_a.lower().strip()
+                    norm_b = col_b.lower().strip()
+
+                    match_type = None
+                    overlap_pct = 0.0
+
+                    if norm_a == norm_b:
+                        match_type = "exact_name"
+                    else:
+                        sim = _jaccard_similarity(norm_a, norm_b)
+                        if sim >= 0.80:
+                            match_type = "fuzzy_name"
+
+                    # Value overlap check for string/numeric columns
+                    if type_a in ("string", "numeric"):
+                        try:
+                            vals_a = set(df_a[col_a].dropna().astype(str))
+                            vals_b = set(df_b[col_b].dropna().astype(str))
+                            if vals_a:
+                                overlap_pct = len(vals_a & vals_b) / len(vals_a)
+                            if match_type is None and overlap_pct >= 0.5:
+                                match_type = "value_overlap"
+                        except Exception:
+                            overlap_pct = 0.0
+
+                    if match_type is None:
+                        continue
+
+                    # Compute confidence
+                    if match_type == "exact_name" and overlap_pct >= 0.8:
+                        confidence = "high"
+                    elif match_type == "exact_name" or overlap_pct >= 0.6:
+                        confidence = "medium"
+                    else:
+                        confidence = "low"
+
+                    cardinality = _infer_cardinality(df_a[col_a], df_b[col_b])
+
+                    # Canonicalise direction: PK side is always dataset_a.
+                    # Flipping M:1 to 1:M ensures bidirectional duplicates share
+                    # the same dedup key and only one entry survives.
+                    emit_id_a, emit_id_b     = id_a,   id_b
+                    emit_name_a, emit_name_b = name_a, name_b
+                    emit_col_a, emit_col_b   = col_a,  col_b
+                    if cardinality == "M:1":
+                        emit_id_a,   emit_id_b   = id_b,   id_a
+                        emit_name_a, emit_name_b = name_b, name_a
+                        emit_col_a,  emit_col_b  = col_b,  col_a
+                        cardinality = "1:M"
+
+                    links.append({
+                        "link_id": str(uuid.uuid4()),
+                        "dataset_a_id": emit_id_a,
+                        "dataset_a_name": emit_name_a,
+                        "col_a": emit_col_a,
+                        "dataset_b_id": emit_id_b,
+                        "dataset_b_name": emit_name_b,
+                        "col_b": emit_col_b,
+                        "match_type": match_type,
+                        "overlap_pct": round(overlap_pct, 4),
+                        "cardinality": cardinality,
+                        "confidence": confidence,
+                        "ai_description": "",
+                        "status": "pending_confirmation",
+                    })
+
+    # Deduplicate: if exact_name and value_overlap found for same column pair, keep exact_name.
+    # Use filenames (not UUIDs) so repeated uploads of the same file don't produce duplicates.
+    seen: set = set()
+    deduped: List[Dict[str, Any]] = []
+    for lnk in sorted(links, key=lambda x: 0 if x["match_type"] == "exact_name" else 1):
+        key = (lnk["dataset_a_name"], lnk["col_a"], lnk["dataset_b_name"], lnk["col_b"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(lnk)
+
+    # Keep only the single best (canonical) link per dataset pair.
+    # Ranking: exact_name > fuzzy_name > value_overlap, then highest overlap_pct.
+    # Use filenames as the pair key so multiple uploads of the same file collapse to one.
+    MATCH_RANK = {"exact_name": 0, "fuzzy_name": 1, "value_overlap": 2}
+    best_per_pair: Dict[tuple, Dict[str, Any]] = {}
+
+    for lnk in deduped:
+        pair_key = (lnk["dataset_a_name"], lnk["dataset_b_name"])
+        existing = best_per_pair.get(pair_key)
+        if existing is None:
+            best_per_pair[pair_key] = lnk
+        else:
+            cur_rank = MATCH_RANK.get(existing["match_type"], 9)
+            new_rank = MATCH_RANK.get(lnk["match_type"], 9)
+            if new_rank < cur_rank or (
+                new_rank == cur_rank and lnk["overlap_pct"] > existing["overlap_pct"]
+            ):
+                best_per_pair[pair_key] = lnk
+
+    return list(best_per_pair.values())
+
+
 def _generate_chart_title(dimensions: List[str], measures: List[str], agg: str = "sum") -> str:
     """
     Chart Title Generator
@@ -1675,7 +3086,8 @@ async def create_chart(spec: ChartCreate):
         "statistics": chart_statistics,  # Statistical metadata for visual enhancements
         "originalMeasure": spec.originalMeasure,  # Store original measure for histograms
         "filters": spec.filters or {},  # Store filters for persistence and reapplication
-        "sort_order": spec.sort_order or "dataset"  # Store sort order for persistence
+        "sort_order": spec.sort_order or "dataset",  # Store sort order for persistence
+        "is_derived": spec.is_derived,  # True for query-engine charts with pre-joined data
     }
     return CHARTS[chart_id]
 
@@ -1829,9 +3241,23 @@ async def fuse(req: FuseRequest):
         raise HTTPException(status_code=404, detail="One or both charts not found")
 
     c1, c2 = CHARTS[req.chart1_id], CHARTS[req.chart2_id]
-    ds_id = c1["dataset_id"]
-    if ds_id != c2["dataset_id"]:
+
+    # Resolve the effective dataset ID for each chart.
+    # Smart charts store an ephemeral dataset_id (per-chart unique) AND a
+    # source_dataset_id pointing back to the original raw CSV.  Use the
+    # source ID so that two smart charts derived from the same CSV can fuse.
+    def _effective_ds_id(chart: dict) -> str:
+        return chart.get("source_dataset_id") or chart["dataset_id"]
+
+    ds_id_c1 = _effective_ds_id(c1)
+    ds_id_c2 = _effective_ds_id(c2)
+
+    if ds_id_c1 != ds_id_c2:
         raise HTTPException(status_code=400, detail="Charts must come from the same dataset for fusion in this demo")
+
+    ds_id = ds_id_c1
+    if ds_id not in DATASETS:
+        raise HTTPException(status_code=404, detail=f"Source dataset {ds_id[:8]} not found")
     df = DATASETS[ds_id]
 
     # Note: Helper functions _is_measure_histogram, _is_dimension_count moved to module level
@@ -2168,7 +3594,7 @@ OR
             raise HTTPException(status_code=400, detail="API key required for AI-assisted merge")
         
         ai_formulator = GeminiDataFormulator(api_key=req.api_key, model=req.model)
-        response_text, token_usage = ai_formulator.run_gemini_with_usage(prompt)
+        response_text, token_usage = ai_formulator.run_gemini_with_usage(prompt, operation="AI-Assisted Fusion")
         
         print(f"🤖 Raw AI Response: {response_text[:200]}...")
         
@@ -2564,8 +3990,15 @@ async def ai_explore_data(request: AIExploreRequest):
         else:
             print(f"📋 No dataset metadata found for {dataset_id[:8]}... - using basic analysis")
         
-        # Run AI analysis on scoped data
-        ai_result = ai_formulator.get_text_analysis(request.user_query, analysis_data, dataset_id, dataset_metadata)
+        # Run AI analysis on scoped data (pass confirmed cross-dataset schema if present)
+        ai_result = ai_formulator.get_text_analysis(
+            request.user_query,
+            analysis_data,
+            dataset_id,
+            dataset_metadata,
+            confirmed_relationships=request.confirmed_relationships,
+            all_datasets=DATASETS,
+        )
         
         print(f"✅ AI Analysis completed successfully!")
         print(f"   Result length: {len(ai_result.get('answer', ''))}")
@@ -2580,6 +4013,7 @@ async def ai_explore_data(request: AIExploreRequest):
             "query": request.user_query,
             "dataset_info": f"Dataset: {len(analysis_data)} rows, {len(analysis_data.columns)} columns",
             "scope_info": scope_info,  # NEW: Scope metadata
+            "merge_info": ai_result.get("merge_info"),  # Cross-dataset join description if applied
             "code_steps": ai_result.get("code_steps", []),
             "reasoning_steps": ai_result.get("reasoning_steps", []),
             "tabular_data": ai_result.get("tabular_data", []),
@@ -2768,7 +4202,7 @@ Output ONLY valid JSON in this EXACT format:
 }}"""
 
             try:
-                ai_response, token_usage = ai_formulator.run_gemini_with_usage(prompt)
+                ai_response, token_usage = ai_formulator.run_gemini_with_usage(prompt, operation="Dataset Analysis")
                 
                 print(f"🤖 Raw AI Response: {ai_response[:200]}...")
                 
@@ -2964,6 +4398,13 @@ async def analyze_dataset(request: DatasetAnalysisRequest):
             model=request.model
         )
         
+        # Preserve upload-time fields (filename, timestamp, file_type) that
+        # would otherwise be lost when we overwrite DATASET_METADATA.
+        existing_meta = DATASET_METADATA.get(request.dataset_id, {})
+        for key in ("filename", "upload_timestamp", "file_type"):
+            if key in existing_meta:
+                analysis_result[key] = existing_meta[key]
+
         # Store analysis results for future use
         DATASET_METADATA[request.dataset_id] = analysis_result
         
@@ -3217,7 +4658,7 @@ OUTPUT FORMAT (JSON only):
 FOCUS: Recommend the optimal variables that best answer the user's question, not chart types."""
 
         try:
-            ai_response, token_usage = ai_formulator.run_gemini_with_usage(prompt)
+            ai_response, token_usage = ai_formulator.run_gemini_with_usage(prompt, operation="Chart Suggestions")
             
             print(f"🤖 Raw AI Response: {ai_response[:200]}...")
             
@@ -3506,7 +4947,7 @@ Use simple, clear language. Focus on describing what the data shows. Include spe
 Keep insights CONCISE - provide only 2-3 bullet points.
 Provide ONLY the bullet points, no headers or additional text."""
 
-    response, token_usage = formulator.run_gemini_with_usage(prompt)
+    response, token_usage = formulator.run_gemini_with_usage(prompt, operation="Chart Insights")
     
     # Parse response based on mode
     context_insights = ""
@@ -3828,7 +5269,9 @@ async def agent_query(request: AgentQueryRequest):
                 dataset=dataset,
                 dataset_id=request.dataset_id,
                 dataset_metadata=dataset_metadata,
-                skip_refinement=skip_refinement
+                skip_refinement=skip_refinement,
+                confirmed_relationships=request.confirmed_relationships,
+                all_datasets=DATASETS,
             )
             
             print(f"✅ Ask mode AI query completed")
@@ -3876,7 +5319,8 @@ async def agent_query(request: AgentQueryRequest):
                     "code_steps": ai_result.get("code_steps", []),
                     "tabular_data": ai_result.get("tabular_data", []),
                     "has_table": ai_result.get("has_table", False),
-                    "success": ai_result.get("success", True)
+                    "success": ai_result.get("success", True),
+                    "merge_info": ai_result.get("merge_info"),
                 }
             }
         
@@ -3891,7 +5335,9 @@ async def agent_query(request: AgentQueryRequest):
             dataset_id=request.dataset_id,
             dataset_metadata=dataset_metadata,
             mode=request.mode,
-            conversation_history=history
+            conversation_history=history,
+            confirmed_relationships=request.confirmed_relationships,
+            all_datasets=DATASETS,
         )
         
         print(f"✅ Agent generated {len(result.get('actions', []))} actions")
@@ -3984,6 +5430,34 @@ async def clear_conversation(session_id: str):
 
 
 # =============================================================================
+# Shared helper — pre-compute measure statistics for Unified Agent
+# =============================================================================
+
+def _compute_measure_stats(scope_ids: List[str]) -> Dict[str, Any]:
+    """
+    Pre-compute sum/mean/min/max/count for every numeric column across all
+    scope datasets. Results are passed to unify_and_analyse() so the LLM can
+    assign KPI values without making extra API calls.
+    """
+    stats: Dict[str, Any] = {}
+    for did in scope_ids:
+        df = DATASETS.get(did)
+        if df is None:
+            continue
+        for col in df.select_dtypes(include=["number"]).columns:
+            key = col  # use raw column name; caller resolves collisions if needed
+            if key not in stats:
+                stats[key] = {
+                    "sum":   float(df[col].sum()),
+                    "mean":  float(df[col].mean()),
+                    "min":   float(df[col].min()),
+                    "max":   float(df[col].max()),
+                    "count": int(df[col].count()),
+                }
+    return stats
+
+
+# =============================================================================
 # SSE Streaming Agent Endpoint
 # Real-time token streaming for the new AgentSidebarPanel
 # =============================================================================
@@ -4044,7 +5518,9 @@ async def agent_stream(request: AgentQueryRequest):
                     dataset=dataset,
                     dataset_id=request.dataset_id,
                     dataset_metadata=dataset_metadata,
-                    skip_refinement=skip_refinement
+                    skip_refinement=skip_refinement,
+                    confirmed_relationships=request.confirmed_relationships,
+                    all_datasets=DATASETS,
                 )
 
                 answer = ai_result.get("answer", "")
@@ -4075,7 +5551,8 @@ async def agent_stream(request: AgentQueryRequest):
                     "python_code": ai_result.get("code_steps", [""])[0] if ai_result.get("code_steps") else "",
                     "tabular_data": ai_result.get("tabular_data", []),
                     "has_table": ai_result.get("has_table", False),
-                    "success": ai_result.get("success", True)
+                    "success": ai_result.get("success", True),
+                    "merge_info": ai_result.get("merge_info"),
                 }
 
                 yield f"event: actions\ndata: {json.dumps({'actions': [{'type': 'ai_query', 'query': request.user_query, 'position': 'center', 'reasoning': 'Ask mode'}], 'reasoning': 'Direct analysis', 'ask_mode_result': ask_result})}\n\n"
@@ -4102,16 +5579,18 @@ async def agent_stream(request: AgentQueryRequest):
                 dataset_id=request.dataset_id,
                 dataset_metadata=dataset_metadata,
                 mode=request.mode,
-                conversation_history=history
+                conversation_history=history,
+                confirmed_relationships=request.confirmed_relationships,
+                all_datasets=DATASETS,
             )
 
             # Stream reasoning text
             reasoning = result.get("reasoning", "")
             if reasoning:
-                chunk_size = 150
+                chunk_size = 80
                 for i in range(0, len(reasoning), chunk_size):
                     yield f"event: token\ndata: {json.dumps({'text': reasoning[i:i+chunk_size]})}\n\n"
-                    await asyncio.sleep(0.015)
+                    await asyncio.sleep(0.04)
 
             # Stream action summaries one by one
             actions = result.get("actions", [])
@@ -4132,7 +5611,11 @@ async def agent_stream(request: AgentQueryRequest):
                 history = history[-(CONVERSATION_MAX_TURNS * 2):]
             CONVERSATION_STORE[session_id] = history
 
-            yield f"event: actions\ndata: {json.dumps({'actions': actions, 'reasoning': reasoning})}\n\n"
+            actions_payload = {'actions': actions, 'reasoning': reasoning}
+            if result.get('merged_dataset_id'):
+                actions_payload['merged_dataset_id'] = result['merged_dataset_id']
+                actions_payload['merge_info'] = result.get('merge_info')
+            yield f"event: actions\ndata: {json.dumps(actions_payload)}\n\n"
             yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'token_usage': result.get('token_usage', {})})}\n\n"
 
         except Exception as e:
@@ -4149,6 +5632,394 @@ async def agent_stream(request: AgentQueryRequest):
             "Connection": "keep-alive",
         }
     )
+
+
+# =============================================================================
+# Unified Super Agent Endpoint
+# Single-LLM-call objective decomposer → pandas execution → dashboard
+# =============================================================================
+
+@app.post("/unified-agent")
+async def unified_agent(request: AgentQueryRequest):
+    """
+    Unified Super Agent — takes a high-level business objective and:
+      1. Calls unify_and_analyse() — 1 LLM call — to decompose into analyses + KPIs
+      2. Executes each pandas code block natively (no extra LLM calls)
+      3. Registers results as ephemeral datasets
+      4. Emits a create_dashboard SSE actions event that the existing frontend handles
+
+    SSE event types mirror /agent-stream: token, actions, done, error.
+    """
+    import uuid as _uuid
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        try:
+            session_id = request.session_id or str(_uuid.uuid4())
+
+            if not request.api_key:
+                yield f"event: error\ndata: {json.dumps({'error': 'API key required'})}\n\n"
+                return
+
+            # ── 1. Resolve scope datasets ─────────────────────────────────────
+            scope_ids = [did for did in DATASETS if did not in MERGED_DATASETS]
+            if not scope_ids:
+                yield f"event: error\ndata: {json.dumps({'error': 'No datasets loaded. Upload CSV files first.'})}\n\n"
+                return
+
+            yield f"event: token\ndata: {json.dumps({'text': '✦ Reading your data...'})}\n\n"
+            await asyncio.sleep(0)
+
+            # ── 2. Build schema context + measure stats (no LLM) ─────────────
+            schema        = build_schema_context(scope_ids, DATASETS, DATASET_METADATA, DATASET_RELATIONSHIPS)
+            measure_stats = _compute_measure_stats(scope_ids)
+
+            # ── 3. Pre-compute the BFS join NOW so the LLM sees the real column
+            #       names that will exist in `df` at code-execution time.
+            #       Doing this before the LLM call is the key fix for pandas
+            #       KeyErrors caused by join-suffix column name mismatches.
+            all_rels = [
+                r for r in DATASET_RELATIONSHIPS
+                if r.get("dataset_a_id") in scope_ids
+                and r.get("dataset_b_id") in scope_ids
+                and r.get("status") == "accepted"
+            ]
+
+            if len(scope_ids) == 1 or not all_rels:
+                working_df   = DATASETS[scope_ids[0]]
+                join_desc    = "single table — no join"
+                needed_ids   = scope_ids
+            else:
+                primary_id   = find_primary_dataset(all_rels, DATASETS) or scope_ids[0]
+                merged_df, join_desc = build_merged_dataset(primary_id, all_rels, DATASETS)
+                working_df   = merged_df if merged_df is not None else DATASETS[primary_id]
+                needed_ids   = scope_ids  # all scope datasets used; refined below if LLM narrows
+
+            # Actual column names in the merged DataFrame — passed to the LLM prompt
+            merged_columns = list(working_df.columns)
+
+            yield f"event: token\ndata: {json.dumps({'text': '✦ Planning your analysis...'})}\n\n"
+            await asyncio.sleep(0)
+
+            # ── 4. Single LLM call — now armed with real merged column names ──
+            formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
+            result = formulator.unify_and_analyse(
+                objective=request.user_query,
+                schema_context=schema,
+                all_datasets=DATASETS,
+                dataset_metadata=DATASET_METADATA,
+                measure_stats=measure_stats,
+                merged_columns=merged_columns,
+            )
+
+            if not result:
+                yield f"event: error\ndata: {json.dumps({'error': 'Analysis planning failed. Try rephrasing your objective.'})}\n\n"
+                return
+
+            token_usage = result.get("token_usage", {})
+            analyses    = result.get("analyses", [])
+
+            # Refine needed_ids from the LLM's table selection (best-effort)
+            llm_tables = [did for did in result.get("tables", []) if did in DATASETS and did not in MERGED_DATASETS]
+            if llm_tables:
+                needed_ids = llm_tables
+
+            yield f"event: token\ndata: {json.dumps({'text': f'✦ Running {len(analyses)} analyses...'})}\n\n"
+            await asyncio.sleep(0)
+
+            # ── 5a. working_df already computed above; re-join only if the LLM
+            #        chose a narrower table set than the full scope ─────────────
+            if set(needed_ids) != set(scope_ids) and len(needed_ids) > 0:
+                narrowed_rels = [
+                    r for r in DATASET_RELATIONSHIPS
+                    if r.get("dataset_a_id") in needed_ids
+                    and r.get("dataset_b_id") in needed_ids
+                    and r.get("status") == "accepted"
+                ]
+                if len(needed_ids) == 1 or not narrowed_rels:
+                    working_df = DATASETS[needed_ids[0]]
+                    join_desc  = "single table — no join"
+                else:
+                    pid = find_primary_dataset(narrowed_rels, DATASETS) or needed_ids[0]
+                    mdf, jd = build_merged_dataset(pid, narrowed_rels, DATASETS)
+                    if mdf is not None:
+                        working_df = mdf
+                        join_desc  = jd
+
+            # ── 5. Execute each pandas code block natively (no LLM) ──────────
+            dashboard_elements = []
+            analyses_detail: List[Dict[str, Any]] = []
+
+            for i, analysis in enumerate(analyses):
+                q_code   = analysis.get("pandas_code", "")
+                q_label  = analysis.get("question", f"Analysis {i+1}")
+                insight  = analysis.get("insight_text", "")
+                dims     = analysis.get("dimensions", [])
+                measures = analysis.get("measures", [])
+                chart_t  = analysis.get("chart_type", "bar")
+
+                if not q_code:
+                    analyses_detail.append({
+                        "question":    q_label,
+                        "insight":     insight,
+                        "python_code": q_code,
+                        "chart_type":  chart_t,
+                        "success":     False,
+                    })
+                    continue
+
+                exec_result = formulator._execute_pandas_code(q_code, working_df, q_label)
+                exec_success = exec_result.get("success") and exec_result.get("result_type") == "table"
+
+                # Ground the insight text with actual top-result values (no extra LLM call)
+                grounded_insight = insight
+                if exec_success:
+                    result_data = exec_result.get("result_data", [])
+                    if result_data:
+                        top_row = result_data[0]
+                        data_summary = ", ".join(
+                            f"{k}={v}" for k, v in list(top_row.items())[:3]
+                        )
+                        grounded_insight = f"{insight} (Top result: {data_summary})" if insight else data_summary
+
+                if exec_success:
+                    result_data = exec_result.get("result_data", [])
+                    result_cols = exec_result.get("result_columns") or (list(result_data[0].keys()) if result_data else dims + measures)
+
+                    # Register as ephemeral dataset so /charts can reference it
+                    ds_id  = str(uuid.uuid4())
+                    result_df = pd.DataFrame(result_data, columns=result_cols)
+                    DATASETS[ds_id] = result_df
+                    DATASET_METADATA[ds_id] = {
+                        "filename":       f"unified_{ds_id[:8]}",
+                        "dataset_name":   q_label[:60],
+                        "dataset_summary": q_label,
+                        "columns": [
+                            {"name": c, "type": _infer_col_type(c, result_df, {}), "description": ""}
+                            for c in result_df.columns
+                        ],
+                        "is_ephemeral": True,
+                        "success": True,
+                    }
+
+                    # Resolve actual column names from result_df for chart reliability
+                    actual_dims = [c for c in dims if c in result_df.columns] or [result_df.columns[0]] if len(result_df.columns) > 0 else dims
+                    actual_meas = [c for c in measures if c in result_df.columns] or ([result_df.columns[1]] if len(result_df.columns) > 1 else measures)
+
+                    dashboard_elements.append({
+                        "type":       "chart",
+                        "dimensions": actual_dims,
+                        "measures":   actual_meas,
+                        "chartType":  chart_t,
+                        "datasetId":  ds_id,
+                        "reasoning":  grounded_insight or q_label,
+                        "agg":        "sum",
+                    })
+
+                # Always add insight text card with the grounded insight
+                if grounded_insight:
+                    dashboard_elements.append({
+                        "type":      "insight",
+                        "text":      f"**{q_label}**\n{grounded_insight}",
+                        "reasoning": grounded_insight or q_label,
+                    })
+
+                # Collect per-analysis detail for the sidebar (includes python code)
+                analyses_detail.append({
+                    "question":    q_label,
+                    "insight":     grounded_insight,
+                    "python_code": q_code,
+                    "chart_type":  chart_t,
+                    "success":     exec_success,
+                })
+
+                yield f"event: token\ndata: {json.dumps({'text': f' ✓ {q_label[:50]}'})}\n\n"
+                await asyncio.sleep(0)
+
+            # ── 6. Prepend KPI cards (values from pre-computed stats, no LLM) ─
+            kpi_elements = []
+            for kpi in result.get("kpis", []):
+                kpi_elements.append({
+                    "type":            "kpi",
+                    "query":           kpi.get("label", "Metric"),
+                    "value":           kpi.get("value", 0),
+                    "formatted_value": kpi.get("formatted", str(kpi.get("value", 0))),
+                    "reasoning":       kpi.get("label", "Key metric"),
+                })
+            dashboard_elements = kpi_elements + dashboard_elements
+
+            if not dashboard_elements:
+                yield f"event: error\ndata: {json.dumps({'error': 'No analyses produced chart-ready data. Try a more specific objective.'})}\n\n"
+                return
+
+            # ── 7. Emit create_dashboard action (reuses existing frontend path) ─
+            merge_info_str = join_desc if join_desc != "single table — no join" else None
+            actions_payload = {
+                "actions": [{
+                    "type":             "create_dashboard",
+                    "dashboardType":    "unified",
+                    "layoutStrategy":   result.get("layout", "kpi-dashboard"),
+                    "elements":         dashboard_elements,
+                    "reasoning":        result.get("objective_summary", request.user_query),
+                    "analyses_detail":  analyses_detail,
+                    "includeInsights":  False,
+                }],
+                "reasoning":  result.get("objective_summary", request.user_query),
+                "merge_info": merge_info_str,
+            }
+
+            yield f"event: actions\ndata: {json.dumps(actions_payload)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'token_usage': token_usage})}\n\n"
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+    )
+
+
+# =============================================================================
+# Smart Chart — single-chart variant of the Unified pipeline
+# =============================================================================
+
+@app.post("/smart-chart")
+async def smart_chart(request: SmartChartRequest):
+    """
+    Smart Chart Endpoint — produces exactly ONE chart from a natural language request.
+
+    Unlike /unified-agent (which always generates a full dashboard), this endpoint:
+      1. Calls generate_single_chart_code() — 1 LLM call — to write focused pandas code
+      2. Executes the code natively (no extra LLM calls)
+      3. Registers the result as an ephemeral dataset
+      4. Runs /charts aggregation on the shaped data
+      5. Returns a standard chart object compatible with figureFromPayload()
+
+    The frontend can use this response exactly like it uses POST /charts — the chart
+    object has the same {chart_id, table, dimensions, measures, statistics, title} shape.
+    """
+    if not request.api_key:
+        raise HTTPException(status_code=400, detail="API key required")
+
+    # ── 1. Resolve scope datasets ─────────────────────────────────────────
+    scope_ids = [did for did in DATASETS if did not in MERGED_DATASETS]
+    if not scope_ids:
+        raise HTTPException(status_code=400, detail="No datasets loaded. Upload CSV files first.")
+
+    # ── 2. Pre-join datasets (same logic as /unified-agent) ───────────────
+    all_rels = [
+        r for r in DATASET_RELATIONSHIPS
+        if r.get("dataset_a_id") in scope_ids
+        and r.get("dataset_b_id") in scope_ids
+        and r.get("status") == "accepted"
+    ]
+
+    if len(scope_ids) == 1 or not all_rels:
+        source_dataset_id = scope_ids[0]
+        working_df = DATASETS[source_dataset_id]
+    else:
+        primary_id = find_primary_dataset(all_rels, DATASETS) or scope_ids[0]
+        source_dataset_id = primary_id
+        merged_df, _ = build_merged_dataset(primary_id, all_rels, DATASETS)
+        working_df = merged_df if merged_df is not None else DATASETS[primary_id]
+
+    merged_columns = list(working_df.columns)
+
+    # ── 3. Build schema context ───────────────────────────────────────────
+    schema = build_schema_context(scope_ids, DATASETS, DATASET_METADATA, DATASET_RELATIONSHIPS)
+
+    # ── 4. Single LLM call ────────────────────────────────────────────────
+    formulator = GeminiDataFormulator(api_key=request.api_key, model=request.model)
+    result = formulator.generate_single_chart_code(
+        user_request=request.user_request,
+        schema_context=schema,
+        all_datasets=DATASETS,
+        dataset_metadata=DATASET_METADATA,
+        merged_columns=merged_columns,
+    )
+
+    if not result:
+        raise HTTPException(status_code=500, detail="Chart code generation failed. Try rephrasing your request.")
+
+    pandas_code = result["pandas_code"]
+    dims        = result["dimensions"]
+    measures    = result["measures"]
+    chart_type  = result["chart_type"]
+    title       = result["title"]
+
+    # ── 5. Execute pandas code natively ───────────────────────────────────
+    exec_result = formulator._execute_pandas_code(pandas_code, working_df, request.user_request)
+
+    if not exec_result.get("success") or exec_result.get("result_type") != "table":
+        error_hint = exec_result.get("answer", "Code execution returned no tabular result.")
+        raise HTTPException(status_code=422, detail=f"Pandas execution failed: {error_hint}")
+
+    result_data = exec_result.get("result_data", [])
+    if not result_data:
+        raise HTTPException(status_code=422, detail="Query produced an empty result set.")
+
+    result_cols = exec_result.get("result_columns") or list(result_data[0].keys())
+
+    # ── 6. Register as ephemeral dataset ──────────────────────────────────
+    ds_id = str(uuid.uuid4())
+    result_df = pd.DataFrame(result_data, columns=result_cols)
+    DATASETS[ds_id] = result_df
+    DATASET_METADATA[ds_id] = {
+        "filename":        f"smart_{ds_id[:8]}",
+        "dataset_name":    title[:60],
+        "dataset_summary": title,
+        "columns": [
+            {"name": c, "type": _infer_col_type(c, result_df, {}), "description": ""}
+            for c in result_df.columns
+        ],
+        "is_ephemeral": True,
+        "success": True,
+    }
+
+    # Resolve actual dim/measure names against result_df columns
+    actual_dims = [c for c in dims if c in result_df.columns] or (
+        [result_df.columns[0]] if len(result_df.columns) > 0 else dims
+    )
+    actual_meas = [c for c in measures if c in result_df.columns] or (
+        [result_df.columns[1]] if len(result_df.columns) > 1 else measures
+    )
+
+    # ── 7. Run /charts aggregation on the already-shaped data ─────────────
+    # Pass the pre-computed table so _agg() is skipped (data is already shaped)
+    row_limited = result_data[:500]
+    table_df = pd.DataFrame(row_limited, columns=result_cols)
+    chart_statistics = _calculate_chart_statistics(table_df, actual_meas)
+
+    chart_id = str(uuid.uuid4())
+    CHARTS[chart_id] = {
+        "chart_id":       chart_id,
+        "dataset_id":     ds_id,
+        "dimensions":     actual_dims,
+        "measures":       actual_meas,
+        "agg":            "sum",
+        "title":          title,
+        "table":          row_limited,
+        "statistics":     chart_statistics,
+        "originalMeasure": None,
+        "filters":        {},
+        "sort_order":     "dataset",
+        "is_derived":        True,
+        "chart_type_hint":   chart_type,
+        "smart_chart":       True,
+        "source_dataset_id": source_dataset_id,  # original raw dataset — used by /fuse
+        "pandas_code":       pandas_code,
+        "token_usage":       result.get("token_usage", {}),
+    }
+
+    print(f"✦ /smart-chart: chart_id={chart_id}, dims={actual_dims}, measures={actual_meas}, type={chart_type}, rows={len(row_limited)}")
+    return CHARTS[chart_id]
 
 
 # =============================================================================
@@ -4362,4 +6233,223 @@ async def get_snapshot_from_gist(gist_id: str):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to load snapshot: {str(e)}")
+
+
+# -----------------------
+# Query Execution Engine
+# -----------------------
+
+class QueryEngineRequest(BaseModel):
+    user_query: str
+    dataset_ids: Optional[List[str]] = None  # None = use all uploaded datasets
+    api_key: Optional[str] = None
+    model: str = "gemini-2.5-flash"
+
+
+@app.post("/query-engine")
+async def query_engine_endpoint(request: QueryEngineRequest):
+    """
+    Lazy schema-aware query execution engine.
+
+    Pipeline:
+      1. Resolve scope (which datasets to work with)
+      2. build_schema_context() — compact schema, no LLM
+      3. plan_query()          — LLM Call 1: which tables + join path
+      4. build_merged_dataset()— deterministic BFS join (no LLM)
+      5. get_text_analysis()   — LLM Call 2: pandas code gen + execution
+      6. Return typed result   — table | value | text
+    """
+    try:
+        # ── 1. Resolve scope ──────────────────────────────────────────────────
+        scope_ids = request.dataset_ids or list(DATASETS.keys())
+        # Filter out merged pseudo-datasets (they live in MERGED_DATASETS)
+        scope_ids = [did for did in scope_ids if did in DATASETS and did not in MERGED_DATASETS]
+
+        if not scope_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="No valid datasets available. Please upload CSV files first."
+            )
+
+        print(f"\n🔍 /query-engine: '{request.user_query}' | scope: {len(scope_ids)} dataset(s)")
+
+        # ── 2. Build compact schema context ──────────────────────────────────
+        schema = build_schema_context(scope_ids, DATASETS, DATASET_METADATA, DATASET_RELATIONSHIPS)
+
+        # ── 3. Single-call plan + code generation (LLM Call 1) ───────────────
+        #    Falls back transparently to the original 2-call path on any failure.
+        formulator = GeminiDataFormulator(api_key=request.api_key)
+
+        pag = formulator.plan_and_generate(
+            request.user_query,
+            schema,
+            all_datasets=DATASETS,
+            dataset_metadata=DATASET_METADATA,
+        )
+
+        single_call_ok  = bool(pag and pag.get("pandas_code"))
+        pandas_code_pag = pag.get("pandas_code", "") if single_call_ok else ""
+        pag_token_usage = pag.get("token_usage", {}) if single_call_ok else {}
+
+        if single_call_ok:
+            plan        = pag
+            needed_ids  = [did for did in pag.get("tables", []) if did in DATASETS and did not in MERGED_DATASETS]
+            print(f"✅ Single-call path active")
+        else:
+            # ── 3-fallback. 2-call path ──────────────────────────────────────
+            print("⚠️  Falling back to 2-call path (plan_query + get_text_analysis)")
+            plan = formulator.plan_query(request.user_query, schema)
+            needed_ids = [did for did in plan.get("tables", []) if did in DATASETS and did not in MERGED_DATASETS]
+
+        if not needed_ids:
+            needed_ids = scope_ids
+            print("⚠️  Planner returned no valid IDs — using all scope datasets")
+
+        print(f"📋 Tables selected: {[DATASET_METADATA.get(d, {}).get('dataset_name', d[:8]) for d in needed_ids]}")
+
+        # ── 4. Build minimal merged dataset — deterministic BFS (unchanged) ──
+        filtered_rels = [
+            r for r in DATASET_RELATIONSHIPS
+            if r.get("dataset_a_id") in needed_ids
+            and r.get("dataset_b_id") in needed_ids
+            and r.get("status") == "accepted"
+        ]
+
+        if len(needed_ids) == 1 or not filtered_rels:
+            primary_id  = needed_ids[0]
+            working_df  = DATASETS[primary_id]
+            join_desc   = "single table — no join"
+            print(f"📊 Single-table mode: {DATASET_METADATA.get(primary_id, {}).get('dataset_name', primary_id[:8])}")
+        else:
+            primary_id = find_primary_dataset(filtered_rels, DATASETS) or needed_ids[0]
+            merged_df, join_desc = build_merged_dataset(primary_id, filtered_rels, DATASETS)
+            if merged_df is not None:
+                working_df = merged_df
+                print(f"📊 Merged dataset: {working_df.shape[0]} rows × {working_df.shape[1]} cols | {join_desc}")
+            else:
+                working_df = DATASETS[primary_id]
+                join_desc  = f"join failed — fallback to {DATASET_METADATA.get(primary_id, {}).get('dataset_name', primary_id[:8])}"
+                print(f"⚠️  Merge failed, falling back to primary dataset")
+
+        # ── 5. Combine metadata across selected tables (unchanged) ────────────
+        summaries = []
+        all_col_meta: List[Dict[str, Any]] = []
+        for did in needed_ids:
+            meta = DATASET_METADATA.get(did, {})
+            if meta.get("dataset_summary"):
+                summaries.append(meta["dataset_summary"])
+            cols = meta.get("columns") or []
+            all_col_meta.extend(cols)
+
+        combined_meta = {
+            "dataset_summary": " | ".join(summaries) if summaries else "",
+            "columns": all_col_meta,
+            "success": True,
+        }
+
+        # ── 6. Execute query ──────────────────────────────────────────────────
+        if single_call_ok:
+            # Single-call path: run LLM-generated code directly, no second LLM call
+            exec_result = formulator._execute_pandas_code(
+                pandas_code_pag, working_df, request.user_query
+            )
+            exec_result["code_steps"]  = [pandas_code_pag]
+            exec_result["token_usage"] = pag_token_usage
+            exec_result["merge_info"]  = join_desc if join_desc != "single table — no join" else None
+        else:
+            # Fallback: original 2-call path (plan_query already done above)
+            exec_result = formulator.get_text_analysis(
+                request.user_query,
+                working_df,
+                dataset_metadata=combined_meta,
+                skip_refinement=False,
+            )
+
+        result_type    = exec_result.get("result_type", "text")
+        result_data    = exec_result.get("result_data")
+        result_columns = exec_result.get("result_columns")
+
+        print(f"✅ /query-engine done | result_type={result_type} | success={exec_result.get('success')}")
+
+        # ── 7. Register tabular results as ephemeral dataset ──────────────────
+        result_dataset_id   = None
+        suggested_dimensions: List[str] = []
+        suggested_measures:   List[str] = []
+        chart_title = request.user_query.strip().rstrip("?.")
+        if len(chart_title) > 60:
+            chart_title = chart_title[:57] + "..."
+
+        if result_type == "table" and result_data:
+            result_df = pd.DataFrame(result_data, columns=result_columns)
+
+            # Build source column description lookup from all selected tables
+            source_col_lookup: Dict[str, str] = {}
+            for did in needed_ids:
+                for col_info in DATASET_METADATA.get(did, {}).get("columns", []):
+                    cname = col_info.get("name", "")
+                    cdesc = col_info.get("description", "")
+                    if cname and cdesc:
+                        source_col_lookup[cname] = cdesc
+
+            # Classify each result column
+            suggested_dimensions = [
+                c for c in result_df.columns
+                if _infer_col_type(c, result_df, source_col_lookup) == "dimension"
+            ]
+            suggested_measures = [
+                c for c in result_df.columns
+                if _infer_col_type(c, result_df, source_col_lookup) == "measure"
+            ]
+
+            # Register as ephemeral dataset (available for /charts calls)
+            result_dataset_id = str(uuid.uuid4())
+            DATASETS[result_dataset_id] = result_df
+            DATASET_METADATA[result_dataset_id] = {
+                "filename": f"query_result_{result_dataset_id[:8]}",
+                "dataset_name": f"query_result_{result_dataset_id[:8]}",
+                "dataset_summary": request.user_query,
+                "columns": [
+                    {
+                        "name": c,
+                        "type": _infer_col_type(c, result_df, source_col_lookup),
+                        "description": source_col_lookup.get(c, ""),
+                    }
+                    for c in result_df.columns
+                ],
+                "is_ephemeral": True,
+                "success": True,
+            }
+            print(f"📦 Registered ephemeral dataset {result_dataset_id[:8]} | "
+                  f"dims={suggested_dimensions} | measures={suggested_measures}")
+
+        return {
+            "success":             exec_result.get("success", False),
+            "result_type":         result_type,
+            "data":                result_data,
+            "columns":             result_columns,
+            "answer":              exec_result.get("answer", ""),
+            "tables_used":         needed_ids,
+            "join_description":    join_desc,
+            "token_usage":         exec_result.get("token_usage", {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}),
+            "result_dataset_id":   result_dataset_id,
+            "suggested_dimensions": suggested_dimensions,
+            "suggested_measures":  suggested_measures,
+            "chart_title":         chart_title,
+            # Execution log fields — surfaced for frontend transparency, no extra LLM calls
+            "planner_reasoning":   plan.get("reasoning", ""),
+            "selected_table_names": [
+                DATASET_METADATA.get(d, {}).get("dataset_name") or
+                DATASET_METADATA.get(d, {}).get("filename") or d[:8]
+                for d in needed_ids
+            ],
+            "code_steps":          exec_result.get("code_steps", []),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ /query-engine error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 

@@ -7,6 +7,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { useConfig } from '../contexts/ConfigContext';
 import { getCanvasSnapshot, getEnhancedCanvasContext } from './canvasSnapshot';
 import { executeActions } from './actionExecutor';
 import { validateActionsSafe } from './validation';
@@ -68,6 +69,8 @@ export function AgentChatPanel({
   onTokenUsage,
   canvasContext
 }) {
+  const { selectedModel } = useConfig();
+
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -307,7 +310,7 @@ export function AgentChatPanel({
           canvas_state: enrichedCanvasState,
           dataset_id: datasetId,
           api_key: apiKey,
-          model: 'gemini-2.5-flash',
+          model: selectedModel,
           mode: mode,
           analysis_type: analysisType,
           session_id: sessionIdRef.current,

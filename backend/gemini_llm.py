@@ -4,6 +4,7 @@ Provides natural language data transformation capabilities using both structured
 """
 import os
 import json
+from collections import deque
 from typing import Dict, Any, List, Optional
 import pandas as pd
 import numpy as np
@@ -19,6 +20,140 @@ try:
 except ImportError as e:
     print(f"LangChain imports failed: {e}")
     LANGCHAIN_AVAILABLE = False
+
+
+def find_primary_dataset(
+    confirmed_relationships: List[Dict[str, Any]],
+    all_datasets: Dict[str, Any],
+) -> Optional[str]:
+    """
+    Pick the best starting dataset for the merged view.
+
+    Selects the dataset with the highest number of confirmed relationship links
+    (i.e. the most central node in the relationship graph). This is naturally the
+    fact table in a star schema and the best BFS root in any other topology.
+    Ties are broken by taking whichever max() returns first.
+    Returns None if no valid dataset is found.
+    """
+    degree: Dict[str, int] = {}
+    for lnk in confirmed_relationships:
+        for did in (lnk.get("dataset_a_id", ""), lnk.get("dataset_b_id", "")):
+            if did and did in all_datasets:
+                degree[did] = degree.get(did, 0) + 1
+    if not degree:
+        return None
+    return max(degree, key=degree.get)
+
+
+def build_merged_dataset(
+    primary_id: str,
+    confirmed_relationships: List[Dict[str, Any]],
+    all_datasets: Dict[str, Any],
+) -> tuple:
+    """
+    BFS-based cross-dataset join (no API key required).
+
+    Starting from primary_id, performs a breadth-first traversal of the
+    relationship graph. At each hop it left-joins the currently-merged
+    DataFrame with the next reachable dataset. This handles any topology:
+    star, chain, snowflake, or mixed.
+
+    Returns (merged_df, merge_description) or (None, "") when no useful
+    join can be performed.
+    """
+    print(f"🔗 build_merged_dataset (BFS): primary={primary_id[:8] if primary_id else 'None'}, "
+          f"links={len(confirmed_relationships)}, datasets={len(all_datasets)}")
+
+    if primary_id not in all_datasets:
+        print(f"⚠️ primary_id not found in datasets")
+        return None, ""
+
+    merged_df = all_datasets[primary_id].copy()
+    original_col_count = len(merged_df.columns)
+    join_parts: List[str] = []
+
+    # Build an adjacency structure: dataset_id → list of link dicts
+    adjacency: Dict[str, List[Dict[str, Any]]] = {}
+    for lnk in confirmed_relationships:
+        a, b = lnk.get("dataset_a_id", ""), lnk.get("dataset_b_id", "")
+        if a and b:
+            adjacency.setdefault(a, []).append(lnk)
+            adjacency.setdefault(b, []).append(lnk)
+
+    # BFS from primary_id
+    visited: set = {primary_id}
+    queue: deque = deque([primary_id])
+
+    while queue:
+        current_id = queue.popleft()
+
+        for lnk in adjacency.get(current_id, []):
+            id_a = lnk.get("dataset_a_id", "")
+            id_b = lnk.get("dataset_b_id", "")
+            col_a = lnk.get("col_a", "")
+            col_b = lnk.get("col_b", "")
+
+            # Determine which side is the already-visited node and which is new
+            if id_a == current_id and id_b not in visited:
+                other_id = id_b
+                left_on, right_on = col_a, col_b
+                other_name = lnk.get("dataset_b_name", id_b[:8])
+                current_name = lnk.get("dataset_a_name", id_a[:8])
+            elif id_b == current_id and id_a not in visited:
+                other_id = id_a
+                left_on, right_on = col_b, col_a
+                other_name = lnk.get("dataset_a_name", id_a[:8])
+                current_name = lnk.get("dataset_b_name", id_b[:8])
+            else:
+                continue  # already visited or irrelevant
+
+            if other_id not in all_datasets:
+                continue
+
+            other_df = all_datasets[other_id]
+
+            # The join key on the left side must exist in the *current* merged_df
+            if left_on not in merged_df.columns or right_on not in other_df.columns:
+                print(f"⚠️ Skipping join '{left_on}'→'{right_on}' — column missing in merged df")
+                # Still mark as visited so we don't try again from another path
+                visited.add(other_id)
+                queue.append(other_id)
+                continue
+
+            try:
+                before_cols = set(merged_df.columns)
+                merged_df = pd.merge(
+                    merged_df,
+                    other_df,
+                    left_on=left_on,
+                    right_on=right_on,
+                    how="left",
+                    suffixes=("", f"_{other_name}"),
+                )
+                new_cols = set(merged_df.columns) - before_cols
+                join_parts.append(
+                    f"{current_name} + {other_name} on {left_on} "
+                    f"(+{len(new_cols)} col{'s' if len(new_cols) != 1 else ''})"
+                )
+                print(f"✅ BFS joined '{other_name}' via '{left_on}' → shape {merged_df.shape}")
+            except Exception as exc:
+                print(f"⚠️ BFS join failed for '{other_name}': {exc}")
+
+            # Mark visited and enqueue so we can continue BFS from this node
+            visited.add(other_id)
+            queue.append(other_id)
+
+    if len(merged_df.columns) <= original_col_count:
+        print("ℹ️ No new columns added — join was a no-op")
+        return None, ""
+
+    datasets_joined = len(visited)
+    merge_description = "; ".join(join_parts)
+    full_description = (
+        f"{merge_description} → {len(merged_df)} rows, "
+        f"{len(merged_df.columns)} columns ({datasets_joined} datasets)"
+    )
+    return merged_df, full_description
 
 
 class GeminiDataFormulator:
@@ -63,23 +198,8 @@ class GeminiDataFormulator:
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel(self.model_name)
         
-        # Initialize pandas DataFrame agent if langchain is available
         self.pandas_agent = None
-        if LANGCHAIN_AVAILABLE:
-            try:
-                # Map frontend model names to LangChain compatible names
-                langchain_model = self._get_langchain_model_name(model)
-                self.llm = GoogleGenerativeAI(
-                    model=langchain_model,
-                    google_api_key=self.api_key,
-                    temperature=0.1
-                )
-                print(f"✅ Pandas DataFrame Agent initialized successfully with {langchain_model}")
-            except Exception as e:
-                print(f"❌ Failed to initialize pandas DataFrame agent: {e}")
-                self.llm = None
-        else:
-            print("⚠️  LangChain not available, using structured parsing only")
+        self.llm = None
     
     def _get_langchain_model_name(self, model: str) -> str:
         """
@@ -94,12 +214,17 @@ class GeminiDataFormulator:
         """
         model_mapping = {
             "gemini-2.5-flash": "gemini-2.5-flash",
+            "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
             "gemini-2.5-pro": "gemini-2.5-pro",
             "gemini-2.0-flash": "gemini-2.0-flash",
             "gemini-1.5-flash": "gemini-1.5-flash",
-            "gemini-2.0-flash-exp": "gemini-2.0-flash"  # fallback to stable version
+            "gemini-2.0-flash-exp": "gemini-2.0-flash",
+            "gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite-preview",
+            "gemma-4-31b-it": "gemma-4-31b-it",
+            "gemma-4-26b-a4b-it": "gemma-4-26b-a4b-it",
+            "gemma-3-27b-it": "gemma-3-27b-it",
         }
-        return model_mapping.get(model, "gemini-2.0-flash")
+        return model_mapping.get(model, "gemini-2.5-flash")
     
     def run_gemini(self, prompt: str, model: str = "gemini-2.5-flash") -> str:
         """
@@ -136,7 +261,7 @@ class GeminiDataFormulator:
                 print(f"❌ Gemini API error: {e}")
                 raise Exception(f"Gemini API error: {str(e)}")
     
-    def run_gemini_with_usage(self, prompt: str, model: str = "gemini-2.5-flash") -> tuple[str, dict]:
+    def run_gemini_with_usage(self, prompt: str, model: str = "gemini-2.5-flash", operation: str = "API Call") -> tuple[str, dict]:
         """
         Gemini API Call with Token Tracking
         Sends a prompt to Gemini and returns both the response and token usage metrics.
@@ -145,11 +270,16 @@ class GeminiDataFormulator:
         Args:
             prompt: Natural language prompt/question
             model: Model name (currently not used, instance model is used)
+            operation: Human-readable label identifying which feature triggered this call
         
         Returns:
             tuple: (response_text, token_usage_dict)
             - response_text: Generated text
-            - token_usage_dict: {"inputTokens": int, "outputTokens": int, "totalTokens": int}
+            - token_usage_dict: {
+                "inputTokens": int, "outputTokens": int, "totalTokens": int,
+                "cachedTokens": int, "thoughtsTokens": int,
+                "apiCalls": 1, "operation": str
+              }
         
         Token Estimation:
             - Tries to extract from response.usage_metadata
@@ -164,10 +294,13 @@ class GeminiDataFormulator:
             # Extract token usage from response
             token_usage = {}
             if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                meta = response.usage_metadata
                 token_usage = {
-                    "inputTokens": getattr(response.usage_metadata, 'prompt_token_count', 0),
-                    "outputTokens": getattr(response.usage_metadata, 'candidates_token_count', 0),
-                    "totalTokens": getattr(response.usage_metadata, 'total_token_count', 0)
+                    "inputTokens": getattr(meta, 'prompt_token_count', 0),
+                    "outputTokens": getattr(meta, 'candidates_token_count', 0),
+                    "totalTokens": getattr(meta, 'total_token_count', 0),
+                    "cachedTokens": getattr(meta, 'cached_content_token_count', 0) or 0,
+                    "thoughtsTokens": getattr(meta, 'thoughts_token_count', 0) or 0,
                 }
             else:
                 # Fallback: estimate tokens (rough approximation)
@@ -176,8 +309,13 @@ class GeminiDataFormulator:
                 token_usage = {
                     "inputTokens": int(estimated_input),
                     "outputTokens": int(estimated_output),
-                    "totalTokens": int(estimated_input + estimated_output)
+                    "totalTokens": int(estimated_input + estimated_output),
+                    "cachedTokens": 0,
+                    "thoughtsTokens": 0,
                 }
+            
+            token_usage["apiCalls"] = 1
+            token_usage["operation"] = operation
             
             return response.text, token_usage
         except Exception as e:
@@ -258,7 +396,7 @@ class GeminiDataFormulator:
         try:
             # Test with a simple prompt
             test_prompt = "Hello, this is a test. Please respond with 'Configuration test successful'."
-            response, token_usage = self.run_gemini_with_usage(test_prompt)
+            response, token_usage = self.run_gemini_with_usage(test_prompt, operation="Config Test")
             
             return {
                 "success": True,
@@ -279,7 +417,16 @@ class GeminiDataFormulator:
                 "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
             }
     
-    def get_text_analysis(self, user_query: str, dataset: pd.DataFrame, dataset_id: Optional[str] = None, dataset_metadata: Optional[Dict[str, Any]] = None, skip_refinement: bool = False) -> Dict[str, Any]:
+    def _build_merged_dataset(
+        self,
+        primary_id: str,
+        confirmed_relationships: List[Dict[str, Any]],
+        all_datasets: Dict[str, Any],
+    ) -> tuple:
+        """Thin wrapper around module-level build_merged_dataset()."""
+        return build_merged_dataset(primary_id, confirmed_relationships, all_datasets)
+
+    def get_text_analysis(self, user_query: str, dataset: pd.DataFrame, dataset_id: Optional[str] = None, dataset_metadata: Optional[Dict[str, Any]] = None, skip_refinement: bool = False, confirmed_relationships: Optional[List[Dict[str, Any]]] = None, all_datasets: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Main AI Data Analysis Pipeline
         Primary entry point for AI-powered data exploration.
@@ -323,7 +470,21 @@ class GeminiDataFormulator:
             print(f"🤖 AI Analysis for: '{user_query}'")
             print(f"📊 Dataset: {dataset.shape[0]} rows, {dataset.shape[1]} columns")
             print(f"🔍 Columns: {list(dataset.columns)}")
-            
+
+            # Pre-join datasets when confirmed relationships exist
+            merge_info = None
+            if confirmed_relationships and all_datasets and dataset_id:
+                merged_df, merge_description = self._build_merged_dataset(
+                    dataset_id, confirmed_relationships, all_datasets
+                )
+                if merged_df is not None:
+                    dataset = merged_df
+                    merge_info = merge_description
+                    print(f"🔗 Using pre-joined dataset: {merge_description}")
+                    print(f"📊 Merged shape: {dataset.shape[0]} rows, {dataset.shape[1]} columns")
+                else:
+                    print("📊 No cross-dataset join needed — using primary dataset only")
+
             # Log dataset context usage
             if dataset_metadata and dataset_metadata.get('success'):
                 summary_preview = dataset_metadata.get('dataset_summary', '')[:100] + '...' if len(dataset_metadata.get('dataset_summary', '')) > 100 else dataset_metadata.get('dataset_summary', '')
@@ -335,23 +496,50 @@ class GeminiDataFormulator:
                 print("📋 No enhanced context available - using basic dataset analysis")
             
             # Generate Python code using Gemini with enhanced context
-            code, token_usage = self._generate_pandas_code(user_query, dataset, dataset_metadata)
+            # Pass merge_info so the prompt can use a clean merged-dataset header
+            code, token_usage = self._generate_pandas_code(
+                user_query, dataset, dataset_metadata,
+                confirmed_relationships=confirmed_relationships if not merge_info else None,
+                all_datasets=all_datasets if not merge_info else None,
+                merge_info=merge_info,
+            )
             
             if not code:
+                raw_error = token_usage.pop("_error", None) if isinstance(token_usage, dict) else None
+                if raw_error and "429" in raw_error:
+                    user_msg = (
+                        "⚠️ Gemini API rate limit reached — you've hit the free-tier daily quota "
+                        "(20 requests/day for gemini-2.5-flash). Please wait a few minutes or "
+                        "upgrade your Gemini API plan to continue."
+                    )
+                elif raw_error and ("401" in raw_error or "403" in raw_error or "API key" in raw_error.lower()):
+                    user_msg = "⚠️ Invalid or missing Gemini API key. Please check your API key in Settings."
+                elif raw_error:
+                    user_msg = f"⚠️ Could not generate analysis code: {raw_error[:300]}"
+                else:
+                    user_msg = "⚠️ Failed to generate analysis code. Please rephrase your question and try again."
                 return {
                     "success": False,
-                    "answer": "Failed to generate analysis code",
+                    "answer": user_msg,
                     "query": user_query,
                     "dataset_info": f"Dataset: {dataset.shape[0]} rows, {dataset.shape[1]} columns",
                     "code_steps": [],
                     "reasoning_steps": [],
                     "tabular_data": [],
                     "has_table": False,
-                    "token_usage": token_usage
+                    "token_usage": token_usage,
+                    "merge_info": merge_info,
                 }
             
-            # Execute the generated code
-            result = self._execute_pandas_code(code, dataset, user_query)
+            # Execute code — when merged, all_datasets is not needed (df already contains joined data)
+            result = self._execute_pandas_code(
+                code, dataset, user_query,
+                all_datasets=all_datasets if not merge_info else None,
+            )
+
+            # Attach merge context to result so callers can surface it in the UI
+            if merge_info:
+                result["merge_info"] = merge_info
             
             # Store raw answer before potential refinement
             raw_answer = result.get("answer", "")
@@ -404,6 +592,703 @@ class GeminiDataFormulator:
                 "token_usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
             }
     
+    def plan_query(self, user_query: str, schema_context: dict) -> dict:
+        """
+        Query Planner — LLM Call 1 of the query execution engine.
+
+        Given a compact schema (table names + column names + accepted relationships),
+        asks Gemini which tables and join paths are needed to answer the user query.
+        Returns a structured dict so the engine can build the minimal JOIN before
+        generating pandas code.
+
+        Args:
+            user_query:     Natural language question from the user.
+            schema_context: { "datasets": {id: {"name": str, "columns": [str]}},
+                              "relationships": [{dataset_a_id, col_a,
+                                                 dataset_b_id, col_b, ...}] }
+
+        Returns:
+            {
+              "tables":    [dataset_id, ...],     # IDs of tables needed
+              "join_path": [{from_id, from_col,    # relationships to use
+                             to_id,   to_col}],
+              "reasoning": str                     # brief explanation for logging
+            }
+        Falls back to all tables + all relationships if JSON parsing fails.
+        """
+        datasets    = schema_context.get("datasets", {})
+        rels        = schema_context.get("relationships", [])
+        all_ids     = list(datasets.keys())
+
+        # Build compact table block with optional column descriptions for semantic context
+        table_lines = []
+        for did, info in datasets.items():
+            descs = info.get("column_descriptions", {})
+            col_parts = [
+                f"{c}: {descs[c]}" if c in descs else c
+                for c in info.get("columns", [])
+            ]
+            table_lines.append(f"- {info['name']} ({', '.join(col_parts)})  [id: {did}]")
+        tables_block = "\n".join(table_lines)
+
+        # Build compact relationship block
+        rel_lines = []
+        for r in rels:
+            an = datasets.get(r.get("dataset_a_id", ""), {}).get("name", r.get("dataset_a_id", "")[:8])
+            bn = datasets.get(r.get("dataset_b_id", ""), {}).get("name", r.get("dataset_b_id", "")[:8])
+            card = r.get("cardinality", "")
+            rel_lines.append(
+                f"- {an}.{r.get('col_a','')} → {bn}.{r.get('col_b','')} ({card})"
+                f"  [from_id: {r.get('dataset_a_id','')}, to_id: {r.get('dataset_b_id','')}]"
+            )
+        rels_block = "\n".join(rel_lines) if rel_lines else "None"
+
+        # Build fallback join_path from all relationships (used on parse failure)
+        fallback_join_path = [
+            {
+                "from_id":   r.get("dataset_a_id", ""),
+                "from_col":  r.get("col_a", ""),
+                "to_id":     r.get("dataset_b_id", ""),
+                "to_col":    r.get("col_b", ""),
+            }
+            for r in rels
+        ]
+
+        prompt = f"""You are a data engineer. Given the schema below, identify the minimum set of tables and join paths needed to answer the user query.
+
+TABLES:
+{tables_block}
+
+RELATIONSHIPS:
+{rels_block}
+
+USER QUERY: "{user_query}"
+
+Return ONLY valid JSON — no markdown, no explanation:
+{{
+  "tables": ["<dataset_id>", ...],
+  "join_path": [
+    {{"from_id": "<dataset_id>", "from_col": "<col>", "to_id": "<dataset_id>", "to_col": "<col>"}}
+  ],
+  "reasoning": "<one short sentence>"
+}}
+
+Rules:
+- Include only the dataset IDs (the [id: ...] values) that are necessary.
+- Include only the join paths that connect those datasets.
+- If the query can be answered from a single table, return an empty join_path array.
+"""
+
+        try:
+            response_text, token_usage = self.run_gemini_with_usage(prompt, operation="Query Planning")
+            print(f"🗺️ plan_query tokens: {token_usage.get('totalTokens', 0)}")
+
+            # Strip markdown fences if present
+            cleaned = response_text.strip()
+            if "```json" in cleaned:
+                cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+            elif "```" in cleaned:
+                cleaned = cleaned.split("```")[1].strip()
+
+            parsed = json.loads(cleaned)
+
+            # Validate: ensure all returned IDs actually exist in our dataset map
+            valid_tables = [t for t in parsed.get("tables", []) if t in datasets]
+            if not valid_tables:
+                raise ValueError("No valid dataset IDs in planner response")
+
+            valid_join_path = [
+                jp for jp in parsed.get("join_path", [])
+                if jp.get("from_id") in datasets and jp.get("to_id") in datasets
+            ]
+
+            print(f"🗺️ plan_query result: tables={[datasets[t]['name'] for t in valid_tables]}, "
+                  f"joins={len(valid_join_path)}, reasoning={parsed.get('reasoning','')}")
+
+            return {
+                "tables":    valid_tables,
+                "join_path": valid_join_path,
+                "reasoning": parsed.get("reasoning", ""),
+            }
+
+        except Exception as e:
+            print(f"⚠️ plan_query failed ({e}), falling back to all tables")
+            return {
+                "tables":    all_ids,
+                "join_path": fallback_join_path,
+                "reasoning": "fallback — planner error",
+            }
+
+    def plan_and_generate(
+        self,
+        user_query: str,
+        schema_context: dict,
+        all_datasets: dict,
+        dataset_metadata: dict,
+    ) -> dict:
+        """
+        Single-call planner + pandas code generator.
+
+        Combines plan_query() and _generate_pandas_code() into one LLM call.
+        Sends all table schemas, column descriptions, relationship definitions,
+        and 3-row samples to Gemini and asks it to:
+          1. Choose the minimum set of tables needed.
+          2. Write pandas code that answers the query against the post-join 'df'.
+
+        The BFS join (build_merged_dataset) and code execution (_execute_pandas_code)
+        are still performed by the caller after this returns — unchanged from today.
+
+        Returns:
+            {
+              "tables":      [dataset_id, ...],
+              "join_path":   [{from_id, from_col, to_id, to_col}, ...],
+              "reasoning":   str,
+              "pandas_code": str,
+              "token_usage": {...},
+            }
+        Returns {} on any failure so the caller can fall back to the 2-call path.
+        """
+        datasets = schema_context.get("datasets", {})
+        rels     = schema_context.get("relationships", [])
+
+        # ── Build per-table block: schema + AI descriptions + 3-row sample ──
+        table_blocks = []
+        suffix_hints = []  # track potential column name collisions for the prompt
+
+        for did, info in datasets.items():
+            df  = all_datasets.get(did)
+            descs = info.get("column_descriptions", {})
+            col_parts = [
+                f"{c}: {descs[c]}" if c in descs else c
+                for c in info.get("columns", [])
+            ]
+            sample = df.head(3).to_string(index=False) if df is not None else "(no data)"
+            meta    = dataset_metadata.get(did, {})
+            summary = meta.get("dataset_summary", "")
+
+            block  = f"TABLE: {info['name']}  [id: {did}]\n"
+            block += f"Columns: {', '.join(col_parts)}\n"
+            if summary:
+                block += f"Purpose: {summary}\n"
+            block += f"Sample (3 rows):\n{sample}"
+            table_blocks.append(block)
+
+        # Detect columns that appear in more than one table (collision candidates)
+        col_to_tables: Dict[str, list] = {}
+        for did, info in datasets.items():
+            for c in info.get("columns", []):
+                col_to_tables.setdefault(c, []).append(info["name"])
+        collisions = {c: tbls for c, tbls in col_to_tables.items() if len(tbls) > 1}
+        if collisions:
+            suffix_hints.append(
+                "IMPORTANT — column name collisions exist across tables. "
+                "After joining, duplicate columns are suffixed with `_<table_name>`. "
+                "Example: if both tables have 'name', the joined df will have 'name' (from the left table) "
+                "and 'name_<right_table_name>'. Write code accordingly.\n"
+                f"Colliding columns: {', '.join(collisions.keys())}"
+            )
+
+        # ── Build relationship block ──────────────────────────────────────────
+        rel_lines = []
+        for r in rels:
+            an = datasets.get(r.get("dataset_a_id", ""), {}).get("name", r.get("dataset_a_id", "")[:8])
+            bn = datasets.get(r.get("dataset_b_id", ""), {}).get("name", r.get("dataset_b_id", "")[:8])
+            rel_lines.append(
+                f"- {an}.{r.get('col_a','')} → {bn}.{r.get('col_b','')}"
+                f"  [from_id: {r.get('dataset_a_id','')}, to_id: {r.get('dataset_b_id','')}]"
+            )
+        rels_block   = "\n".join(rel_lines) if rel_lines else "None"
+        tables_block = ("\n" + "=" * 60 + "\n").join(table_blocks)
+        suffix_block = "\n".join(suffix_hints) + "\n" if suffix_hints else ""
+
+        prompt = f"""You are a data engineer and Python analyst.
+Given the table schemas and sample rows below, do TWO things in a single JSON response:
+  1. Identify the minimum set of tables required to answer the user query.
+  2. Write Python pandas code that answers the query against the merged DataFrame.
+
+{suffix_block}TABLES:
+{"=" * 60}
+{tables_block}
+
+RELATIONSHIPS (confirmed join keys):
+{rels_block}
+
+USER QUERY: "{user_query}"
+
+CODING RULES:
+- The variable 'df' will already contain the fully-joined DataFrame — do NOT call pd.merge() or pd.concat().
+- Use ONLY the variable 'df'. Do not reference individual table DataFrames.
+- Assign the final answer to a variable named 'result'.
+- Add print() statements so output is human-readable.
+- If only one table is needed, set join_path to [] in the JSON.
+
+Return ONLY valid JSON with no markdown fences, no extra text:
+{{
+  "tables": ["<dataset_id>", ...],
+  "join_path": [{{"from_id": "<dataset_id>", "from_col": "<col>", "to_id": "<dataset_id>", "to_col": "<col>"}}],
+  "reasoning": "<one short sentence explaining the approach>",
+  "pandas_code": "<complete Python code as a single escaped string>"
+}}"""
+
+        try:
+            response_text, token_usage = self.run_gemini_with_usage(prompt, operation="Plan & Generate")
+            print(f"🔀 plan_and_generate tokens: {token_usage.get('totalTokens', 0)}")
+
+            # Strip markdown fences defensively
+            cleaned = response_text.strip()
+            if "```json" in cleaned:
+                cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+            elif "```" in cleaned:
+                cleaned = cleaned.split("```")[1].strip()
+
+            parsed = json.loads(cleaned)
+
+            valid_tables = [t for t in parsed.get("tables", []) if t in datasets]
+            if not valid_tables:
+                raise ValueError("No valid dataset IDs returned by plan_and_generate")
+
+            pandas_code = parsed.get("pandas_code", "").strip()
+            if not pandas_code:
+                raise ValueError("No pandas_code in plan_and_generate response")
+
+            valid_join_path = [
+                jp for jp in parsed.get("join_path", [])
+                if jp.get("from_id") in datasets and jp.get("to_id") in datasets
+            ]
+
+            print(
+                f"🔀 plan_and_generate: tables={[datasets[t]['name'] for t in valid_tables]}, "
+                f"joins={len(valid_join_path)}, reasoning={parsed.get('reasoning','')}"
+            )
+
+            return {
+                "tables":      valid_tables,
+                "join_path":   valid_join_path,
+                "reasoning":   parsed.get("reasoning", ""),
+                "pandas_code": pandas_code,
+                "token_usage": token_usage,
+            }
+
+        except Exception as e:
+            print(f"⚠️ plan_and_generate failed ({e}) — caller should fall back to 2-call path")
+            return {}
+
+    def unify_and_analyse(
+        self,
+        objective: str,
+        schema_context: dict,
+        all_datasets: dict,
+        dataset_metadata: dict,
+        measure_stats: dict,
+        merged_columns: Optional[List[str]] = None,
+    ) -> dict:
+        """
+        Unified Super Agent — single-call objective decomposer + multi-analysis generator.
+
+        Given a high-level business objective (e.g. "help me understand what's driving revenue"),
+        this method produces a comprehensive dashboard plan in ONE LLM call:
+          1. Selects the minimum tables needed.
+          2. Decomposes the objective into 3-5 focused analytical questions.
+          3. Writes pandas code for each question (executed natively by the caller).
+          4. Picks KPI values from pre-computed measure_stats (zero extra LLM calls for KPIs).
+          5. Suggests insight text and chart types for each analysis.
+          6. Chooses a dashboard layout strategy.
+
+        Args:
+            objective:        High-level business question or goal.
+            schema_context:   Output of build_schema_context() — table names, columns, relationships.
+            all_datasets:     DATASETS dict for 3-row sample extraction.
+            dataset_metadata: DATASET_METADATA dict for per-column descriptions and summaries.
+            measure_stats:    Pre-computed { col: {sum, mean, min, max, count} } for all datasets.
+
+        Returns:
+            {
+              "objective_summary": str,
+              "tables":            [dataset_id, ...],
+              "join_path":         [{from_id, from_col, to_id, to_col}, ...],
+              "analyses":          [{question, pandas_code, chart_type, dimensions, measures, insight_text}, ...],
+              "kpis":              [{label, value, formatted}, ...],
+              "layout":            str,
+              "token_usage":       {...},
+            }
+        Returns {} on failure.
+        """
+        datasets = schema_context.get("datasets", {})
+        rels     = schema_context.get("relationships", [])
+
+        # ── Build per-table schema block with sample rows ─────────────────────
+        table_blocks = []
+        col_to_tables: Dict[str, list] = {}
+
+        for did, info in datasets.items():
+            df    = all_datasets.get(did)
+            descs = info.get("column_descriptions", {})
+            col_parts = [
+                f"{c}: {descs[c]}" if c in descs else c
+                for c in info.get("columns", [])
+            ]
+            sample  = df.head(3).to_string(index=False) if df is not None else "(no data)"
+            meta    = dataset_metadata.get(did, {})
+            summary = meta.get("dataset_summary", "")
+
+            block  = f"TABLE: {info['name']}  [id: {did}]\n"
+            block += f"Columns: {', '.join(col_parts)}\n"
+            if summary:
+                block += f"Purpose: {summary}\n"
+            block += f"Sample (3 rows):\n{sample}"
+            table_blocks.append(block)
+
+            for c in info.get("columns", []):
+                col_to_tables.setdefault(c, []).append(info["name"])
+
+        # Collision hints
+        collisions = {c: tbls for c, tbls in col_to_tables.items() if len(tbls) > 1}
+        suffix_block = ""
+        if collisions:
+            suffix_block = (
+                "COLUMN NAME COLLISIONS — after joining, duplicate columns are suffixed "
+                "with `_<table_name>`. Write pandas code accordingly.\n"
+                f"Colliding columns: {', '.join(collisions.keys())}\n\n"
+            )
+
+        # ── Relationship block ────────────────────────────────────────────────
+        rel_lines = []
+        for r in rels:
+            an = datasets.get(r.get("dataset_a_id", ""), {}).get("name", r.get("dataset_a_id", "")[:8])
+            bn = datasets.get(r.get("dataset_b_id", ""), {}).get("name", r.get("dataset_b_id", "")[:8])
+            rel_lines.append(
+                f"- {an}.{r.get('col_a','')} → {bn}.{r.get('col_b','')}"
+                f"  [from_id: {r.get('dataset_a_id','')}, to_id: {r.get('dataset_b_id','')}]"
+            )
+        rels_block   = "\n".join(rel_lines) if rel_lines else "None"
+        tables_block = ("\n" + "=" * 60 + "\n").join(table_blocks)
+
+        # ── Measure stats block (pre-computed, no LLM) ───────────────────────
+        stats_lines = []
+        for col, stats in measure_stats.items():
+            stats_lines.append(
+                f"- {col}: sum={stats['sum']:,.2f}, avg={stats['mean']:,.2f}, "
+                f"min={stats['min']:,.2f}, max={stats['max']:,.2f}, count={stats['count']}"
+            )
+        stats_block = "\n".join(stats_lines) if stats_lines else "None"
+
+        # Fallback join_path
+        fallback_join_path = [
+            {"from_id": r.get("dataset_a_id",""), "from_col": r.get("col_a",""),
+             "to_id": r.get("dataset_b_id",""), "to_col": r.get("col_b","")}
+            for r in rels
+        ]
+
+        # Include actual post-join column names if the caller pre-computed them.
+        # This is the single most important context for reliable pandas code generation:
+        # the LLM must reference columns by their real names in the merged DataFrame,
+        # not the original per-table names (which may have been suffixed during the join).
+        merged_cols_block = ""
+        if merged_columns:
+            merged_cols_block = (
+                "ACTUAL MERGED DATAFRAME COLUMNS "
+                "(variable 'df' has EXACTLY these columns — use only these names in your code):\n"
+                + ", ".join(merged_columns)
+                + "\n\n"
+            )
+
+        prompt = f"""You are a senior data analyst and dashboard designer.
+
+Given the schemas, sample data, and pre-computed statistics below, produce a comprehensive \
+analysis that answers the business objective. Decompose it into 3-5 focused sub-analyses, \
+each with executable pandas code.
+
+{merged_cols_block}{suffix_block}TABLES:
+{"=" * 60}
+{tables_block}
+
+RELATIONSHIPS (confirmed join keys):
+{rels_block}
+
+PRE-COMPUTED MEASURE STATISTICS (use these exact numbers for KPI values — do not recompute):
+{stats_block}
+
+BUSINESS OBJECTIVE: "{objective}"
+
+PANDAS CODE RULES:
+- Variable 'df' already contains the fully-joined DataFrame — do NOT call pd.merge().
+- Assign the final result to a variable named 'result' (must be a DataFrame or scalar).
+- The result MUST be a pandas DataFrame (use .reset_index() after groupby operations).
+- Include print(result) at the end so output is human-readable.
+- Use ONLY the exact column names listed in ACTUAL MERGED DATAFRAME COLUMNS above.
+- Keep code simple and focused on one question per analysis.
+
+CHART TYPE RULES:
+- 1 dimension + 1 measure → "bar" or "pie" or "line"
+- 1 dimension + 2 measures → "grouped_bar" or "scatter"
+- Time/date dimension + 1 measure → "line"
+- Category breakdown → "pie" (only if ≤8 categories expected)
+
+KPI RULES:
+- Select 2-4 of the most meaningful KPIs from the MEASURE STATISTICS above.
+- Use the exact pre-computed values — do not write pandas code for KPIs.
+- Format large numbers with commas (e.g. 1,234,567.89).
+
+LAYOUT RULES:
+- "kpi-dashboard": KPI row at top, charts below (use when there are 2+ KPIs and 3+ charts)
+- "hero": one large primary chart + smaller supporting charts
+- "grid": equal-sized charts in rows (use for 4-6 charts of equal importance)
+- "flow": left-to-right narrative (use for time-series or story-driven analyses)
+
+Return ONLY valid JSON with no markdown fences, no extra text:
+{{
+  "objective_summary": "<one sentence restatement of what was analysed>",
+  "tables": ["<dataset_id>", ...],
+  "join_path": [{{"from_id": "<id>", "from_col": "<col>", "to_id": "<id>", "to_col": "<col>"}}],
+  "analyses": [
+    {{
+      "question": "<focused sub-question>",
+      "pandas_code": "<complete Python code as single string>",
+      "chart_type": "bar|line|pie|scatter|grouped_bar",
+      "dimensions": ["<col>"],
+      "measures": ["<col>"],
+      "insight_text": "<one sentence insight from the data>"
+    }}
+  ],
+  "kpis": [
+    {{"label": "<metric name>", "value": 0.0, "formatted": "<formatted string>"}}
+  ],
+  "layout": "kpi-dashboard|grid|hero|flow"
+}}"""
+
+        # Build name→id and partial-name→id lookups so validation works even when
+        # the LLM returns "orders.csv" instead of the UUID.
+        name_to_id: Dict[str, str] = {}
+        for did, info in datasets.items():
+            name_to_id[info.get("name", "").lower()] = did
+            # also index by stem without extension ("orders" → uuid)
+            stem = info.get("name", "").lower().rsplit(".", 1)[0]
+            name_to_id[stem] = did
+
+        def _resolve_table_id(t: str) -> Optional[str]:
+            if t in datasets:
+                return t
+            return name_to_id.get(t.lower()) or name_to_id.get(t.lower().rsplit(".", 1)[0])
+
+        try:
+            response_text, token_usage = self.run_gemini_with_usage(prompt, operation="Unified Analysis")
+            print(f"✦ unify_and_analyse tokens: {token_usage.get('totalTokens', 0)}")
+
+            cleaned = response_text.strip()
+
+            # Fix 2 — robust JSON extraction for thinking models (gemini-2.5-flash etc.)
+            # Priority: ```json fence → ``` fence → first { ... } block in the text
+            if "```json" in cleaned:
+                cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+            elif "```" in cleaned:
+                cleaned = cleaned.split("```")[1].strip()
+            else:
+                # Find the outermost JSON object in case the model added preamble text
+                start = cleaned.find("{")
+                end   = cleaned.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    cleaned = cleaned[start:end + 1]
+
+            parsed = json.loads(cleaned)
+
+            # Fix 1 — accept UUID or human-readable table name in the "tables" field
+            raw_tables = parsed.get("tables", [])
+            valid_tables = []
+            for t in raw_tables:
+                resolved = _resolve_table_id(t)
+                if resolved and resolved not in valid_tables:
+                    valid_tables.append(resolved)
+
+            # If LLM omitted "tables" entirely, fall back to all scope datasets
+            if not valid_tables:
+                print("⚠️ unify_and_analyse: no valid tables from LLM — using all scope datasets")
+                valid_tables = list(datasets.keys())
+
+            analyses = parsed.get("analyses", [])
+            if not analyses:
+                raise ValueError("No analyses returned by unify_and_analyse")
+
+            # Fix 1b — also resolve join_path IDs that may be names instead of UUIDs
+            raw_join = parsed.get("join_path", fallback_join_path)
+            valid_join_path = []
+            for jp in raw_join:
+                from_id = _resolve_table_id(jp.get("from_id", "")) or jp.get("from_id", "")
+                to_id   = _resolve_table_id(jp.get("to_id", ""))   or jp.get("to_id", "")
+                if from_id in datasets and to_id in datasets:
+                    valid_join_path.append({**jp, "from_id": from_id, "to_id": to_id})
+
+            print(
+                f"✦ unify_and_analyse: tables={[datasets[t]['name'] for t in valid_tables]}, "
+                f"analyses={len(analyses)}, layout={parsed.get('layout','kpi-dashboard')}"
+            )
+
+            return {
+                "objective_summary": parsed.get("objective_summary", objective),
+                "tables":            valid_tables,
+                "join_path":         valid_join_path,
+                "analyses":          analyses,
+                "kpis":              parsed.get("kpis", []),
+                "layout":            parsed.get("layout", "kpi-dashboard"),
+                "token_usage":       token_usage,
+            }
+
+        except Exception as e:
+            print(f"⚠️ unify_and_analyse failed: {e}")
+            return {}
+
+    def generate_single_chart_code(
+        self,
+        user_request: str,
+        schema_context: dict,
+        all_datasets: dict,
+        dataset_metadata: dict,
+        merged_columns: Optional[List[str]] = None,
+    ) -> dict:
+        """
+        Smart Single Chart Generator — one focused LLM call that produces
+        exactly ONE pandas transformation and ONE chart spec.
+
+        Unlike unify_and_analyse() which always produces a full 3-5 chart dashboard,
+        this method is designed for "I want this specific chart" requests from the
+        Canvas sidebar. The LLM writes a pandas code block that can filter, rank,
+        compute derived columns, and aggregate — the caller executes it natively.
+
+        Args:
+            user_request:     Natural language description of the desired chart.
+            schema_context:   Output of build_schema_context().
+            all_datasets:     DATASETS dict for 3-row sample extraction.
+            dataset_metadata: DATASET_METADATA dict for column descriptions.
+            merged_columns:   Actual post-join column names in the working DataFrame.
+
+        Returns:
+            {
+              "pandas_code": str,        # Complete Python; must assign `result` DataFrame
+              "chart_type": str,         # bar | line | pie | scatter | grouped_bar | ...
+              "dimensions": [str, ...],  # Column names for the X axis / grouping
+              "measures":   [str, ...],  # Column names for the Y axis / values
+              "title":      str,         # Descriptive chart title
+            }
+        Returns {} on failure.
+        """
+        datasets = schema_context.get("datasets", {})
+        rels     = schema_context.get("relationships", [])
+
+        # ── Per-table schema + sample block ──────────────────────────────────
+        table_blocks = []
+        col_to_tables: Dict[str, list] = {}
+
+        for did, info in datasets.items():
+            df    = all_datasets.get(did)
+            descs = info.get("column_descriptions", {})
+            col_parts = [
+                f"{c}: {descs[c]}" if c in descs else c
+                for c in info.get("columns", [])
+            ]
+            sample  = df.head(3).to_string(index=False) if df is not None else "(no data)"
+            meta    = dataset_metadata.get(did, {})
+            summary = meta.get("dataset_summary", "")
+
+            block  = f"TABLE: {info['name']}  [id: {did}]\n"
+            block += f"Columns: {', '.join(col_parts)}\n"
+            if summary:
+                block += f"Purpose: {summary}\n"
+            block += f"Sample (3 rows):\n{sample}"
+            table_blocks.append(block)
+
+            for c in info.get("columns", []):
+                col_to_tables.setdefault(c, []).append(info["name"])
+
+        collisions = {c: tbls for c, tbls in col_to_tables.items() if len(tbls) > 1}
+        suffix_block = ""
+        if collisions:
+            suffix_block = (
+                "COLUMN NAME COLLISIONS — after joining, duplicate columns are suffixed "
+                "with `_<table_name>`. Write pandas code accordingly.\n"
+                f"Colliding columns: {', '.join(collisions.keys())}\n\n"
+            )
+
+        tables_block = ("\n" + "=" * 60 + "\n").join(table_blocks)
+
+        merged_cols_block = ""
+        if merged_columns:
+            merged_cols_block = (
+                "ACTUAL DATAFRAME COLUMNS "
+                "(variable 'df' has EXACTLY these columns — use only these names):\n"
+                + ", ".join(merged_columns)
+                + "\n\n"
+            )
+
+        prompt = f"""You are a senior data analyst. Given the dataset schema and sample data below, \
+write ONE focused pandas transformation that answers the user's chart request.
+
+{merged_cols_block}{suffix_block}TABLES:
+{"=" * 60}
+{tables_block}
+
+USER REQUEST: "{user_request}"
+
+PANDAS CODE RULES:
+- Variable 'df' already contains the ready-to-use DataFrame — do NOT call pd.merge().
+- Assign the final result to a variable named 'result' (must be a non-empty DataFrame).
+- The result MUST be a pandas DataFrame (use .reset_index() after groupby).
+- Include print(result) at the end.
+- Use ONLY the exact column names listed above.
+- You MAY use: groupby, agg, nlargest, nsmallest, filter, sort_values, assign for derived columns, \
+  value_counts, cumsum, pct_change, rolling — whatever best answers the request.
+- Keep it to a single coherent transformation (no multi-chart splits).
+
+CHART TYPE RULES (pick one):
+- 1 dimension + 1 measure → "bar", "pie" (≤8 categories), or "line" (time series)
+- 1 dimension + 2 measures → "grouped_bar" or "scatter"
+- Time/date dimension + 1 measure → "line"
+
+Return ONLY valid JSON, no markdown fences:
+{{
+  "pandas_code": "<complete Python code as a single string>",
+  "chart_type": "bar|line|pie|scatter|grouped_bar",
+  "dimensions": ["<column>"],
+  "measures":   ["<column>"],
+  "title":      "<descriptive chart title>"
+}}"""
+
+        try:
+            response_text, token_usage = self.run_gemini_with_usage(prompt, operation="Smart Single Chart")
+            print(f"✦ generate_single_chart_code tokens: {token_usage.get('totalTokens', 0)}")
+
+            cleaned = response_text.strip()
+            if "```json" in cleaned:
+                cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+            elif "```" in cleaned:
+                cleaned = cleaned.split("```")[1].strip()
+            else:
+                start = cleaned.find("{")
+                end   = cleaned.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    cleaned = cleaned[start:end + 1]
+
+            parsed = json.loads(cleaned)
+
+            if not parsed.get("pandas_code"):
+                raise ValueError("LLM returned no pandas_code")
+
+            print(
+                f"✦ generate_single_chart_code: chart_type={parsed.get('chart_type')}, "
+                f"dims={parsed.get('dimensions')}, measures={parsed.get('measures')}"
+            )
+
+            return {
+                "pandas_code": parsed["pandas_code"],
+                "chart_type":  parsed.get("chart_type", "bar"),
+                "dimensions":  parsed.get("dimensions", []),
+                "measures":    parsed.get("measures", []),
+                "title":       parsed.get("title", user_request[:80]),
+                "token_usage": token_usage,
+            }
+
+        except Exception as e:
+            print(f"⚠️ generate_single_chart_code failed: {e}")
+            return {}
+
     def _analyze_dataset_structure(self, dataset: pd.DataFrame) -> Dict[str, Any]:
         """
         Dataset Structure Analyzer
@@ -455,7 +1340,7 @@ print(result)"""
             "sample_data": dataset.head(3).to_string(index=False)
         }
     
-    def _generate_pandas_code(self, user_query: str, dataset: pd.DataFrame, dataset_metadata: Optional[Dict[str, Any]] = None) -> tuple[str, dict]:
+    def _generate_pandas_code(self, user_query: str, dataset: pd.DataFrame, dataset_metadata: Optional[Dict[str, Any]] = None, confirmed_relationships: Optional[List[Dict[str, Any]]] = None, all_datasets: Optional[Dict[str, Any]] = None, merge_info: Optional[str] = None) -> tuple[str, dict]:
         """
         Pandas Code Generator
         Uses Gemini LLM to generate executable pandas code from natural language queries.
@@ -511,12 +1396,32 @@ print(result)"""
                     print("⚠️ Metadata available but empty - falling back to basic analysis")
             
             # Determine context type for logging
-            context_type = 'with enhanced semantic context' if (dataset_metadata and dataset_metadata.get('success') and enhanced_context.strip()) else 'with basic structure analysis'
+            if merge_info:
+                context_type = f'pre-joined dataset ({merge_info})'
+            elif dataset_metadata and dataset_metadata.get('success') and enhanced_context.strip():
+                context_type = 'with enhanced semantic context'
+            else:
+                context_type = 'with basic structure analysis'
             print(f"📝 Context type: {context_type}")
-            
+
+            # Build dataset context block:
+            # - If data was pre-joined, use a clean MERGED DATASET header (no UUID variables)
+            # - Otherwise fall back to the cross-dataset UUID block (legacy path, should rarely fire)
+            cross_dataset_context = ""
+            if merge_info:
+                cross_dataset_context = (
+                    f"\nMERGED DATASET (pre-joined based on your confirmed schema):\n"
+                    f"- {merge_info}\n"
+                    f"- All columns from both tables are already in 'df' — use 'df' directly.\n"
+                    f"- Do NOT call pd.merge() — the join has already been done.\n"
+                )
+            elif confirmed_relationships and all_datasets:
+                # Fallback: relationships present but merge was skipped (e.g. no new columns added)
+                cross_dataset_context = "\nNOTE: Confirmed cross-dataset relationships exist but no pre-join was needed for this query.\n"
+
             # Create code generation prompt with enhanced context
             code_generation_prompt = f"""You are a data analyst. Generate Python pandas code to answer the user's query using the provided DataFrame.
-{enhanced_context}
+{enhanced_context}{cross_dataset_context}
 REAL DATASET STRUCTURE:
 - Variable name: 'df' 
 - Shape: {dataset.shape[0]} rows, {dataset.shape[1]} columns
@@ -528,13 +1433,17 @@ REAL DATASET STRUCTURE:
 USER QUERY: "{user_query}"
 
 Generate ONLY Python pandas code that:
-1. Uses ONLY the variable 'df' (which contains the real data above)
-2. NEVER creates or recreates the DataFrame 
+1. Uses ONLY the variable 'df' (the dataset shown above, already contains all needed columns)
+2. NEVER creates or recreates DataFrames from scratch
 3. Uses appropriate pandas methods based on the business context and column meanings
 4. Includes print statements to show results clearly
 5. Provides the exact answer to the user's question
 6. Works with the actual column names and data types shown above
-7. Consider the business/domain context when selecting columns and operations
+7. Considers the business/domain context when selecting columns and operations
+8. At the end of your code, assign the final answer to a variable named 'result':
+   - If a table/DataFrame: result = <your_dataframe>
+   - If a single value: result = <value>
+   - (In addition to print statements, this enables structured return)
 
 Example format:
 ```python
@@ -544,7 +1453,7 @@ Example format:
 Generate ONLY the code, no explanations:"""
 
             # Generate code using Gemini
-            code_response_text, token_usage = self.run_gemini_with_usage(code_generation_prompt)
+            code_response_text, token_usage = self.run_gemini_with_usage(code_generation_prompt, operation="Code Generation")
             
             if not code_response_text:
                 return "", token_usage
@@ -569,9 +1478,9 @@ Generate ONLY the code, no explanations:"""
                 
         except Exception as e:
             print(f"❌ Code generation failed: {str(e)}")
-            return "", {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+            return "", {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0, "_error": str(e)}
     
-    def _execute_pandas_code(self, code: str, dataset: pd.DataFrame, user_query: str) -> Dict[str, Any]:
+    def _execute_pandas_code(self, code: str, dataset: pd.DataFrame, user_query: str, all_datasets: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Safe Code Executor
         Executes generated pandas code in a sandboxed environment on the real dataset.
@@ -619,10 +1528,38 @@ Generate ONLY the code, no explanations:"""
                 'numpy': __import__('numpy'),
                 'print': lambda *args, **kwargs: print(*args, **kwargs, file=captured_output)
             }
+            # Inject additional datasets for cross-dataset join queries
+            if all_datasets:
+                for ds_id, ds_df in all_datasets.items():
+                    var_name = f"df_{ds_id[:8]}"
+                    execution_globals[var_name] = ds_df.copy()
             
             # Execute generated code on real dataset
             exec(code, execution_globals)
-            
+
+            # Capture structured result if code assigned one
+            raw_result = execution_globals.get('result', None)
+            if isinstance(raw_result, pd.DataFrame) and not raw_result.empty:
+                result_type   = 'table'
+                result_data   = raw_result.to_dict(orient='records')
+                result_cols   = list(raw_result.columns)
+            elif isinstance(raw_result, (int, float, np.integer, np.floating)):
+                result_type   = 'value'
+                result_data   = float(raw_result)
+                result_cols   = None
+            elif isinstance(raw_result, list) and raw_result:
+                result_type   = 'table'
+                result_data   = raw_result
+                result_cols   = list(raw_result[0].keys()) if isinstance(raw_result[0], dict) else None
+            elif isinstance(raw_result, dict):
+                result_type   = 'table'
+                result_data   = [raw_result]
+                result_cols   = list(raw_result.keys())
+            else:
+                result_type   = 'text'
+                result_data   = None
+                result_cols   = None
+
             # Get the output
             execution_output = captured_output.getvalue()
             
@@ -656,11 +1593,14 @@ Generate ONLY the code, no explanations:"""
             
             return {
                 "answer": analysis_text,
-                    "success": True,
+                "success": True,
                 "reasoning_steps": ["✅ Executed pandas code on REAL uploaded dataset"],
-                "code_steps": [code],  # Show the actual pandas code
-                    "tabular_data": tabular_data,
-                "has_table": has_table
+                "code_steps": [code],
+                "tabular_data": tabular_data,
+                "has_table": has_table,
+                "result_type": result_type,
+                "result_data": result_data,
+                "result_columns": result_cols,
             }
             
         except Exception as exec_error:
@@ -789,7 +1729,7 @@ INSTRUCTIONS:
 
 Format your response as a clear, professional analysis that a business user can immediately understand and act upon."""
 
-            refined_answer, token_usage = self.run_gemini_with_usage(prompt)
+            refined_answer, token_usage = self.run_gemini_with_usage(prompt, operation="Result Refinement")
             
             if refined_answer:
                 print("✅ Successfully refined analysis results")
@@ -861,7 +1801,7 @@ EXPLANATION: [brief explanation of what this metric represents]
 
 Use the actual data provided above."""
 
-            response, token_usage = self.run_gemini_with_usage(prompt)
+            response, token_usage = self.run_gemini_with_usage(prompt, operation="Metric Calculation")
             
             # Parse the response
             metric_expression = ""
@@ -1037,7 +1977,7 @@ IMPORTANT:
 - Order matters - transformations execute sequentially
 """
             
-            response, token_usage = self.run_gemini_with_usage(prompt)
+            response, token_usage = self.run_gemini_with_usage(prompt, operation="Transformation Plan")
             
             # Parse JSON response
             import json
@@ -1080,7 +2020,9 @@ IMPORTANT:
         dataset_id: str,
         dataset_metadata: Optional[Dict[str, Any]] = None,
         mode: str = "canvas",
-        conversation_history: Optional[List[Dict[str, Any]]] = None
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        confirmed_relationships: Optional[List[Dict[str, Any]]] = None,
+        all_datasets: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Generate Agent Actions
@@ -1109,9 +2051,26 @@ IMPORTANT:
             
             dataset = DATASETS[dataset_id]
             print(f"📊 Dataset: {dataset.shape[0]} rows, {dataset.shape[1]} columns")
-            
+
+            # Pre-join datasets when confirmed relationships are present
+            merged_dataset_id = None
+            merge_info_canvas = None
+            if confirmed_relationships and all_datasets:
+                merged_df, merge_description = self._build_merged_dataset(
+                    dataset_id, confirmed_relationships, all_datasets
+                )
+                if merged_df is not None:
+                    merged_dataset_id = f"merged_{dataset_id}"
+                    DATASETS[merged_dataset_id] = merged_df
+                    dataset = merged_df
+                    merge_info_canvas = merge_description
+                    print(f"🔗 Canvas mode — using pre-joined dataset: {merge_description}")
+                    print(f"📊 Merged shape: {dataset.shape[0]} rows, {dataset.shape[1]} columns")
+
             # Build enhanced context from metadata
             enhanced_context = ""
+            if merge_info_canvas:
+                enhanced_context += f"\n🔗 MERGED DATASET (pre-joined, ready to use):\n{merge_info_canvas}\nAll columns from both tables are available below.\n"
             if dataset_metadata and dataset_metadata.get('success'):
                 dataset_summary = dataset_metadata.get('dataset_summary', '')
                 columns_info = dataset_metadata.get('columns', [])
@@ -1129,6 +2088,17 @@ IMPORTANT:
                             enhanced_context += f"- {col_name} ({col_type}): {col_desc}\n"
                 
                 print(f"✨ Using enhanced context: {len(enhanced_context)} chars")
+
+            # Append cross-dataset schema if confirmed relationships are present
+            if confirmed_relationships and all_datasets:
+                enhanced_context += "\n🔗 CROSS-DATASET SCHEMA (user-confirmed relationships):\n"
+                for lnk in confirmed_relationships:
+                    name_a = lnk.get("dataset_a_name", lnk.get("dataset_a_id", "")[:8])
+                    name_b = lnk.get("dataset_b_name", lnk.get("dataset_b_id", "")[:8])
+                    enhanced_context += (
+                        f"- {name_a}.{lnk.get('col_a')} → {name_b}.{lnk.get('col_b')} "
+                        f"({lnk.get('cardinality', '?')})\n"
+                    )
             
             # Build canvas state summary
             canvas_summary = self._summarize_canvas_state(canvas_state)
@@ -1459,7 +2429,7 @@ CRITICAL RULES:
                 print(f"📜 Injected {len(recent)} history turns into prompt")
 
             print("📝 Sending prompt to Gemini...")
-            response, token_usage = self.run_gemini_with_usage(prompt)
+            response, token_usage = self.run_gemini_with_usage(prompt, operation="Agent Actions")
             
             # Log raw Gemini response
             print("\n" + "="*80)
@@ -1521,8 +2491,11 @@ CRITICAL RULES:
                         print("🎯"*40 + "\n")
                         break
             
-            # Add token usage
+            # Add token usage and merged dataset context
             actions_data["token_usage"] = token_usage
+            if merged_dataset_id:
+                actions_data["merged_dataset_id"] = merged_dataset_id
+                actions_data["merge_info"] = merge_info_canvas
             
             print(f"✅ Successfully generated {len(actions_data.get('actions', []))} actions")
             return actions_data

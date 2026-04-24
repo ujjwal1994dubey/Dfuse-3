@@ -1,8 +1,16 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useConfig } from './contexts/ConfigContext';
 import EChartsWrapper from './charts/EChartsWrapper';
 import TLDrawCanvas from './components/canvas/TLDrawCanvas';
-import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, ShareModal, Toast, DatasetSelector } from './components/ui';
-import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, Bot, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Share2, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, BookOpen, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus, LogOut } from 'lucide-react';
+import { Button, Badge, Card, CardHeader, CardContent, FileUpload, RadioGroup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Toast, DatasetSelector } from './components/ui';
+import RelationshipConfirmModal from './components/ui/RelationshipConfirmModal';
+import ExecutionLog from './components/ui/ExecutionLog';
+import SchemaPanel from './components/ui/SchemaPanel';
+import DataWorkflowPanel from './components/ui/DataWorkflowPanel';
+import SimpleCSVFlow from './components/ui/SimpleCSVFlow';
+import SchemaPicker from './components/ui/SchemaPicker';
+import { MoveUpRight, Type, SquareSigma, Merge, X, ChartColumn, Funnel, SquaresExclude, Menu, BarChart, Table, Send, File, Sparkles, Bot, PieChart, Circle, TrendingUp, BarChart2, Settings, Check, Eye, EyeOff, Edit, GitBranch, MenuIcon, Upload, Download, Bold, Italic, Underline as UnderlineIcon, Heading1, Heading2, ArrowRightToLine, ArrowRight, CirclePlus, Plus, Minus, ChevronLeft } from 'lucide-react';
 import './tiptap-styles.css';
 import { ECHARTS_TYPES, getEChartsSupportedTypes, getEChartsDefaultType } from './charts/echartsRegistry';
 import { applyUniversalEnhancements } from './charts/enhancementApplier';
@@ -1603,27 +1611,7 @@ function Modal({ isOpen = false, onClose, children, size = 'md' }) {
 
 /**
  * UnifiedSidebar Component
- * Left-side vertical toolbar that provides access to all main tools and actions.
- * Includes panel toggles (upload, variables, chart actions, merge, instructions, settings).
- * 
- * @param {boolean} uploadPanelOpen - Whether upload panel is currently open
- * @param {Function} setUploadPanelOpen - Toggle upload panel visibility
- * @param {boolean} variablesPanelOpen - Whether variables panel is currently open
- * @param {Function} setVariablesPanelOpen - Toggle variables panel visibility
- * @param {boolean} chartActionsPanelOpen - Whether chart actions panel is currently open
- * @param {Function} setChartActionsPanelOpen - Toggle chart actions panel visibility
- * @param {boolean} mergePanelOpen - Whether merge panel is currently open
- * @param {Function} setMergePanelOpen - Toggle merge panel visibility
- * @param {boolean} instructionsPanelOpen - Whether instructions panel is currently open
- * @param {Function} setInstructionsPanelOpen - Toggle instructions panel visibility
- * @param {boolean} settingsPanelOpen - Whether settings panel is currently open
- * @param {Function} setSettingsPanelOpen - Toggle settings panel visibility
- * @param {string} activeTool - Currently active tool ID
- * @param {Function} onToolChange - Callback when tool selection changes
- * @param {Function} onMergeCharts - Callback to merge selected charts
- * @param {number} selectedChartsCount - Number of currently selected charts
- * @param {boolean} canMerge - Whether merge action is enabled (requires exactly 2 charts)
- * @param {Object} selectedChartForActions - Currently selected chart object for actions (or null)
+ * Left-side vertical toolbar that provides access to all main canvas tools and actions.
  */
 function UnifiedSidebar({
   // Toggle states
@@ -1635,14 +1623,10 @@ function UnifiedSidebar({
   setChartActionsPanelOpen,
   mergePanelOpen,
   setMergePanelOpen,
-  instructionsPanelOpen,
-  setInstructionsPanelOpen,
-  settingsPanelOpen,
-  setSettingsPanelOpen,
-  // agentPanelOpen,    // DEPRECATED — old AI Agent panel (kept for rollback)
-  // setAgentPanelOpen,
   agentSidebarOpen,
   setAgentSidebarOpen,
+  settingsPanelOpen,
+  setSettingsPanelOpen,
   activeTool,
   onToolChange,
   // Action handlers
@@ -1656,27 +1640,7 @@ function UnifiedSidebar({
   // Export/Import functionality
   tldrawEditorRef,
   nodes,
-  // Share modal
-  setShareModalOpen,
-  setShareModalData,
-  // User authentication
-  user,
-  onLogout
 }) {
-  // User menu dropdown state
-  const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const userMenuRef = useRef(null);
-
-  // Close user menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (userMenuRef.current && !userMenuRef.current.contains(event.target)) {
-        setUserMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
   const toggleButtons = [
     { 
       id: 'upload', 
@@ -1688,9 +1652,8 @@ function UnifiedSidebar({
           setVariablesPanelOpen(false);
           setChartActionsPanelOpen(false);
           setMergePanelOpen(false);
-          setInstructionsPanelOpen(false);
-          setSettingsPanelOpen(false);
           setAgentSidebarOpen(false);
+          setSettingsPanelOpen(false);
         }
       }, 
       active: uploadPanelOpen 
@@ -1705,9 +1668,8 @@ function UnifiedSidebar({
           setUploadPanelOpen(false);
           setChartActionsPanelOpen(false);
           setMergePanelOpen(false);
-          setInstructionsPanelOpen(false);
-          setSettingsPanelOpen(false);
           setAgentSidebarOpen(false);
+          setSettingsPanelOpen(false);
         }
       }, 
       active: variablesPanelOpen 
@@ -1722,9 +1684,8 @@ function UnifiedSidebar({
           setUploadPanelOpen(false);
           setVariablesPanelOpen(false);
           setMergePanelOpen(false);
-          setInstructionsPanelOpen(false);
-          setSettingsPanelOpen(false);
           setAgentSidebarOpen(false);
+          setSettingsPanelOpen(false);
         }
       }, 
       // Only show as active when panel is actually open
@@ -1745,9 +1706,8 @@ function UnifiedSidebar({
         setUploadPanelOpen(false);
         setVariablesPanelOpen(false);
         setChartActionsPanelOpen(false);
-        setInstructionsPanelOpen(false);
-        setSettingsPanelOpen(false);
         setAgentSidebarOpen(false);
+        setSettingsPanelOpen(false);
       }, 
       active: mergePanelOpen
     },
@@ -1760,21 +1720,19 @@ function UnifiedSidebar({
     },
     // Separator indicator
     { id: 'separator-1', isSeparator: true },
-    // App control buttons
     {
-      id: 'instructions',
-      icon: BookOpen,
-      label: 'User Instructions',
-      active: instructionsPanelOpen,
+      id: 'agentSidebar',
+      icon: Bot,
+      label: 'Smart Agent',
+      active: agentSidebarOpen,
       onClick: () => {
-        setInstructionsPanelOpen(!instructionsPanelOpen);
-        if (!instructionsPanelOpen) {
+        setAgentSidebarOpen(!agentSidebarOpen);
+        if (!agentSidebarOpen) {
           setUploadPanelOpen(false);
           setVariablesPanelOpen(false);
           setChartActionsPanelOpen(false);
           setMergePanelOpen(false);
           setSettingsPanelOpen(false);
-          setAgentSidebarOpen(false);
         }
       }
     },
@@ -1790,95 +1748,10 @@ function UnifiedSidebar({
           setVariablesPanelOpen(false);
           setChartActionsPanelOpen(false);
           setMergePanelOpen(false);
-          setInstructionsPanelOpen(false);
           setAgentSidebarOpen(false);
         }
       }
     },
-    // DEPRECATED: old AI Agent button — uncomment to restore
-    // {
-    //   id: 'agent',
-    //   icon: Sparkles,
-    //   label: 'AI Agent',
-    //   active: agentPanelOpen,
-    //   onClick: () => {
-    //     setAgentPanelOpen(!agentPanelOpen);
-    //     if (!agentPanelOpen) {
-    //       setUploadPanelOpen(false);
-    //       setVariablesPanelOpen(false);
-    //       setChartActionsPanelOpen(false);
-    //       setMergePanelOpen(false);
-    //       setInstructionsPanelOpen(false);
-    //       setSettingsPanelOpen(false);
-    //       setAgentSidebarOpen(false);
-    //     }
-    //   }
-    // },
-    {
-      id: 'agentSidebar',
-      icon: Bot,
-      label: 'Smart Agent (New)',
-      active: agentSidebarOpen,
-      onClick: () => {
-        setAgentSidebarOpen(!agentSidebarOpen);
-        if (!agentSidebarOpen) {
-          setUploadPanelOpen(false);
-          setVariablesPanelOpen(false);
-          setChartActionsPanelOpen(false);
-          setMergePanelOpen(false);
-          setInstructionsPanelOpen(false);
-          setSettingsPanelOpen(false);
-        }
-      }
-    },
-    { id: 'separator-2', isSeparator: true },
-    // Share Dashboard (at the bottom)
-    {
-      id: 'share',
-      icon: Share2,
-      label: 'Share Dashboard',
-      onClick: async () => {
-        // Open modal and show loading state
-        setShareModalOpen(true);
-        setShareModalData({
-          shareUrl: null,
-          expiresAt: null,
-          isLoading: true,
-          error: null
-        });
-        
-        try {
-          const { shareCanvasViaGist } = require('./agentic_layer/canvasSnapshot');
-          const result = await shareCanvasViaGist(tldrawEditorRef.current, nodes, {
-            title: 'My Dashboard',
-            expiresIn: 30 // 30 days
-          });
-          
-          if (result && result.share_url) {
-            // Update modal with success data
-            setShareModalData({
-              shareUrl: result.share_url,
-              expiresAt: result.expires_at,
-              isLoading: false,
-              error: null
-            });
-            
-            // Auto-copy to clipboard silently
-            navigator.clipboard.writeText(result.share_url).catch(() => {
-              // Silent fail - user can manually copy from modal
-            });
-          }
-        } catch (error) {
-          console.error('Failed to share dashboard:', error);
-          setShareModalData({
-            shareUrl: null,
-            expiresAt: null,
-            isLoading: false,
-            error: error.message || 'Failed to create shareable link'
-          });
-        }
-      }
-    }
   ];
   
   const toolButtons = [
@@ -1888,10 +1761,12 @@ function UnifiedSidebar({
   
   return (
     <div 
-      className="fixed z-[1100] flex flex-col items-center py-6 gap-3 transition-all duration-300"
+      className="fixed z-[1100] flex flex-col items-center py-3 gap-2 transition-all duration-300"
       style={{ 
         left: '12px',
-        top: '60px',
+        top: '50%',
+        transform: 'translateY(-50%)',
+        marginTop: '36px',
         width: 'var(--size-sidebar)', 
         backgroundColor: 'var(--color-surface-elevated)',
         border: '1px solid var(--color-border)',
@@ -1900,11 +1775,11 @@ function UnifiedSidebar({
       }}
     >
       {/* Logo */}
-      <div className="mb-4">
+      <div className="mb-1">
         <img 
           src="/logo.svg" 
           alt="App Logo" 
-          style={{ width: '32px', height: '32px' }}
+          style={{ width: '28px', height: '28px' }}
         />
       </div>
       
@@ -1940,54 +1815,6 @@ function UnifiedSidebar({
         })}
       </div>
       
-      {/* Spacer to push user button to bottom */}
-      <div className="flex-1" />
-      
-      {/* User Profile Button */}
-      {user && (
-        <div className="relative" ref={userMenuRef}>
-          <button
-            onClick={() => setUserMenuOpen(!userMenuOpen)}
-            className="w-10 h-10 rounded-lg flex items-center justify-center transition-colors hover:bg-[#F1F5F9]"
-            style={{
-              border: '1px solid var(--color-border)',
-              backgroundColor: userMenuOpen ? 'var(--color-surface-hover)' : 'transparent'
-            }}
-            title={user?.name || 'User'}
-          >
-            <img
-              src={user?.picture}
-              alt={user?.name || 'User'}
-              className="w-6 h-6 rounded-full"
-              onError={(e) => {
-                e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(user?.name || 'U')}&background=E5E7EB&color=6B7280&size=24`;
-              }}
-            />
-          </button>
-          
-          {/* User Dropdown Menu */}
-          {userMenuOpen && (
-            <div 
-              className="absolute left-full ml-2 bottom-0 w-56 bg-white rounded-lg shadow-lg border border-[#E5E7EB] py-2 z-[2000]"
-            >
-              <div className="px-4 py-3 border-b border-[#E5E7EB]">
-                <p className="font-medium text-[#111827] truncate">{user?.name}</p>
-                <p className="text-sm text-[#6B7280] truncate">{user?.email}</p>
-              </div>
-              <button
-                onClick={() => {
-                  setUserMenuOpen(false);
-                  onLogout();
-                }}
-                className="w-full text-left px-4 py-2 text-[#EF4444] hover:bg-[#FEE2E2] transition-colors flex items-center gap-2"
-              >
-                <LogOut className="w-4 h-4" />
-                Sign out
-              </button>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -2003,7 +1830,7 @@ function UnifiedSidebar({
  * @param {Function} onClose - Callback when panel is closed
  * @param {string} size - Panel size variant: 'sm', 'md', 'lg'
  */
-function SlidingPanel({ isOpen, title, children, onClose, size = 'md' }) {
+function SlidingPanel({ isOpen, title, children, onClose, onBack, size = 'md' }) {
   return (
     <Panel isOpen={isOpen} size={size} position="left" className="rounded-xl">
       {isOpen && (
@@ -2016,15 +1843,25 @@ function SlidingPanel({ isOpen, title, children, onClose, size = 'md' }) {
               backgroundColor: 'var(--color-surface)'
             }}
           >
-            <h2 
-              className="font-semibold"
-              style={{ 
-                fontSize: 'var(--font-size-lg)',
-                color: 'var(--color-text)'
-              }}
-            >
-              {title}
-            </h2>
+            <div className="flex items-center gap-1 min-w-0">
+              {onBack && (
+                <IconButton
+                  icon={ChevronLeft}
+                  onClick={onBack}
+                  size="sm"
+                  label="Back"
+                />
+              )}
+              <h2 
+                className="font-semibold truncate"
+                style={{ 
+                  fontSize: 'var(--font-size-lg)',
+                  color: 'var(--color-text)'
+                }}
+              >
+                {title}
+              </h2>
+            </div>
             <IconButton
               icon={X}
               onClick={onClose}
@@ -2079,7 +1916,8 @@ function ChartActionsPanel({
   onChartUpdate,
   scrollToAI,
   setScrollToAI,
-  setNodes
+  setNodes,
+  confirmedRelationships,
 }) {
   // Session tracking for AI feature usage
   const { trackAIUsed, trackAIInsight, trackTokens } = useSessionTracking();
@@ -2176,7 +2014,8 @@ function ChartActionsPanel({
           chart_id: selectedChart.id,
           user_query: aiQuery.trim(),
           api_key: apiKey,
-          model: selectedModel
+          model: selectedModel,
+          confirmed_relationships: confirmedRelationships.length > 0 ? confirmedRelationships : undefined,
         })
       });
       
@@ -2953,6 +2792,11 @@ function ChartActionsPanel({
                 )}
               </DesignButton>
               
+              {/* Chart generation execution log — shown when no AI query has been run yet */}
+              {!aiResult && selectedChart?.data?.executionLog?.length > 0 && (
+                <ExecutionLog steps={selectedChart.data.executionLog} />
+              )}
+
               {/* Results */}
               {aiResult && (
                 <div className="space-y-3">
@@ -2983,6 +2827,14 @@ function ChartActionsPanel({
                         </p>
                       </div>
                     )}
+                    {aiResult.success && aiResult.merge_info && (
+                      <div className="mb-3 flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-blue-50 border border-blue-200">
+                        <GitBranch size={12} className="text-blue-500 shrink-0" />
+                        <p className="text-xs text-blue-700 leading-snug">
+                          <span className="font-medium">Joined view: </span>{aiResult.merge_info}
+                        </p>
+                      </div>
+                    )}
                     <p style={{ color: aiResult.success ? '#0f766e' : '#991b1b', whiteSpace: 'pre-wrap' }}>
                       {aiResult.answer}
                     </p>
@@ -3000,52 +2852,26 @@ function ChartActionsPanel({
                     </Button>
                   )}
                   
-                  {/* View Python Code Toggle Button */}
-                  {aiResult.success && aiResult.code_steps && aiResult.code_steps.length > 0 && (
-                    <details className="mt-3">
-                      <summary 
-                        className="cursor-pointer text-xs font-medium text-teal-700 hover:text-teal-800 flex items-center gap-2 list-none"
-                        style={{ listStyle: 'none' }}
-                      >
-                        <span className="select-none">▶</span>
-                        <span>View Python Code</span>
-                      </summary>
-                      <div className="mt-2 p-3 bg-gray-900 rounded text-xs space-y-3">
-                        {aiResult.code_steps.map((code, idx) => (
-                          <div key={idx}>
-                            {aiResult.code_steps.length > 1 && (
-                              <div className="text-gray-400 mb-1">Step {idx + 1}:</div>
-                            )}
-                            <pre className="text-green-400 font-mono text-xs whitespace-pre-wrap overflow-x-auto">
-                              <code>{code}</code>
-                            </pre>
-                          </div>
-                        ))}
-                        <div className="text-gray-400 text-xs mt-2 pt-2 border-t border-gray-700">
-                          💡 This code shows how the analysis was performed using your actual dataset
-                        </div>
-                      </div>
-                    </details>
-                  )}
-                  
-                  {/* Fallback for legacy analysis details format */}
-                  {aiResult.success && aiResult.answer?.includes('--- AI Analysis Details ---') && !(aiResult.code_steps && aiResult.code_steps.length > 0) && (
-                    <details className="mt-3">
-                      <summary 
-                        className="cursor-pointer text-xs font-medium text-gray-600 hover:text-gray-800 flex items-center gap-2 list-none"
-                        style={{ listStyle: 'none' }}
-                      >
-                        <span className="select-none">▶</span>
-                        <span>🔍 Show Analysis Details</span>
-                        <span className="text-xs">(reasoning & code)</span>
-                      </summary>
-                      <div className="mt-2 p-3 bg-gray-50 rounded text-xs space-y-2">
-                        <div className="whitespace-pre-wrap font-mono text-gray-700">
-                          {aiResult.answer.split('--- AI Analysis Details ---')[1]}
-                        </div>
-                      </div>
-                    </details>
-                  )}
+                  {/* Execution log — surfaces all pipeline steps with zero extra LLM calls */}
+                  {aiResult.success && (() => {
+                    const execSteps = [];
+                    if (aiResult?.scope_info?.description) {
+                      execSteps.push({
+                        label: 'Scope',
+                        detail: `${aiResult.scope_info.description}${aiResult.scope_info.rows != null ? ` (${aiResult.scope_info.rows.toLocaleString()} rows)` : ''}`,
+                      });
+                    }
+                    if (aiResult?.merge_info) {
+                      execSteps.push({ label: 'Join applied', detail: aiResult.merge_info });
+                    }
+                    if (aiResult?.code_steps?.[0]) {
+                      execSteps.push({ label: 'Generated query', code: aiResult.code_steps[0] });
+                    }
+                    if (aiResult?.is_refined && aiResult?.raw_analysis) {
+                      execSteps.push({ label: 'Insight refinement', raw: aiResult.raw_analysis });
+                    }
+                    return <ExecutionLog steps={execSteps} />;
+                  })()}
                 </div>
               )}
             </div>
@@ -3125,7 +2951,69 @@ function ClearFiltersButton() {
  * This is the core orchestrator that connects all UI components and manages
  * the application state. It renders the layout with sidebars, panels, canvas, and report.
  */
-function AppWrapper({ user, onLogout }) {
+
+/**
+ * Generate a thumbnail SVG from canvas nodes.
+ * Shows the layout and element types using thick colored strokes on rounded
+ * rectangles — no internal chart content, just a legible spatial overview.
+ *
+ * Color coding:
+ *   chart   → blue  (#3B82F6)
+ *   kpi     → amber (#F59E0B)
+ *   table   → green (#10B981)
+ *   textbox → grey  (#9CA3AF)
+ */
+function generateThumbnailSvg(nodes) {
+  if (!nodes || nodes.length === 0) return null;
+
+  const TARGET_W = 400;
+  const TARGET_H = 280;
+  const PADDING = 16;
+
+  // Bounding box of all nodes in canvas-space
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  nodes.forEach(node => {
+    const x = node.position?.x || 0;
+    const y = node.position?.y || 0;
+    const w = node.data?.width || 300;
+    const h = node.data?.height || 200;
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x + w > maxX) maxX = x + w;
+    if (y + h > maxY) maxY = y + h;
+  });
+
+  const canvasW = maxX - minX || 1;
+  const canvasH = maxY - minY || 1;
+
+  // Uniform scale to fit inside the padded viewport
+  const availW = TARGET_W - PADDING * 2;
+  const availH = TARGET_H - PADDING * 2;
+  const scale = Math.min(availW / canvasW, availH / canvasH);
+
+  // Per-type fill color (no strokes) — saturated 200-level hues
+  const FILLS = {
+    chart:   '#BFDBFE',
+    kpi:     '#FDE68A',
+    table:   '#A7F3D0',
+    textbox: '#E5E7EB',
+  };
+  const DEFAULT_FILL = '#CBD5E1';
+
+  const rects = nodes.map(node => {
+    const sx = PADDING + (( node.position?.x || 0) - minX) * scale;
+    const sy = PADDING + (( node.position?.y || 0) - minY) * scale;
+    const sw = Math.max(4, (node.data?.width  || 300) * scale);
+    const sh = Math.max(4, (node.data?.height || 200) * scale);
+    const fill = FILLS[node.type] || DEFAULT_FILL;
+    return `<rect x="${sx.toFixed(1)}" y="${sy.toFixed(1)}" width="${sw.toFixed(1)}" height="${sh.toFixed(1)}" rx="6" fill="${fill}"/>`;
+  }).join('');
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${TARGET_W}" height="${TARGET_H}" viewBox="0 0 ${TARGET_W} ${TARGET_H}" style="background:#F8FAFC;">${rects}</svg>`;
+}
+
+function AppWrapper({ user, onLogout, canvasId, canvasMeta }) {
+  const navigate = useNavigate();
   // Global filter context for click-through filtering
   const { globalFilter, setGlobalFilter, shouldChartApplyFilter, getFilterForAPI } = useGlobalFilter();
   
@@ -3145,6 +3033,19 @@ function AppWrapper({ user, onLogout }) {
   const [datasets, setDatasets] = useState([]);
   // Each dataset: { id, filename, dimensions, measures, rows, analysis, uploadedAt }
   const [activeDatasetId, setActiveDatasetId] = useState(null);
+
+  // Cross-dataset relationship state
+  const [pendingRelationships, setPendingRelationships] = useState([]); // awaiting user confirmation
+  const [confirmedRelationships, setConfirmedRelationships] = useState([]); // accepted by user
+  const [showRelationshipModal, setShowRelationshipModal] = useState(false); // controls modal visibility
+
+  // 7-step bulk upload workflow state
+  const [workflowMode, setWorkflowMode] = useState(false);       // activates the workflow panel
+  const [workflowStep, setWorkflowStep] = useState(1);           // current step (1-5)
+  const [fileQuality, setFileQuality] = useState({});            // { dataset_id: quality_result }
+  const [analysisResults, setAnalysisResults] = useState({});    // { dataset_id: analysis_result } — lifted so results survive modal close/reopen
+  const [joinPreview, setJoinPreview] = useState(null);          // join preview result
+  const [uploadProgress, setUploadProgress] = useState(null);    // { current, total, filename }
   
   // Derived values from active dataset
   const activeDataset = useMemo(() => 
@@ -3182,25 +3083,31 @@ function AppWrapper({ user, onLogout }) {
   // Helper to remove a dataset
   const removeDataset = useCallback(async (datasetIdToRemove) => {
     try {
-      // Call backend to delete
+      // Call backend to delete (also cleans up merged datasets server-side)
       await fetch(`${API}/datasets/${datasetIdToRemove}`, { method: 'DELETE' });
-      
-      // Remove from local state
-      setDatasets(prev => prev.filter(d => d.id !== datasetIdToRemove));
-      
-      // If removing the active dataset, switch to another one or clear
-      if (datasetIdToRemove === activeDatasetId) {
-        setDatasets(prev => {
-          const remaining = prev.filter(d => d.id !== datasetIdToRemove);
-          if (remaining.length > 0) {
-            setActiveDatasetId(remaining[0].id);
-          } else {
-            setActiveDatasetId(null);
-          }
-          return remaining;
+
+      setDatasets(prev => {
+        // Remove the deleted dataset AND any merged views that included it
+        // (merged entries store sourceDatasets; we drop entries where the removed
+        // dataset's filename was one of the sources — backend already cleared them)
+        const removedEntry = prev.find(d => d.id === datasetIdToRemove);
+        const removedFilename = removedEntry?.filename;
+        const remaining = prev.filter(d => {
+          if (d.id === datasetIdToRemove) return false;
+          if (d.isMerged && removedFilename && d.sourceDatasets?.includes(removedFilename)) return false;
+          return true;
         });
-      }
-      
+
+        // If the active dataset was removed (or its merged view), switch to first remaining
+        const activeStillPresent = remaining.some(d => d.id === activeDatasetId);
+        if (!activeStillPresent) {
+          const nonMerged = remaining.filter(d => !d.isMerged);
+          setActiveDatasetId(nonMerged.length > 0 ? nonMerged[0].id : (remaining.length > 0 ? remaining[0].id : null));
+        }
+
+        return remaining;
+      });
+
       console.log(`🗑️ Dataset ${datasetIdToRemove} removed`);
     } catch (error) {
       console.error('Failed to remove dataset:', error);
@@ -3225,10 +3132,22 @@ function AppWrapper({ user, onLogout }) {
   const [suggestions, setSuggestions] = useState([]);
   const [suggestionsError, setSuggestionsError] = useState(null);
   const [aiGeneratedChartCount, setAiGeneratedChartCount] = useState(0);  // Track count for auto-insights
+
+  // Query-engine chart generation state (AI Chart section in Create Charts panel)
+  const [qeChartQuery, setQeChartQuery] = useState('');
+  const [qeChartLoading, setQeChartLoading] = useState(false);
+  const [qeChartError, setQeChartError] = useState(null);
+  const [qeChartLog, setQeChartLog] = useState([]);
+
+  // Smart Chart state (NL-driven single chart with full pandas transformation)
+  const [smartChartPrompt, setSmartChartPrompt] = useState('');
+  const [smartChartLoading, setSmartChartLoading] = useState(false);
+  const [smartChartError, setSmartChartError] = useState(null);
+
   const [selectedDimension, setSelectedDimension] = useState('');
   const [selectedMeasure, setSelectedMeasure] = useState('');
-  const [nodes, setNodes] = useState([]);
-  const [edges, setEdges] = useState([]);
+  const [nodes, setNodes] = useState(() => canvasMeta?.canvas_state?.nodes || []);
+  const [edges, setEdges] = useState(() => canvasMeta?.canvas_state?.edges || []);
   const [selectedCharts, setSelectedCharts] = useState([]);
   const tldrawEditorRef = useRef(null); // Reference to TLDraw editor for programmatic control
   const isProgrammaticDeselect = useRef(false); // Flag to prevent listener from re-selecting during programmatic clear
@@ -3424,44 +3343,38 @@ function AppWrapper({ user, onLogout }) {
   
   // Sidebar panel states
   const [uploadPanelOpen, setUploadPanelOpen] = useState(false);
+  const [uploadMode, setUploadMode] = useState(null); // null | 'csv' | 'schema'
   const [variablesPanelOpen, setVariablesPanelOpen] = useState(false);
   const [chartActionsPanelOpen, setChartActionsPanelOpen] = useState(false);
   const [selectedChartForActions, setSelectedChartForActions] = useState(null);
   const [scrollToAI, setScrollToAI] = useState(false);
   
-  // Transform prompt state
-  const [instructionsPanelOpen, setInstructionsPanelOpen] = useState(() => {
-    // Show instructions panel by default for first-time users
-    const hasSeenInstructions = localStorage.getItem('dfuse_instructions_seen');
-    return !hasSeenInstructions;
-  });
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
   // const [agentPanelOpen, setAgentPanelOpen] = useState(false); // DEPRECATED — old AI Agent panel
   const [agentSidebarOpen, setAgentSidebarOpen] = useState(false);
   const [canvasMessages, setCanvasMessages] = useState([]); // Canvas mode conversation
   const [askMessages, setAskMessages] = useState([]); // Ask mode conversation
+  const [unifiedMessages, setUnifiedMessages] = useState([]); // Unified super agent conversation
   
-  const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_api_key') || '');
-  const [selectedModel, setSelectedModel] = useState(localStorage.getItem('gemini_model') || 'gemini-2.5-flash');
-  const [configStatus, setConfigStatus] = useState('idle'); // idle, testing, success, error
-  const [configMessage, setConfigMessage] = useState('');
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [isConfigLocked, setIsConfigLocked] = useState(false);
-  const [tokenUsage, setTokenUsage] = useState({
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-    estimatedCost: 0
-  });
+  // Config state — sourced from ConfigContext so Settings page and canvas share the same values
+  const {
+    apiKey, setApiKey,
+    selectedModel, setSelectedModel,
+    configStatus, setConfigStatus,
+    configMessage, setConfigMessage,
+    showApiKey, setShowApiKey,
+    isConfigLocked, setIsConfigLocked,
+    tokenUsage,
+  } = useConfig();
   
-  // Share modal state
-  const [shareModalOpen, setShareModalOpen] = useState(false);
-  const [shareModalData, setShareModalData] = useState({
-    shareUrl: null,
-    expiresAt: null,
-    isLoading: false,
-    error: null
-  });
+  // Share button state
+  const [shareState, setShareState] = useState({ loading: false, copied: false, url: null });
+
+  // Canvas persistence: name + auto-save
+  const [canvasName, setCanvasName] = useState(canvasMeta?.name || 'Untitled Canvas');
+  const [canvasNameEditing, setCanvasNameEditing] = useState(false);
+  const canvasNameRef = useRef(null);
+  const autoSaveTimerRef = useRef(null);
   
   // Toast notification state
   const [toast, setToast] = useState({
@@ -3475,42 +3388,62 @@ function AppWrapper({ user, onLogout }) {
     setToast({ isOpen: true, message, type });
   };
 
-  // Helper function to calculate token costs (Gemini pricing)
+  // updateTokenUsage — delegates to ConfigContext, then tracks for session analytics
+  const { updateTokenUsage: ctxUpdateTokenUsage } = useConfig();
   const updateTokenUsage = useCallback((newUsage) => {
     if (!newUsage) return;
-    
-    const inputCostPer1K = 0.00075; // $0.00075 per 1K input tokens for Gemini
-    const outputCostPer1K = 0.003;  // $0.003 per 1K output tokens for Gemini
-    
-    const inputCost = (newUsage.inputTokens / 1000) * inputCostPer1K;
-    const outputCost = (newUsage.outputTokens / 1000) * outputCostPer1K;
-    
+    ctxUpdateTokenUsage(newUsage);
     const totalNewTokens = (newUsage.inputTokens || 0) + (newUsage.outputTokens || 0);
-    
-    setTokenUsage(prev => ({
-      inputTokens: prev.inputTokens + (newUsage.inputTokens || 0),
-      outputTokens: prev.outputTokens + (newUsage.outputTokens || 0),
-      totalTokens: prev.totalTokens + totalNewTokens,
-      estimatedCost: prev.estimatedCost + inputCost + outputCost
-    }));
-    
-    // Track tokens for session analytics
     trackTokens(totalNewTokens);
-  }, [trackTokens]);
+  }, [ctxUpdateTokenUsage, trackTokens]);
 
 
-  // Initialize locked state if configuration is already stored
+  // Note: isConfigLocked initialization is handled by ConfigContext on mount
+
+  // Auto-save canvas to Supabase whenever nodes change (2s debounce).
+  // Falls back to localStorage if Supabase tables aren't set up yet.
   useEffect(() => {
-    const storedApiKey = localStorage.getItem('gemini_api_key');
-    
-    if (storedApiKey && storedApiKey.trim()) {
-      setIsConfigLocked(true);
-      setConfigStatus('success');
-      setConfigMessage('Configuration loaded from previous session.');
-    }
-    
-    // Remove cache clearing to avoid potential interference with active charts
-  }, []);
+    if (!canvasId || nodes.length === 0) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(async () => {
+      try {
+        const canvasState = { nodes, edges };
+        const thumbnailSvg = generateThumbnailSvg(nodes);
+        const res = await fetch(`${API}/canvases/${canvasId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            canvas_state: canvasState,
+            node_count: nodes.length,
+            thumbnail_svg: thumbnailSvg,
+          }),
+        });
+        if (!res.ok) {
+          // Supabase table missing — persist to localStorage as fallback
+          const LOCAL_KEY = 'dfuse_canvases';
+          const userId = user?.id;
+          if (userId) {
+            try {
+              const raw = localStorage.getItem(`${LOCAL_KEY}_${userId}`);
+              const all = raw ? JSON.parse(raw) : [];
+              const updated = all.map(c => c.id === canvasId
+                ? { ...c, canvas_state: canvasState, node_count: nodes.length, thumbnail_svg: thumbnailSvg, updated_at: new Date().toISOString() }
+                : c
+              );
+              if (!updated.some(c => c.id === canvasId)) {
+                updated.unshift({ id: canvasId, user_id: userId, name: canvasName, canvas_state: canvasState, node_count: nodes.length, thumbnail_svg: thumbnailSvg, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), _local: true });
+              }
+              localStorage.setItem(`${LOCAL_KEY}_${userId}`, JSON.stringify(updated));
+            } catch (_) {}
+          }
+        }
+      } catch (err) {
+        console.warn('Auto-save failed:', err);
+      }
+    }, 2000);
+    return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, canvasId]);
 
   // Track the previous global filter dimension to know what to clear
   const prevGlobalFilterRef = useRef(null);
@@ -4229,7 +4162,6 @@ function AppWrapper({ user, onLogout }) {
     setUploadPanelOpen(false);
     setVariablesPanelOpen(false);
     setMergePanelOpen(false);
-    setInstructionsPanelOpen(false);
     setSettingsPanelOpen(false);
     
     // Open the chart actions panel
@@ -4264,7 +4196,6 @@ function AppWrapper({ user, onLogout }) {
     setUploadPanelOpen(false);
     setVariablesPanelOpen(false);
     setMergePanelOpen(false);
-    setInstructionsPanelOpen(false);
     setSettingsPanelOpen(false);
     
     // Open the chart actions panel (without scrolling to AI section)
@@ -4826,8 +4757,8 @@ function AppWrapper({ user, onLogout }) {
       const dims = node.data.dimensions || [];
       const meas = node.data.measures || [];
       
-      // Use the global datasetId as primary source, but for fused charts we need to ensure we have it
-      const currentDatasetId = datasetId || node.data.datasetId;
+      // Prefer the chart's own dataset (ephemeral for smart/derived charts) over the global selection
+      const currentDatasetId = node.data.datasetId || datasetId;
       
       console.log('📋 Aggregation update context:', { 
         nodeId, 
@@ -5019,8 +4950,8 @@ function AppWrapper({ user, onLogout }) {
       const table = node.data.table || [];
       const isDerived = node.data.isDerived || false;
       
-      // Use the global datasetId as primary source
-      const currentDatasetId = datasetId || node.data.datasetId;
+      // Prefer the chart's own dataset (ephemeral for smart/derived charts) over the global selection
+      const currentDatasetId = node.data.datasetId || datasetId;
       
       console.log('📋 Sort order update context:', { 
         nodeId, 
@@ -5758,7 +5689,8 @@ function AppWrapper({ user, onLogout }) {
       
       // Get node data for dataset ID
       const node1 = nodes.find(n => n.id === c1);
-      const nodeDatasetId = node1?.data?.datasetId;
+      // For smart charts use the original source dataset; ephemeral IDs don't have the raw columns
+      const nodeDatasetId = node1?.data?.sourceDatasetId || node1?.data?.datasetId;
       
       if (!nodeDatasetId) {
         throw new Error('Dataset ID not found for charts');
@@ -6185,7 +6117,8 @@ function AppWrapper({ user, onLogout }) {
     }
   }, [getViewportCenter, trackTableCreated]);
 
-  const uploadCSV = async (file) => {
+  const uploadCSV = async (file, options = {}) => {
+    const { suppressRelationshipModal = false } = options;
     try {
       const fd = new FormData();
       fd.append('file', file);
@@ -6211,27 +6144,78 @@ function AppWrapper({ user, onLogout }) {
       // Add to datasets array
       setDatasets(prev => [...prev, newDataset]);
       
-      // Auto-select the new dataset
-      setActiveDatasetId(meta.dataset_id);
-      
-      // Clear previous selections
-      setSelectedDimension('');
-      setSelectedMeasure('');
-      
-      // Clear analysis state for new dataset
-      setAnalysisError(null);
-      setEditingMetadata(false);
-      setMetadataDraft(null);
+      // Auto-select the new dataset (skip during batch uploads — caller controls selection)
+      if (!suppressRelationshipModal) {
+        setActiveDatasetId(meta.dataset_id);
+        setSelectedDimension('');
+        setSelectedMeasure('');
+        setAnalysisError(null);
+        setEditingMetadata(false);
+        setMetadataDraft(null);
+      }
       
       console.log('📁 Dataset added:', newDataset);
       console.log(`📊 Total datasets: ${datasets.length + 1}`);
       
       // Create a dataset table on the canvas
       createDatasetTable(meta.dataset_id, file.name, meta.dimensions, meta.measures, meta.rows);
+
+      // After adding a second (or more) dataset, trigger relationship detection.
+      // In workflow mode the modal is suppressed — the panel handles schema review.
+      if (meta.relationships_detected && !suppressRelationshipModal) {
+        console.log(`🔗 Relationships detected (${meta.pending_relationship_count} pending), fetching and enriching...`);
+        try {
+          const relRes = await fetch(`${API}/relationships`);
+          if (relRes.ok) {
+            const relData = await relRes.json();
+            const pending = (relData.relationships || []).filter(l => l.status === 'pending_confirmation');
+            if (pending.length > 0) {
+              const enrichRes = await fetch(`${API}/enrich-relationships`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ api_key: apiKey || undefined, model: selectedModel }),
+              });
+              const enriched = enrichRes.ok ? await enrichRes.json() : null;
+              const enrichedLinks = enriched?.relationships || relData.relationships || [];
+              const pendingEnriched = enrichedLinks.filter(l => l.status === 'pending_confirmation');
+              setPendingRelationships(pendingEnriched);
+              setShowRelationshipModal(true);
+            }
+          }
+        } catch (relError) {
+          console.warn('Relationship detection/enrichment failed:', relError);
+        }
+      }
+
+      return meta;
     } catch (error) {
       console.error('Failed to upload CSV:', error);
       alert(`Failed to upload CSV: ${error.message}`);
+      return null;
     }
+  };
+
+  // Batch upload: sequentially upload multiple files then activate the workflow panel
+  const uploadFiles = async (files) => {
+    if (files.length === 1) {
+      await uploadCSV(files[0]);
+      return;
+    }
+    for (let i = 0; i < files.length; i++) {
+      setUploadProgress({ current: i + 1, total: files.length, filename: files[i].name });
+      await uploadCSV(files[i], { suppressRelationshipModal: true });
+    }
+    setUploadProgress(null);
+    // After batch upload activate workflow panel and select first uploaded file
+    setWorkflowMode(true);
+    setWorkflowStep(1);
+    // Select first dataset uploaded in this batch for initial context
+    setSelectedDimension('');
+    setSelectedMeasure('');
+    setAnalysisError(null);
+    setEditingMetadata(false);
+    setMetadataDraft(null);
+    showToast(`${files.length} files uploaded — starting multi-file workflow`, 'success');
   };
 
   const analyzeDataset = async (dataset_id = datasetId) => {
@@ -7037,6 +7021,229 @@ function AppWrapper({ user, onLogout }) {
     }
   };
 
+  // Create a chart from a natural-language query via the query engine.
+  // Calls /query-engine (schema-aware, join-capable), then /charts with the
+  // pre-computed result table, and adds the resulting node to the canvas.
+  const createQueryEngineChart = async (naturalLanguageQuery) => {
+    if (!naturalLanguageQuery.trim()) return;
+
+    // All currently loaded dataset IDs (non-ephemeral are used as scope)
+    const allDatasetIds = datasets.map(d => d.id).filter(Boolean);
+    if (allDatasetIds.length === 0) {
+      throw new Error('Upload at least one CSV file before generating a chart.');
+    }
+
+    // ── Step 1: Run query engine ──────────────────────────────────────────
+    const qeRes = await fetch(`${API}/query-engine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_query: naturalLanguageQuery,
+        dataset_ids: allDatasetIds,
+        api_key: apiKey,
+        model: selectedModel || 'gemini-2.5-flash',
+      }),
+    });
+
+    if (!qeRes.ok) {
+      const errText = await qeRes.text();
+      throw new Error(`Query engine failed: ${errText}`);
+    }
+
+    const qeData = await qeRes.json();
+
+    if (!qeData.success) {
+      throw new Error(qeData.answer || 'Query engine returned no result.');
+    }
+
+    if (qeData.result_type !== 'table' || !qeData.result_dataset_id) {
+      throw new Error(
+        qeData.answer
+          ? `Query produced a text answer rather than a table: "${qeData.answer}"`
+          : 'Query did not produce chart-ready tabular data. Try rephrasing as an aggregation query.'
+      );
+    }
+
+    const { result_dataset_id, suggested_dimensions, suggested_measures, chart_title } = qeData;
+
+    // ── Build execution log from qeData (zero extra LLM calls) ────────────
+    const qeLog = [];
+    if (qeData.selected_table_names?.length) {
+      qeLog.push({
+        label: 'Tables selected',
+        detail: qeData.selected_table_names.join(', ') +
+          (qeData.planner_reasoning ? ' — ' + qeData.planner_reasoning : ''),
+      });
+    }
+    if (qeData.join_description) {
+      qeLog.push({ label: 'Join', detail: qeData.join_description });
+    }
+    if (qeData.code_steps?.[0]) {
+      qeLog.push({ label: 'Generated query', code: qeData.code_steps[0] });
+    }
+    if (qeData.chart_title) {
+      qeLog.push({
+        label: 'Result',
+        detail: `${qeData.chart_title} (${qeData.result_type})`,
+      });
+    }
+
+    // ── Step 2: Infer chart type ──────────────────────────────────────────
+    const dims     = suggested_dimensions || [];
+    const measures = suggested_measures   || [];
+    const defaultChartType = getEChartsDefaultType(dims.length, measures.length);
+    const chartTypeId = defaultChartType.id;
+
+    // ── Step 3: Create chart via /charts (pre-computed table, row-limited) ─
+    // Limit to first 500 rows for chart readability
+    const rowLimitedTable = (qeData.data || []).slice(0, 500);
+
+    const chartRes = await fetch(`${API}/charts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        dataset_id: result_dataset_id,
+        dimensions: dims,
+        measures:   measures,
+        agg:        'sum',
+        title:      chart_title,
+        table:      rowLimitedTable,
+        is_derived: true,
+      }),
+    });
+
+    if (!chartRes.ok) {
+      const errText = await chartRes.text();
+      throw new Error(`Chart creation failed: ${errText}`);
+    }
+
+    const chart = await chartRes.json();
+
+    // ── Step 4: Add canvas node ───────────────────────────────────────────
+    const figure = figureFromPayload(chart, chartTypeId);
+
+    setNodes(nds => nds.concat({
+      id: chart.chart_id,
+      type: 'chart',
+      position: getViewportCenter(),
+      draggable: true,
+      selectable: false,
+      data: {
+        title:        chart.title,
+        figure,
+        chartType:    chartTypeId,
+        selected:     false,
+        onSelect:     handleChartSelect,
+        onShowTable:  handleShowTable,
+        onAggChange:  updateChartAgg,
+        onAIExplore:  handleAIExplore,
+        agg:          'sum',
+        sortOrder:    'dataset',
+        dimensions:   dims,
+        measures:     measures,
+        datasetId:    result_dataset_id,
+        table:        chart.table || [],
+        filters:      {},
+        isNewlyCreated: true,
+        executionLog: qeLog,
+      },
+    }));
+
+    trackChartCreatedByAI();
+    return { chart_title, qeLog };
+  };
+
+  // Handler for the "Generate Chart" button in the AI Chart panel section.
+  const handleGenerateQEChart = async () => {
+    if (!qeChartQuery.trim() || qeChartLoading) return;
+    setQeChartLoading(true);
+    setQeChartError(null);
+    setQeChartLog([]);
+    try {
+      const result = await createQueryEngineChart(qeChartQuery);
+      if (result?.qeLog) setQeChartLog(result.qeLog);
+      setQeChartQuery('');
+    } catch (err) {
+      setQeChartError(err.message || 'Failed to generate chart. Try rephrasing your query.');
+    } finally {
+      setQeChartLoading(false);
+    }
+  };
+
+  // Smart Chart: single-chart NL request routed through /smart-chart (LLM writes pandas)
+  const handleSmartChart = async () => {
+    if (!smartChartPrompt.trim() || smartChartLoading) return;
+    if (!apiKey) return setSmartChartError('Add an API key in Settings to use Smart Chart.');
+    if (datasets.length === 0) return setSmartChartError('Upload a CSV file first.');
+
+    setSmartChartLoading(true);
+    setSmartChartError(null);
+
+    try {
+      const res = await fetch(`${API}/smart-chart`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_request: smartChartPrompt.trim(),
+          api_key: apiKey,
+          model: selectedModel || 'gemini-2.5-flash',
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Smart Chart request failed');
+      }
+
+      const chart = await res.json();
+
+      // Prefer the LLM's chart type hint when it matches a known ECharts type,
+      // otherwise fall back to the dimension/measure-based default.
+      const hintId = chart.chart_type_hint?.toUpperCase();
+      const chartTypeId = (hintId && ECHARTS_TYPES[hintId])
+        ? hintId.toLowerCase()
+        : getEChartsDefaultType(chart.dimensions.length, chart.measures.length).id;
+
+      const figure = figureFromPayload(chart, chartTypeId);
+
+      setNodes(nds => nds.concat({
+        id: chart.chart_id,
+        type: 'chart',
+        position: getViewportCenter(),
+        draggable: true,
+        selectable: false,
+        data: {
+          title:           chart.title,
+          figure,
+          chartType:       chartTypeId,
+          selected:        false,
+          onSelect:        handleChartSelect,
+          onShowTable:     handleShowTable,
+          onAggChange:     updateChartAgg,
+          onAIExplore:     handleAIExplore,
+          agg:             'sum',
+          sortOrder:       'dataset',
+          dimensions:      chart.dimensions,
+          measures:        chart.measures,
+          datasetId:       chart.dataset_id,
+          sourceDatasetId: chart.source_dataset_id || null,
+          table:           chart.table || [],
+          filters:         {},
+          isDerived:       true,
+          isSmartChart:    true,
+          isNewlyCreated:  true,
+        },
+      }));
+
+      setSmartChartPrompt('');
+      trackChartCreatedByAI();
+    } catch (err) {
+      setSmartChartError(err.message || 'Failed to generate chart. Try rephrasing your request.');
+    } finally {
+      setSmartChartLoading(false);
+    }
+  };
+
   // Helper function to format user-friendly error messages
   const formatErrorMessage = (errorMessage) => {
     if (!errorMessage) return 'Unknown error occurred.';
@@ -7152,123 +7359,6 @@ function AppWrapper({ user, onLogout }) {
     );
   };
 
-  // Instructions data structure for the Instructions panel
-    const instructions = {
-      title: "Welcome to D.Fuse - Your Data Visualization Playground!",
-      subtitle: "Transform your data into stunning insights with our AI-powered platform with Infinite canvas • AI-powered insights • Smart chart fusion • Effortless reporting",
-      videoIframe: '<iframe width="560" height="315" src="https://www.youtube.com/embed/rDHrFO6vyCE?si=YUNiEx5C_p3rnBt7&amp;controls=0" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>',
-      
-      sections: [
-        {
-          title: "Setup",
-          items: [
-            {
-              title: "Enter Your Gemini API Key",
-              content: [
-                "- Go to the Settings panel.",
-                "- Paste your Gemini API key in the designated field.",
-                "- This securely connects Dfuse to your preferred AI service."
-              ]
-            },
-            {
-              title: "Select Your AI Model",
-              content: [
-                "- Choose from the available Gemini AI models using the dropdown menu."
-              ]
-            },
-            {
-              title: "Confirm Your Connection",
-              content: [
-                "- After saving your settings, look for a confirmation message.",
-                "- This indicates your connection is active and your model is ready for use."
-              ]
-            },
-            {
-              title: "Track Token Usage",
-              content: [
-                "- Monitor your AI token consumption directly within the Settings panel."
-              ]
-            }
-          ]
-        },
-        
-        {
-          title: "Feature 1 — Create Charts Easily",
-          items: [
-            {
-              title: "Upload Your Data",
-              content: [
-                "- Click the Upload Data button on the left action bar.",
-                "- Select and upload your CSV file."
-              ]
-            },
-            {
-              title: "Select Variables",
-              content: [
-                "- Choose variables from the Variables panel.",
-                "- You can select, a single dimension or measure, or One dimension and one measure together",
-              ]
-            },
-            {
-              title: "View Your Chart",
-              content: [
-                "A chart based on your selected variables automatically appears on the canvas."
-              ]
-            }
-          ],
-          tip: "You can change the chart's aggregation type (Sum, Average, Min, Max) using the menu icon on the chart."
-        },
-        
-        {
-          title: "Feature 2 — Fuse Charts Together",
-          content: [
-            "You can fuse:",
-            "• Two single-variable charts (one dimension + one measure each), or",
-            "• Two two-variable charts that share a common variable.",
-            "",
-            "To fuse charts:",
-            "- Select two charts by clicking on their titles.",
-            "- Click the Fuse icon on the left action bar.",
-            "- A fused chart will be created on the canvas.",
-            "- Change its chart type anytime from the top-right corner menu."
-          ]
-        },
-        
-        {
-          title: "Feature 3 — Ask AI for Insights",
-          items: [
-            {
-              title: "Use AI to Analyze or Transform Data",
-              content: [
-                "- Find the \"Explore with AI\" box below each chart.",
-                "- Type a query or command in plain English, for example: show top 5 products, calculate a metric, filter by a dimension etc",
-                "- Press Enter and AI gives you the anwser along with the code."
-              ]
-            },
-            {
-              title: "2. Generate AI Insights Instantly",
-              content: [
-                "- Next to the \"Explore with AI\" box, click the \"Insights\" button.",
-                "- Dfuse will automatically generate key patterns, outliers, and smart summaries — no typing needed."
-              ]
-            }
-          ]
-        },
-        
-      ]
-    };
-
-    // Helper function to render instruction content
-    const renderContent = (content) => {
-      if (Array.isArray(content)) {
-        return content.map((item, index) => (
-          <p key={index} className="mb-2 text-sm leading-relaxed">
-            {item}
-          </p>
-        ));
-      }
-      return <p className="mb-2 text-sm leading-relaxed">{content}</p>;
-    };
 
   // Settings panel handlers
   const handleTestConfiguration = async () => {
@@ -7321,10 +7411,121 @@ function AppWrapper({ user, onLogout }) {
     setConfigMessage('');
   };
 
+  // Canvas name save handler
+  const saveCanvasName = useCallback(async (newName) => {
+    const trimmed = newName.trim() || 'Untitled Canvas';
+    setCanvasName(trimmed);
+    setCanvasNameEditing(false);
+    if (!canvasId || trimmed === (canvasMeta?.name || 'Untitled Canvas')) return;
+    try {
+      await fetch(`${API}/canvases/${canvasId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed }),
+      });
+    } catch (err) {
+      console.warn('Failed to save canvas name:', err);
+    }
+  }, [canvasId, canvasMeta?.name]);
+
   return (
     <div className="w-screen h-screen relative">
+      {/* Canvas Top Bar — only shown when opened via /canvas/:id route */}
+      {canvasId && (
+        <div
+          className="fixed top-0 left-0 right-0 z-[1200] flex items-center px-4 gap-3"
+          style={{
+            height: '36px',
+            backgroundColor: '#FFFFFF',
+            borderBottom: '1px solid #E5E7EB',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+          }}
+        >
+          {/* Back button */}
+          <button
+            onClick={() => navigate('/canvases')}
+            className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800 transition-colors flex-shrink-0"
+          >
+            ← Back
+          </button>
+          <div className="w-px h-4 bg-gray-200 flex-shrink-0" />
+
+          {/* Canvas name — click to edit */}
+          {canvasNameEditing ? (
+            <input
+              ref={canvasNameRef}
+              value={canvasName}
+              onChange={e => setCanvasName(e.target.value)}
+              onBlur={e => saveCanvasName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') saveCanvasName(e.target.value);
+                if (e.key === 'Escape') { setCanvasName(canvasMeta?.name || 'Untitled Canvas'); setCanvasNameEditing(false); }
+              }}
+              autoFocus
+              className="text-sm font-semibold border-b border-blue-500 outline-none bg-transparent text-gray-900 min-w-0 flex-1 max-w-xs"
+            />
+          ) : (
+            <button
+              onClick={() => setCanvasNameEditing(true)}
+              className="text-sm font-semibold text-gray-900 hover:text-blue-600 transition-colors truncate max-w-xs"
+              title="Click to rename"
+            >
+              {canvasName}
+            </button>
+          )}
+
+          <div className="flex-1" />
+
+          {/* Share button — ghost style */}
+          <button
+            disabled={shareState.loading}
+            onClick={async () => {
+              if (shareState.url && !shareState.loading) {
+                navigator.clipboard.writeText(shareState.url).catch(() => {});
+                setShareState(s => ({ ...s, copied: true }));
+                setTimeout(() => setShareState({ loading: false, copied: false, url: null }), 3000);
+                return;
+              }
+              setShareState({ loading: true, copied: false, url: null });
+              try {
+                const { shareCanvasViaGist } = require('./agentic_layer/canvasSnapshot');
+                const result = await shareCanvasViaGist(tldrawEditorRef.current, nodes, { title: canvasName, expiresIn: 30 });
+                if (result?.share_url) {
+                  navigator.clipboard.writeText(result.share_url).catch(() => {});
+                  setShareState({ loading: false, copied: true, url: result.share_url });
+                  setToast({ isOpen: true, message: 'Link copied to clipboard!', type: 'success' });
+                  setTimeout(() => setShareState({ loading: false, copied: false, url: null }), 5000);
+                }
+              } catch (error) {
+                setShareState({ loading: false, copied: false, url: null });
+                setToast({ isOpen: true, message: `Share failed: ${error.message}`, type: 'error' });
+              }
+            }}
+            className="flex items-center gap-1.5 text-sm font-medium transition-all hover:opacity-70"
+            style={{ color: shareState.copied ? '#16A34A' : '#374151', opacity: shareState.loading ? 0.5 : 1 }}
+          >
+            {shareState.loading ? (
+              <>
+                <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" strokeOpacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" /></svg>
+                Sharing…
+              </>
+            ) : shareState.copied ? (
+              <>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                Copy link
+              </>
+            ) : (
+              <>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+                Share
+              </>
+            )}
+          </button>
+        </div>
+      )}
+
       {/* Full-width Canvas - Base Layer */}
-      <div className="absolute inset-0">
+      <div className="absolute inset-0" style={canvasId ? { top: '36px' } : {}}>
         {renderMainCanvas()}
       </div>
       
@@ -7341,14 +7542,10 @@ function AppWrapper({ user, onLogout }) {
         setChartActionsPanelOpen={setChartActionsPanelOpen}
         mergePanelOpen={mergePanelOpen}
         setMergePanelOpen={setMergePanelOpen}
-        instructionsPanelOpen={instructionsPanelOpen}
-        setInstructionsPanelOpen={setInstructionsPanelOpen}
-        settingsPanelOpen={settingsPanelOpen}
-        setSettingsPanelOpen={setSettingsPanelOpen}
-        // agentPanelOpen={agentPanelOpen}   // DEPRECATED — old AI Agent panel
-        // setAgentPanelOpen={setAgentPanelOpen}
         agentSidebarOpen={agentSidebarOpen}
         setAgentSidebarOpen={setAgentSidebarOpen}
+        settingsPanelOpen={settingsPanelOpen}
+        setSettingsPanelOpen={setSettingsPanelOpen}
         activeTool={activeTool}
         onToolChange={handleToolChange}
         onMergeCharts={mergeSelectedCharts}
@@ -7359,241 +7556,161 @@ function AppWrapper({ user, onLogout }) {
         hasDataset={!!datasetId}
         tldrawEditorRef={tldrawEditorRef}
         nodes={nodes}
-        setShareModalOpen={setShareModalOpen}
-        setShareModalData={setShareModalData}
-        user={user}
-        onLogout={onLogout}
       />
       
-      {/* Floating Panels Container - Positioned next to sidebar */}
+      {/* Floating Panels Container - Positioned next to sidebar, below TLDraw top toolbar */}
       <div 
         className="fixed z-[1100] transition-all duration-300 rounded-xl overflow-hidden"
         style={{
           left: 'calc(var(--size-sidebar) + 14px)',
-          top: '60px',
+          top: '82px',
           bottom: '100px',
-          pointerEvents: (uploadPanelOpen || variablesPanelOpen || chartActionsPanelOpen || mergePanelOpen || instructionsPanelOpen || settingsPanelOpen || agentSidebarOpen) ? 'auto' : 'none'
+          pointerEvents: (uploadPanelOpen || variablesPanelOpen || chartActionsPanelOpen || mergePanelOpen || settingsPanelOpen || agentSidebarOpen) ? 'auto' : 'none'
         }}
       >
       {/* Single Panel Container - Only one panel can be open at a time */}
       {uploadPanelOpen && (
         <SlidingPanel 
           isOpen={uploadPanelOpen} 
-          title="Upload Data"
-          onClose={() => setUploadPanelOpen(false)}
+          title={uploadMode === 'csv' ? 'Upload CSV' : uploadMode === 'schema' ? 'Connect Schema' : 'Upload Data'}
+          onClose={() => { setUploadPanelOpen(false); setUploadMode(null); }}
+          onBack={uploadMode ? () => setUploadMode(null) : undefined}
           size="md"
         >
-          <div className="p-4">
-            <div className="space-y-4">
-              {/* Dataset Selector - Shows all uploaded datasets */}
-              {datasets.length > 0 && (
-                <div className="border border-gray-200 rounded-lg overflow-hidden bg-white">
-                  <DatasetSelector 
-                    datasets={datasets}
-                    activeDatasetId={activeDatasetId}
-                    onSelect={switchDataset}
-                    onRemove={removeDataset}
-                  />
-                </div>
-              )}
-              
-              {/* File Upload Section */}
-              <div className="pt-2">
-                <FileUpload 
-                  accept=".csv,.xlsx,.xls" 
-                  onFileChange={(file) => uploadCSV(file)}
-                >
-                  {datasets.length > 0 ? 'Add Another Dataset' : 'Choose CSV or XLSX File'}
-                </FileUpload>
-                
-                {/* Active Dataset Info */}
-                {activeDataset && (
-                  <div className="mt-2 border border-blue-200 rounded-lg p-3 bg-blue-50/30">
-                    <div className="text-sm text-gray-600 flex items-center gap-2 mb-2">
-                      <File size={16} />
-                      <span className="font-medium">Active:</span> {csvFileName}
-                    </div>
-                    
-                    <div className="flex gap-1 flex-wrap">
-                      <Badge variant="outline" className="w-fit">
-                        {activeDataset.rows?.toLocaleString() || '?'} rows
-                      </Badge>
-                      <Badge variant="secondary" className="text-xs">
-                        {availableDimensions.length} dimensions
-                      </Badge>
-                      <Badge variant="secondary" className="text-xs">
-                        {availableMeasures.length} measures
-                      </Badge>
-                    </div>
-                  </div>
-                )}
+          <div className="p-4 flex flex-col gap-4">
+            {/* Dataset Selector — always visible when datasets exist */}
+            {datasets.length > 0 && (
+              <div className="border border-gray-200 rounded-lg overflow-hidden bg-white">
+                <DatasetSelector 
+                  datasets={datasets}
+                  activeDatasetId={activeDatasetId}
+                  onSelect={switchDataset}
+                  onRemove={removeDataset}
+                />
               </div>
+            )}
 
-              {/* Analysis Section */}
-              {datasetId && (
-                <div className="border-t border-gray-200 pt-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <h3 className="font-medium text-gray-900">Dataset Analysis</h3>
-                    {datasetAnalysis && !editingMetadata && (
-                      <Button 
-                        size="sm" 
-                        variant="ghost" 
-                        onClick={startEditingMetadata}
-                        className="h-6 px-2 text-xs"
-                      >
-                        Edit
-                      </Button>
-                    )}
+            {/* Schema Panel — shown when 2+ datasets loaded */}
+            {datasets.length >= 2 && (
+              <SchemaPanel
+                datasets={datasets}
+                confirmedRelationships={confirmedRelationships}
+                onEditSchema={() => {
+                  fetch(`${API}/relationships`)
+                    .then(r => r.json())
+                    .then(data => {
+                      setPendingRelationships(data.relationships || []);
+                      setShowRelationshipModal(true);
+                    })
+                    .catch(err => console.warn('Failed to reload relationships:', err));
+                }}
+              />
+            )}
+
+            {/* Two-choice picker */}
+            {!uploadMode && (
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => setUploadMode('csv')}
+                  className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 p-5 transition-all text-center hover:border-blue-500 hover:bg-blue-50/40"
+                  style={{ borderColor: '#E5E7EB', minHeight: '120px' }}
+                >
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ backgroundColor: '#EFF6FF' }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                   </div>
+                  <div>
+                    <p className="text-sm font-semibold text-gray-800">Upload CSV</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Single file, guided steps</p>
+                  </div>
+                </button>
+                <button
+                  onClick={() => setUploadMode('schema')}
+                  className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 p-5 transition-all text-center hover:border-indigo-500 hover:bg-indigo-50/40"
+                  style={{ borderColor: '#E5E7EB', minHeight: '120px' }}
+                >
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ backgroundColor: '#EEF2FF' }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366F1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-gray-800">Data Schema</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Connect a saved schema</p>
+                  </div>
+                </button>
+              </div>
+            )}
 
-                  {/* Prominent Analysis CTA when no analysis exists */}
-                  {!datasetAnalysis && !analysisLoading && !analysisError && (
-                    <div className="text-center py-6 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200">
-                      <Sparkles size={24} className="mx-auto mb-2 text-blue-500" />
-                      <h4 className="font-medium text-gray-900 mb-1">Let AI Analyze Your Dataset</h4>
-                      <p className="text-sm text-gray-600 mb-4">
-                        Analyze your dataset to get meaningful column descriptions and context
-                      </p>
-                      <Button 
-                        onClick={() => analyzeDataset()}
-                        disabled={!apiKey}
-                        className="flex items-center gap-2 mx-auto"
-                      >
-                        <Sparkles size={16} />
-                        {apiKey ? 'Analyze Dataset' : 'Configure API Key First'}
-                      </Button>
-                      {!apiKey && (
-                        <p className="text-xs text-gray-500 mt-2">
-                          Go to Settings → Configure your Gemini API key to enable AI analysis
-                        </p>
-                      )}
-                    </div>
-                  )}
+            {/* CSV mini-stepper */}
+            {uploadMode === 'csv' && (
+              <SimpleCSVFlow
+                apiKey={apiKey}
+                selectedModel={selectedModel}
+                updateTokenUsage={updateTokenUsage}
+                onDone={() => { setUploadMode(null); setUploadPanelOpen(false); }}
+                showToast={showToast}
+                onDatasetAdded={(meta, filename) => {
+                  const newDs = {
+                    id: meta.dataset_id,
+                    filename: filename,
+                    dimensions: meta.dimensions || [],
+                    measures: meta.measures || [],
+                    rows: meta.rows,
+                    analysis: null,
+                    uploadedAt: new Date().toISOString(),
+                  };
+                  setDatasets(prev => [...prev, newDs]);
+                  setActiveDatasetId(meta.dataset_id);
+                  createDatasetTable(meta.dataset_id, filename, meta.dimensions, meta.measures, meta.rows);
+                }}
+              />
+            )}
 
-                  {/* Analysis Loading */}
-                  {analysisLoading && (
-                    <div className="flex items-center gap-2 text-sm text-gray-600 p-3 bg-blue-50 rounded-lg">
-                      <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent"></div>
-                      Analyzing dataset with AI...
-                    </div>
-                  )}
-
-                  {/* Analysis Error */}
-                  {analysisError && (
-                    <div className="text-sm text-red-600 p-3 bg-red-50 rounded-lg border border-red-200">
-                      <div className="font-medium mb-1">Analysis Failed</div>
-                      <div>{analysisError}</div>
-                      {!apiKey && (
-                        <div className="mt-2 text-xs">
-                          Configure your API key in Settings to use AI analysis.
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Analysis Results */}
-                  {datasetAnalysis && (
-                    <div className="space-y-4">
-                      {/* Dataset Summary */}
-                      <div>
-                        <div className="mb-2">
-                          <label className="text-sm font-medium text-gray-700">Dataset Summary</label>
-                        </div>
-                        
-                        {editingMetadata ? (
-                          <textarea
-                            value={metadataDraft?.dataset_summary || ''}
-                            onChange={(e) => updateMetadataDraft('dataset_summary', e.target.value)}
-                            className="w-full p-2 text-sm border border-gray-300 rounded-md resize-none"
-                            rows={5}
-                            placeholder="Describe your dataset..."
-                          />
-                        ) : (
-                          <div className="text-sm text-gray-700 p-2 bg-gray-50 rounded-md border">
-                            {datasetAnalysis.dataset_summary || 'No summary available'}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Column Descriptions */}
-                      <div>
-                        <label className="text-sm font-medium text-gray-700 block mb-2">
-                          Column Descriptions ({datasetAnalysis.columns?.length || 0} columns)
-                        </label>
-                        <div className="space-y-2 max-h-96 overflow-y-auto">
-                          {datasetAnalysis.columns?.map((column, index) => (
-                            <div key={column.name} className="border border-gray-200 rounded-lg p-3 bg-white">
-                              <div className="flex items-start justify-between mb-2">
-                                <div className="flex-1">
-                                  <div className="mb-2">
-                                    <span className="font-medium text-sm">{column.name}</span>
-                                  </div>
-                                  <div className="flex items-center gap-2 flex-wrap mb-1">
-                                    <Badge variant="outline" className="text-xs">
-                                      {getReadableDataType(column.dtype)}
-                                    </Badge>
-                                    <Badge variant="secondary" className="text-xs">
-                                      {column.unique_count} unique
-                                    </Badge>
-                                    {column.missing_pct > 0 && (
-                                      <Badge variant="secondary" className="text-xs">
-                                        {column.missing_pct}% missing
-                                      </Badge>
-                                    )}
-                                  </div>
-                                  
-                                  {editingMetadata ? (
-                                    <Input
-                                      value={metadataDraft?.column_descriptions[column.name] || ''}
-                                      onChange={(e) => updateMetadataDraft(null, e.target.value, column.name)}
-                                      placeholder="Enter column description..."
-                                      className="text-sm"
-                                    />
-                                  ) : (
-                                    <div className="text-sm text-gray-600">
-                                      {column.description || 'No description available'}
-                                    </div>
-                                  )}
-                                  
-                                  {column.sample_values && column.sample_values.length > 0 && (
-                                    <div className="text-xs text-gray-500 mt-1">
-                                      Sample values: {column.sample_values.slice(0, 3).join(', ')}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Edit/Save Controls */}
-                      {editingMetadata && (
-                        <div className="flex gap-2 pt-3 border-t border-gray-200">
-                          <Button 
-                            onClick={saveDatasetMetadata}
-                            className="flex items-center gap-1"
-                            size="sm"
-                          >
-                            <Check size={14} />
-                            Save Changes
-                          </Button>
-                          <Button 
-                            variant="outline" 
-                            onClick={cancelEditingMetadata}
-                            size="sm"
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+            {/* Schema picker */}
+            {uploadMode === 'schema' && (
+              <SchemaPicker
+                user={user}
+                onConnected={(schemaName) => {
+                  showToast(`Connected to schema "${schemaName}" — source tables ready`, 'success');
+                  setUploadMode(null);
+                  setUploadPanelOpen(false);
+                }}
+                showToast={showToast}
+                onLoadDataset={(datasetMeta) => {
+                  const ds = {
+                    id: datasetMeta.dataset_id,
+                    filename: datasetMeta.filename,
+                    rows: datasetMeta.rows,
+                    dimensions: datasetMeta.dimensions || [],
+                    measures: datasetMeta.measures || [],
+                    isMerged: true,
+                    uploadedAt: new Date().toISOString(),
+                  };
+                  setDatasets(prev => {
+                    const exists = prev.some(d => d.id === ds.id);
+                    return exists ? prev : [...prev, ds];
+                  });
+                  setActiveDatasetId(datasetMeta.dataset_id);
+                }}
+                onRelationshipsConnected={(resolvedRelationships, sourceDatasets) => {
+                  // Inject the schema's resolved relationships so canvas Ask mode
+                  // can do cross-table queries without pre-merging
+                  if (resolvedRelationships?.length > 0) {
+                    setConfirmedRelationships(resolvedRelationships);
+                  }
+                  // If any source dataset isn't in the local list yet, add it
+                  if (sourceDatasets?.length > 0) {
+                    setDatasets(prev => {
+                      const ids = new Set(prev.map(d => d.id));
+                      const newDs = sourceDatasets
+                        .filter(d => !ids.has(d.id))
+                        .map(d => ({ ...d, uploadedAt: new Date().toISOString() }));
+                      return newDs.length > 0 ? [...prev, ...newDs] : prev;
+                    });
+                  }
+                }}
+              />
+            )}
           </div>
-          </SlidingPanel>
+        </SlidingPanel>
         )}
 
         {/* Settings Panel */}
@@ -7680,7 +7797,12 @@ function AppWrapper({ user, onLogout }) {
                     sideOffset={5}
                     style={{ zIndex: 9999 }}
                   >
-                    <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash (Recommended)</SelectItem>
+                    <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash</SelectItem>
+                    <SelectItem value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</SelectItem>
+                    <SelectItem value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite — 500 RPD ✦</SelectItem>
+                    <SelectItem value="gemma-4-31b-it">Gemma 4 31B — 1,500 RPD ✦</SelectItem>
+                    <SelectItem value="gemma-4-26b-a4b-it">Gemma 4 26B — 1,500 RPD ✦</SelectItem>
+                    <SelectItem value="gemma-3-27b-it">Gemma 3 27B — 14,400 RPD ✦</SelectItem>
                     <SelectItem value="gemini-2.5-pro">Gemini 2.5 Pro</SelectItem>
                     <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash</SelectItem>
                     <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash</SelectItem>
@@ -7740,8 +7862,8 @@ function AppWrapper({ user, onLogout }) {
                 </div>
               )}
 
-              {/* Token Usage Display */}
-              {tokenUsage.totalTokens > 0 && (
+              {/* API Usage Display */}
+              {tokenUsage.apiCalls > 0 && (
                 <div 
                   className="pt-4 mt-4"
                   style={{ borderTop: '1px solid var(--color-border)' }}
@@ -7753,7 +7875,7 @@ function AppWrapper({ user, onLogout }) {
                       color: 'var(--color-text)'
                     }}
                   >
-                    Token Usage (This Session)
+                    API Usage (This Session)
                   </h4>
                   <div 
                     className="space-y-2"
@@ -7762,6 +7884,10 @@ function AppWrapper({ user, onLogout }) {
                       color: 'var(--color-text-secondary)'
                     }}
                   >
+                    <div className="flex justify-between font-medium" style={{ color: 'var(--color-primary, #2563EB)' }}>
+                      <span>API Calls:</span>
+                      <span>{tokenUsage.apiCalls.toLocaleString()}</span>
+                    </div>
                     <div className="flex justify-between">
                       <span>Input Tokens:</span>
                       <span>{tokenUsage.inputTokens.toLocaleString()}</span>
@@ -7770,6 +7896,18 @@ function AppWrapper({ user, onLogout }) {
                       <span>Output Tokens:</span>
                       <span>{tokenUsage.outputTokens.toLocaleString()}</span>
                     </div>
+                    {(tokenUsage.cachedTokens || 0) > 0 && (
+                      <div className="flex justify-between" style={{ color: 'var(--color-success)' }}>
+                        <span>Cached Tokens:</span>
+                        <span>{tokenUsage.cachedTokens.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {(tokenUsage.thoughtsTokens || 0) > 0 && (
+                      <div className="flex justify-between" style={{ color: '#7C3AED' }}>
+                        <span>Thinking Tokens:</span>
+                        <span>{tokenUsage.thoughtsTokens.toLocaleString()}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between font-medium pt-2" style={{ borderTop: '1px solid var(--color-border)' }}>
                       <span>Total Tokens:</span>
                       <span>{tokenUsage.totalTokens.toLocaleString()}</span>
@@ -7808,14 +7946,9 @@ function AppWrapper({ user, onLogout }) {
               setCanvasMessages={setCanvasMessages}
               askMessages={askMessages}
               setAskMessages={setAskMessages}
-              onTokenUsage={(usage) => {
-                setTokenUsage(prev => ({
-                  inputTokens: prev.inputTokens + (usage.inputTokens || 0),
-                  outputTokens: prev.outputTokens + (usage.outputTokens || 0),
-                  totalTokens: prev.totalTokens + (usage.totalTokens || 0),
-                  estimatedCost: prev.estimatedCost + (usage.estimatedCost || 0)
-                }));
-              }}
+              unifiedMessages={unifiedMessages}
+              setUnifiedMessages={setUnifiedMessages}
+              onTokenUsage={(usage) => updateTokenUsage(usage)}
               canvasContext={{
                 editor: tldrawEditorRef.current,
                 nodes,
@@ -7824,6 +7957,7 @@ function AppWrapper({ user, onLogout }) {
                 API,
                 datasetId,
                 apiKey,
+                selectedModel,
                 figureFromPayload,
                 dataset: activeDataset?.dataframe,
                 datasetAnalysis: datasetAnalysis,
@@ -7832,97 +7966,11 @@ function AppWrapper({ user, onLogout }) {
                 trackAIInsight,
                 trackAIUsed
               }}
+              confirmedRelationships={confirmedRelationships}
             />
           </SlidingPanel>
         )}
 
-        {/* User Instructions Panel */}
-        {instructionsPanelOpen && (
-          <SlidingPanel
-            isOpen={instructionsPanelOpen}
-            title="User Instructions"
-            onClose={() => {
-              localStorage.setItem('dfuse_instructions_seen', 'true');
-              setInstructionsPanelOpen(false);
-            }}
-            size="lg"
-          >
-            <div className="p-4">
-              <div className="space-y-4">
-                {/* Title and subtitle */}
-                <div>
-                  <h2 className="text-xl font-bold text-gray-900 mb-2">
-                    {instructions.title}
-                  </h2>
-                  <p className="text-gray-600 mb-4 leading-relaxed">{instructions.subtitle}</p>
-                </div>
-
-                {/* Video */}
-                <div className="mb-4">
-                  <div 
-                    dangerouslySetInnerHTML={{ __html: instructions.videoIframe }}
-                    style={{
-                      width: '100%',
-                      maxWidth: '560px',
-                      aspectRatio: '16/9'
-                    }}
-                  />
-                </div>
-
-                {/* Sections */}
-                {instructions.sections.map((section, sectionIndex) => (
-                  <div key={sectionIndex} className="mb-6">
-                    <h3 className="text-lg font-semibold text-gray-800 mb-3 border-b border-gray-200 pb-2">
-                      {section.title}
-                    </h3>
-                    
-                    {/* Section with items */}
-                    {section.items && section.items.map((item, itemIndex) => (
-                      <div key={itemIndex} className="mb-4">
-                        <h4 className="font-medium text-gray-700 mb-2">{item.title}</h4>
-                        <div className="ml-4">
-                          {renderContent(item.content)}
-                        </div>
-                      </div>
-                    ))}
-                    
-                    {/* Section with direct content */}
-                    {section.content && (
-                      <div className="mb-4">
-                        {renderContent(section.content)}
-                      </div>
-                    )}
-                    
-                    {/* Tip box */}
-                    {section.tip && (
-                      <div className="bg-green-50 border border-green-200 rounded p-3 mt-4">
-                        <p className="text-sm text-green-800 font-medium mb-0">
-                          Tip: {section.tip}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                ))}
-
-                {/* Call to Action */}
-                <div 
-                  className="text-center p-4 rounded-lg text-white mb-6"
-                  style={{
-                    background: 'linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%)'
-                  }}
-                >
-                  <p className="font-semibold mb-1">Ready to create amazing visualizations?</p>
-                  <p className="text-sm opacity-90">Start by uploading your first dataset and let D.Fuse work its magic!</p>
-                </div>
-
-                {/* Support */}
-                <div className="text-center text-gray-500 text-sm border-t border-gray-200 pt-4">
-                  <p>Questions? Reach out at <strong>dubey.ujjjwal1994@gmail.com</strong></p>
-                </div>
-            </div>
-          </div>
-        </SlidingPanel>
-      )}
       
       {variablesPanelOpen && (
         <SlidingPanel 
@@ -8030,10 +8078,126 @@ function AppWrapper({ user, onLogout }) {
               {/* Divider */}
               <div className="border-t border-gray-200 my-4"></div>
 
+              {/* AI Chart — query-engine section (schema-aware, join-capable) */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-medium">Generate chart from query</h3>
+                  {confirmedRelationships.length > 0 && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-teal-100 text-teal-800 border border-teal-200">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                      </svg>
+                      Schema linked
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500">
+                  Describe what you want to chart. Joins across tables are handled automatically.
+                </p>
+                <textarea
+                  value={qeChartQuery}
+                  onChange={(e) => { setQeChartQuery(e.target.value); setQeChartError(null); }}
+                  placeholder="e.g. 'Monthly revenue by region' or 'Top 10 products by sales'"
+                  className="w-full min-h-[72px] p-3 text-sm border border-gray-300 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  maxLength={400}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !qeChartLoading && qeChartQuery.trim() && apiKey) {
+                      e.preventDefault();
+                      handleGenerateQEChart();
+                    }
+                  }}
+                />
+                {qeChartError && (
+                  <div className="text-xs text-red-600 bg-red-50 border border-red-200 p-2 rounded">
+                    {qeChartError}
+                  </div>
+                )}
+                <DesignButton
+                  variant="accent"
+                  size="lg"
+                  className="w-full gap-2"
+                  style={{ width: '286px', height: '40px', fontSize: '14px' }}
+                  onClick={handleGenerateQEChart}
+                  disabled={!qeChartQuery.trim() || !apiKey || qeChartLoading || datasets.length === 0}
+                >
+                  {qeChartLoading ? (
+                    <div className="flex items-center justify-center gap-2">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-black"></div>
+                      <span style={{ fontSize: '14px' }}>Generating...</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-center gap-2">
+                      <Sparkles size={16} />
+                      <span style={{ fontSize: '14px' }}>Generate Chart</span>
+                    </div>
+                  )}
+                </DesignButton>
+                {!apiKey && (
+                  <p className="text-xs text-amber-600">Add an API key in Settings to use this feature.</p>
+                )}
+                {/* Execution log shown after a successful chart generation */}
+                <ExecutionLog steps={qeChartLog} />
+              </div>
+
+              {/* Divider */}
+              <div className="border-t border-gray-200 my-4"></div>
+
               {/* Select Variables Section */}
               <div>
                 <h3 className="text-sm font-medium mb-3">Select variables</h3>
               </div>
+
+              {/* Smart Chart — NL prompt that drives full pandas transformations */}
+              <div className="space-y-2 p-3 bg-violet-50 border border-violet-200 rounded-lg">
+                <div className="flex items-center gap-1.5">
+                  <Sparkles size={13} className="text-violet-600 shrink-0" />
+                  <span className="text-xs font-semibold text-violet-700">Smart Chart</span>
+                </div>
+                <p className="text-xs text-violet-600">
+                  Describe exactly what you want — filters, rankings, derived metrics. Skip the dropdowns below.
+                </p>
+                <textarea
+                  value={smartChartPrompt}
+                  onChange={(e) => { setSmartChartPrompt(e.target.value); setSmartChartError(null); }}
+                  placeholder="e.g. 'Top 10 products by revenue' or 'Monthly profit margin trend'"
+                  className="w-full min-h-[64px] p-2.5 text-sm border border-violet-300 rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white"
+                  maxLength={400}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !smartChartLoading && smartChartPrompt.trim() && apiKey) {
+                      e.preventDefault();
+                      handleSmartChart();
+                    }
+                  }}
+                />
+                {smartChartError && (
+                  <div className="text-xs text-red-600 bg-red-50 border border-red-200 p-2 rounded">
+                    {smartChartError}
+                  </div>
+                )}
+                <button
+                  onClick={handleSmartChart}
+                  disabled={!smartChartPrompt.trim() || smartChartLoading || !apiKey || datasets.length === 0}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 active:bg-violet-800 disabled:bg-gray-300 disabled:text-gray-400 transition-colors"
+                >
+                  {smartChartLoading ? (
+                    <>
+                      <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-white" />
+                      <span>Generating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={14} />
+                      <span>Generate Smart Chart</span>
+                    </>
+                  )}
+                </button>
+                {!apiKey && (
+                  <p className="text-xs text-amber-600">Add an API key in Settings to use Smart Chart.</p>
+                )}
+              </div>
+
+              {/* Divider */}
+              <div className="border-t border-gray-200 my-1" />
 
               <div>
                 <div className="flex items-center justify-between mb-2">
@@ -8094,6 +8258,7 @@ function AppWrapper({ user, onLogout }) {
           scrollToAI={scrollToAI}
           setScrollToAI={setScrollToAI}
           setNodes={setNodes}
+          confirmedRelationships={confirmedRelationships}
         />
       )}
 
@@ -8352,27 +8517,6 @@ function AppWrapper({ user, onLogout }) {
         </SlidingPanel>
       )}
 
-      {/* Share Modal */}
-      <ShareModal
-        isOpen={shareModalOpen}
-        onClose={() => {
-          setShareModalOpen(false);
-          // Reset modal data after close animation
-          setTimeout(() => {
-            setShareModalData({
-              shareUrl: null,
-              expiresAt: null,
-              isLoading: false,
-              error: null
-            });
-          }, 200);
-        }}
-        shareUrl={shareModalData.shareUrl}
-        expiresAt={shareModalData.expiresAt}
-        isLoading={shareModalData.isLoading}
-        error={shareModalData.error}
-      />
-      
       {/* Toast Notification */}
       <Toast
         isOpen={toast.isOpen}
@@ -8381,6 +8525,82 @@ function AppWrapper({ user, onLogout }) {
         type={toast.type}
         duration={4000}
       />
+
+      {/* Multi-File Workflow Modal */}
+      {workflowMode && (
+        <DataWorkflowPanel
+          datasets={datasets}
+          workflowStep={workflowStep}
+          setWorkflowStep={setWorkflowStep}
+          fileQuality={fileQuality}
+          setFileQuality={setFileQuality}
+          analysisResults={analysisResults}
+          setAnalysisResults={setAnalysisResults}
+          joinPreview={joinPreview}
+          setJoinPreview={setJoinPreview}
+          pendingRelationships={pendingRelationships}
+          setPendingRelationships={setPendingRelationships}
+          confirmedRelationships={confirmedRelationships}
+          setConfirmedRelationships={setConfirmedRelationships}
+          apiKey={apiKey}
+          selectedModel={selectedModel}
+          updateTokenUsage={updateTokenUsage}
+          showToast={showToast}
+          setActiveDatasetId={setActiveDatasetId}
+          onMergedDatasetCreated={(mergedDatasets, acceptedRelationships) => {
+            setDatasets(prev => [
+              ...prev.filter(d => !d.isMerged),
+              ...mergedDatasets,
+            ]);
+            if (acceptedRelationships) setConfirmedRelationships(acceptedRelationships);
+          }}
+          onClose={() => setWorkflowMode(false)}
+        />
+      )}
+
+      {/* Relationship Confirmation Modal */}
+      {showRelationshipModal && (
+        <RelationshipConfirmModal
+          relationships={pendingRelationships}
+          datasets={datasets}
+          onConfirm={async (decisions, editedLinks) => {
+            try {
+              const response = await fetch(`${API}/relationships/confirm`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ decisions, edited_links: editedLinks || {} }),
+              });
+              if (!response.ok) throw new Error(await response.text());
+              const data = await response.json();
+              const accepted = (data.relationships || []).filter(l => l.status === 'accepted');
+              setConfirmedRelationships(accepted);
+              setPendingRelationships([]);
+              setShowRelationshipModal(false);
+
+              // Add merged datasets to the selector and auto-switch to the first one
+              const mergedDatasets = data.merged_datasets || [];
+              if (mergedDatasets.length > 0) {
+                // Remove any previous merged entries before adding new ones
+                setDatasets(prev => [
+                  ...prev.filter(d => !d.isMerged),
+                  ...mergedDatasets,
+                ]);
+                setActiveDatasetId(mergedDatasets[0].id);
+                showToast(
+                  `${accepted.length} relationship${accepted.length !== 1 ? 's' : ''} confirmed — switched to merged view "${mergedDatasets[0].filename}"`,
+                  'success'
+                );
+              } else if (accepted.length > 0) {
+                showToast(`${accepted.length} relationship${accepted.length !== 1 ? 's' : ''} confirmed`, 'success');
+              }
+            } catch (err) {
+              console.error('Failed to confirm relationships:', err);
+              showToast('Failed to save relationship decisions', 'error');
+            }
+          }}
+          onClose={() => setShowRelationshipModal(false)}
+        />
+      )}
             </div>
     </div>
   );
@@ -8520,3 +8740,6 @@ function AuthenticatedApp() {
 export default function App() {
   return <AuthenticatedApp />;
 }
+
+// Named export so CanvasPage can lazy-import AppWrapper without pulling in AuthenticatedApp
+export { AppWrapper };

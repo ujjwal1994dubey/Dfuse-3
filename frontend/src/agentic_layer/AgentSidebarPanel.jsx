@@ -14,6 +14,8 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
+import ExecutionLog from '../components/ui/ExecutionLog';
+import { useConfig } from '../contexts/ConfigContext';
 import {
   getEnhancedCanvasContext,
   getViewportAwareContext,
@@ -140,12 +142,19 @@ function ActionEntry({ action, result }) {
 /** AI Streaming message bubble */
 function StreamingBubble({ streamText, isStreaming }) {
   return (
-    <div className="bg-purple-50 rounded-lg p-3">
-      <div className="text-sm text-purple-900 prose prose-sm max-w-none">
+    <div className="bg-purple-50 rounded-lg overflow-hidden">
+      {/* Header label */}
+      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-purple-100">
+        <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-pulse" />
+        <span className="text-[10px] font-semibold text-purple-500 tracking-wide uppercase">
+          Thinking…
+        </span>
+      </div>
+      <div className="px-3 py-2 text-sm text-purple-900 prose prose-sm max-w-none">
         {streamText
           ? <ReactMarkdown>{streamText}</ReactMarkdown>
           : isStreaming && (
-            <span className="inline-flex items-center gap-1 text-purple-500">
+            <span className="inline-flex items-center gap-1 text-purple-400">
               <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
               <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
               <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
@@ -157,10 +166,121 @@ function StreamingBubble({ streamText, isStreaming }) {
   );
 }
 
+/** Copy-to-clipboard button with transient "Copied!" feedback */
+function CopyButton({ text, className = '' }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text || '').then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  };
+  return (
+    <button
+      onClick={handleCopy}
+      title="Copy to clipboard"
+      className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors ${
+        copied
+          ? 'bg-green-100 text-green-700 border border-green-200'
+          : 'bg-white border border-gray-200 text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+      } ${className}`}
+    >
+      {copied ? (
+        <>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Copied
+        </>
+      ) : (
+        <>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Copy
+        </>
+      )}
+    </button>
+  );
+}
+
+/** Collapsible per-analysis entry for the Unified result bubble */
+function AnalysisEntry({ analysis, index }) {
+  const [codeOpen, setCodeOpen] = useState(false);
+  const isSuccess = analysis.success !== false;
+
+  return (
+    <div className={`border rounded-lg mb-1.5 overflow-hidden ${isSuccess ? 'border-teal-100' : 'border-red-100'}`}>
+      <div className="px-3 py-2">
+        <p className="text-xs font-semibold text-gray-700 mb-1">
+          {index + 1}. {analysis.question}
+        </p>
+        {analysis.insight && (
+          <p className="text-xs text-gray-600 leading-relaxed">{analysis.insight}</p>
+        )}
+        {!isSuccess && (
+          <p className="text-xs text-red-500 mt-1">Analysis did not produce chart data</p>
+        )}
+      </div>
+      {analysis.python_code && (
+        <div className="border-t border-gray-100">
+          <button
+            onClick={() => setCodeOpen(v => !v)}
+            className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] text-gray-500 hover:bg-gray-50 transition-colors"
+          >
+            <span className="font-medium">Python code</span>
+            <span>{codeOpen ? '▲' : '▼'}</span>
+          </button>
+          {codeOpen && (
+            <pre className="px-3 pb-3 text-[10px] text-green-800 bg-gray-900 overflow-x-auto leading-relaxed whitespace-pre-wrap">
+              {analysis.python_code}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Rich result bubble for Unified mode — shows summary + per-analysis detail + Python code */
+function UnifiedResultBubble({ message }) {
+  const [analysesOpen, setAnalysesOpen] = useState(true);
+
+  return (
+    <div className="flex items-start">
+      <div className="flex-1">
+        {/* Summary header */}
+        <div className="bg-teal-50 border border-teal-200 rounded-lg p-3 mb-2">
+          <p className="text-[11px] font-semibold text-teal-700 mb-1 uppercase tracking-wide">Unified Analysis</p>
+          <p className="text-sm text-teal-900 leading-relaxed">{message.content}</p>
+        </div>
+
+        {/* Per-analysis breakdown */}
+        {message.analyses_detail?.length > 0 && (
+          <div className="bg-white border border-gray-200 rounded-lg mb-1">
+            <button
+              onClick={() => setAnalysesOpen(v => !v)}
+              className="w-full flex items-center justify-between px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
+            >
+              <span className="font-medium">
+                {message.analyses_detail.length} analysis{message.analyses_detail.length !== 1 ? 'es' : ''} run
+              </span>
+              <span className="text-gray-400">{analysesOpen ? '▲' : '▼'}</span>
+            </button>
+            {analysesOpen && (
+              <div className="px-3 pb-2 border-t border-gray-100 pt-2">
+                {message.analyses_detail.map((a, i) => (
+                  <AnalysisEntry key={i} analysis={a} index={i} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <p className="text-[10px] text-gray-400 mt-1">{message.timestamp?.toLocaleTimeString()}</p>
+      </div>
+    </div>
+  );
+}
+
 /** Full message bubble (used for completed messages) */
 function MessageBubble({ message, onAddToCanvas }) {
-  const [showCode, setShowCode] = useState(false);
-  const [showRawData, setShowRawData] = useState(false);
   const [actionsExpanded, setActionsExpanded] = useState(false);
   const isUser = message.type === 'user';
   const isError = message.type === 'error';
@@ -171,6 +291,14 @@ function MessageBubble({ message, onAddToCanvas }) {
     return (
       <div className="flex items-start">
         <div className="flex-1">
+          {message.merge_info && (
+            <div className="mb-1.5 flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-100 border border-blue-200">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-blue-500 shrink-0"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M6 9v12"/></svg>
+              <p className="text-[11px] text-blue-700 leading-snug">
+                <span className="font-semibold">Joined view: </span>{message.merge_info}
+              </p>
+            </div>
+          )}
           <div className="bg-blue-50 rounded-lg p-3">
             <div className="text-sm text-blue-900 prose prose-sm max-w-none">
               <ReactMarkdown>{message.answer}</ReactMarkdown>
@@ -208,35 +336,22 @@ function MessageBubble({ message, onAddToCanvas }) {
             >
               → Add to Canvas
             </button>
-            {message.python_code && (
-              <button
-                onClick={() => setShowCode(v => !v)}
-                className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 rounded-lg text-xs font-medium transition-colors"
-              >
-                {showCode ? '▼' : '▶'} Code
-              </button>
-            )}
-            {message.is_refined && message.raw_analysis && (
-              <button
-                onClick={() => setShowRawData(v => !v)}
-                className="px-3 py-1.5 bg-white border border-amber-300 text-amber-700 hover:bg-amber-50 rounded-lg text-xs font-medium transition-colors"
-              >
-                {showRawData ? '▼' : '▶'} Raw Data
-              </button>
-            )}
+            <CopyButton text={message.answer} />
           </div>
-          {showCode && (
-            <div className="mt-2 bg-gray-900 rounded-lg p-3">
-              <p className="text-xs text-gray-400 mb-1">Generated Python Code:</p>
-              <pre className="text-xs text-green-400 font-mono whitespace-pre-wrap overflow-x-auto">{message.python_code}</pre>
-            </div>
-          )}
-          {showRawData && (
-            <div className="mt-2 bg-amber-50 border border-amber-200 rounded-lg p-3">
-              <p className="text-xs text-amber-700 font-medium mb-1">📊 Raw Pandas Output:</p>
-              <pre className="text-xs text-amber-900 font-mono whitespace-pre-wrap overflow-x-auto bg-white p-2 rounded border border-amber-100">{message.raw_analysis}</pre>
-            </div>
-          )}
+          {/* Execution log — surfaces pipeline steps with zero extra LLM calls */}
+          {(() => {
+            const execSteps = [];
+            if (message.merge_info) {
+              execSteps.push({ label: 'Join applied', detail: message.merge_info });
+            }
+            if (message.python_code) {
+              execSteps.push({ label: 'Generated query', code: message.python_code });
+            }
+            if (message.is_refined && message.raw_analysis) {
+              execSteps.push({ label: 'Insight refinement', raw: message.raw_analysis });
+            }
+            return <ExecutionLog steps={execSteps} />;
+          })()}
           <p className="text-[10px] text-gray-400 mt-1">{message.timestamp?.toLocaleTimeString()}</p>
         </div>
       </div>
@@ -244,6 +359,11 @@ function MessageBubble({ message, onAddToCanvas }) {
   }
 
   if (isAgent) {
+    // Unified mode gets its own rich bubble showing per-analysis detail + Python code
+    if (message.mode === 'unified' && message.analyses_detail?.length) {
+      return <UnifiedResultBubble message={message} />;
+    }
+
     const hasActions = message.actions?.length > 0;
     return (
       <div className="flex items-start">
@@ -290,7 +410,10 @@ function MessageBubble({ message, onAddToCanvas }) {
           <div className="inline-block max-w-[85%] rounded-2xl px-3 py-2 bg-gray-900 text-white text-sm text-left">
             {message.content}
           </div>
-          <p className="text-[10px] text-gray-400 mt-1">{message.timestamp?.toLocaleTimeString()}</p>
+          <div className="flex items-center justify-end gap-1 mt-1">
+            <CopyButton text={message.content} />
+            <p className="text-[10px] text-gray-400">{message.timestamp?.toLocaleTimeString()}</p>
+          </div>
         </div>
       </div>
     );
@@ -319,9 +442,14 @@ export function AgentSidebarPanel({
   setCanvasMessages,
   askMessages,
   setAskMessages,
+  unifiedMessages,
+  setUnifiedMessages,
   onTokenUsage,
   canvasContext,
+  confirmedRelationships,
 }) {
+  const { selectedModel } = useConfig();
+
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
@@ -336,9 +464,9 @@ export function AgentSidebarPanel({
   const abortRef = useRef(null);
   const textareaRef = useRef(null);
 
-  const currentMessages = mode === 'canvas' ? canvasMessages : askMessages;
+  const currentMessages = mode === 'canvas' ? canvasMessages : mode === 'ask' ? askMessages : (unifiedMessages ?? []);
 
-  const setCurrentMessages = mode === 'canvas' ? setCanvasMessages : setAskMessages;
+  const setCurrentMessages = mode === 'canvas' ? setCanvasMessages : mode === 'ask' ? setAskMessages : (setUnifiedMessages ?? (() => {}));
 
   // Auto-scroll
   useEffect(() => {
@@ -373,7 +501,7 @@ export function AgentSidebarPanel({
   // ── Clear conversation ────────────────────────────────────────────────────
   const handleClear = useCallback(() => {
     if (!currentMessages.length) return;
-    const label = mode === 'canvas' ? 'Canvas' : 'Ask';
+    const label = mode === 'canvas' ? 'Canvas' : mode === 'ask' ? 'Ask' : 'Unified';
     if (!window.confirm(`Clear ${label} conversation? This cannot be undone.`)) return;
     setCurrentMessages([]);
     setError(null);
@@ -450,11 +578,14 @@ export function AgentSidebarPanel({
       },
       dataset_id: datasetId,
       api_key: apiKey,
-      model: 'gemini-2.5-flash',
+      model: selectedModel,
       mode,
       analysis_type: analysisType,
       session_id: sessionIdRef.current,
       conversation_history: recentHistory,
+      confirmed_relationships: confirmedRelationships && confirmedRelationships.length > 0
+        ? confirmedRelationships
+        : undefined,
     });
 
     // ── SSE streaming via /agent-stream ────────────────────────────────────
@@ -462,7 +593,10 @@ export function AgentSidebarPanel({
       const controller = new AbortController();
       abortRef.current = controller;
 
-      const response = await fetch(`${canvasContext.API}/agent-stream`, {
+      const endpoint = mode === 'unified'
+        ? `${canvasContext.API}/unified-agent`
+        : `${canvasContext.API}/agent-stream`;
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
@@ -498,29 +632,26 @@ export function AgentSidebarPanel({
           if (line.startsWith('data: ')) {
             const rawData = line.slice(6).trim();
             if (!rawData) continue;
+            let payload;
             try {
-              const payload = JSON.parse(rawData);
-
-              // Token chunk
-              if (payload.text !== undefined) {
-                accumulated += payload.text;
-                setStreamingText(accumulated);
-              }
-              // Actions payload
-              if (payload.actions !== undefined) {
-                parsedActions = payload;
-              }
-              // Done payload
-              if (payload.session_id !== undefined) {
-                donePayload = payload;
-                sessionIdRef.current = payload.session_id;
-              }
-              // Error
-              if (payload.error) {
-                throw new Error(payload.error);
-              }
-            } catch (parseErr) {
-              // Skip malformed SSE lines
+              payload = JSON.parse(rawData);
+            } catch (_) {
+              continue; // genuinely malformed SSE line — skip
+            }
+            if (payload.text !== undefined) {
+              accumulated += payload.text;
+              setStreamingText(accumulated);
+            }
+            if (payload.actions !== undefined) {
+              parsedActions = payload;
+            }
+            if (payload.session_id !== undefined) {
+              donePayload = payload;
+              sessionIdRef.current = payload.session_id;
+            }
+            // Error events from backend — propagate correctly (not swallowed by JSON catch)
+            if (payload.error) {
+              throw new Error(payload.error);
             }
           }
         }
@@ -548,6 +679,7 @@ export function AgentSidebarPanel({
           python_code: aiResult.python_code,
           tabular_data: aiResult.tabular_data || [],
           has_table: aiResult.has_table || false,
+          merge_info: aiResult.merge_info || null,
           timestamp: new Date(),
           mode,
         }]);
@@ -556,7 +688,8 @@ export function AgentSidebarPanel({
         return;
       }
 
-      // ── Canvas mode: execute actions ──
+      // ── Canvas / Unified mode: execute actions ──
+      // Unified mode emits create_dashboard actions handled by the same executor
       const validation = validateActionsSafe(parsedActions);
       if (!validation.success) throw new Error(`Invalid actions: ${validation.error}`);
       const validated = validation.data;
@@ -565,8 +698,13 @@ export function AgentSidebarPanel({
         setExecutionProgress({ current: 0, total: validated.actions.length, currentAction: 'Executing actions...' });
       }
 
+      // If the backend pre-joined datasets, use the merged dataset ID for chart creation
+      const effectiveDatasetId = parsedActions.merged_dataset_id || datasetId;
+      const mergeInfoCanvas = parsedActions.merge_info || null;
+
       const results = await executeActions(validated.actions, {
         ...canvasContext,
+        datasetId: effectiveDatasetId,
         currentQuery: userMessage,
         mode,
       });
@@ -577,8 +715,11 @@ export function AgentSidebarPanel({
       const failCount = results.filter(r => !r.success).length;
 
       let content = '';
+      if (mergeInfoCanvas) {
+        content += `🔗 Joined view: ${mergeInfoCanvas}\n`;
+      }
       if (successCount > 0) {
-        content = `✅ ${successCount} action${successCount !== 1 ? 's' : ''} completed`;
+        content += `✅ ${successCount} action${successCount !== 1 ? 's' : ''} completed`;
         results.filter(r => r.success).forEach(r => { content += `\n• ${r.message}`; });
       }
       if (failCount > 0) {
@@ -587,11 +728,12 @@ export function AgentSidebarPanel({
       }
 
       setCurrentMessages(prev => [...prev, {
-        type: 'agent',
-        content: content || accumulated,
-        actions: validated.actions,
+        type:             'agent',
+        content:          content || accumulated,
+        actions:          validated.actions,
         results,
-        timestamp: new Date(),
+        analyses_detail:  validated.actions[0]?.analyses_detail || [],
+        timestamp:        new Date(),
         mode,
       }]);
 
@@ -632,7 +774,8 @@ export function AgentSidebarPanel({
             type: 'ai_answer', query: aiResult.query, answer: aiResult.answer,
             raw_analysis: aiResult.raw_analysis || '', is_refined: aiResult.is_refined || false,
             python_code: aiResult.python_code, tabular_data: aiResult.tabular_data || [],
-            has_table: aiResult.has_table || false, timestamp: new Date(), mode,
+            has_table: aiResult.has_table || false, merge_info: aiResult.merge_info || null,
+            timestamp: new Date(), mode,
           }]);
           setLoading(false);
           return;
@@ -641,9 +784,16 @@ export function AgentSidebarPanel({
         const validation = validateActionsSafe(data);
         if (!validation.success) throw new Error(`Invalid actions: ${validation.error}`);
         const validated = validation.data;
-        const results = await executeActions(validated.actions, { ...canvasContext, currentQuery: userMessage, mode });
+        const fallbackDatasetId = data.merged_dataset_id || datasetId;
+        const results = await executeActions(validated.actions, {
+          ...canvasContext,
+          datasetId: fallbackDatasetId,
+          currentQuery: userMessage,
+          mode,
+        });
         const successCount = results.filter(r => r.success).length;
-        let content = `✅ ${successCount} action${successCount !== 1 ? 's' : ''} completed`;
+        let content = data.merge_info ? `🔗 Joined view: ${data.merge_info}\n` : '';
+        content += `✅ ${successCount} action${successCount !== 1 ? 's' : ''} completed`;
         results.filter(r => r.success).forEach(r => { content += `\n• ${r.message}`; });
 
         setCurrentMessages(prev => [...prev, {
@@ -682,6 +832,16 @@ export function AgentSidebarPanel({
       subtitle: 'Get analytical answers from your data',
       examples: ['Which products have the highest margin?', 'What is the average revenue?', 'Find outliers in the data'],
     },
+    unified: {
+      icon: '✦', title: 'Unified Analysis',
+      subtitle: 'Describe a business objective — AI will select the right data, run the analysis, and build the full dashboard',
+      examples: [
+        'Help me understand what is driving revenue',
+        'Give me a complete overview of sales performance',
+        'What should I focus on to improve profitability?',
+        'Analyse customer behaviour across all my data',
+      ],
+    },
   };
   const empty = emptyState[mode];
 
@@ -691,18 +851,19 @@ export function AgentSidebarPanel({
       <div className="p-3 border-b border-gray-200">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5 border border-gray-200 rounded-lg p-0.5">
-            {['canvas', 'ask'].map(m => (
+            {[
+              { id: 'canvas',  label: 'Canvas',  color: 'bg-purple-600' },
+              { id: 'ask',     label: 'Ask',     color: 'bg-blue-600'   },
+              { id: 'unified', label: 'Unified', color: 'bg-teal-600'   },
+            ].map(({ id: m, label, color }) => (
               <button
                 key={m}
                 onClick={() => setMode(m)}
-                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors capitalize ${
-                  mode === m
-                    ? m === 'canvas' ? 'bg-purple-600 text-white'
-                    : 'bg-blue-600 text-white'
-                    : 'text-gray-600 hover:bg-gray-100'
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                  mode === m ? `${color} text-white` : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                {m}
+                {label}
               </button>
             ))}
           </div>
@@ -821,6 +982,8 @@ export function AgentSidebarPanel({
               placeholder={
                 mode === 'canvas'
                   ? 'Create charts, draw shapes, move or align elements...'
+                  : mode === 'unified'
+                  ? 'Describe your objective or question...'
                   : 'Ask a question about your data...'
               }
               className="w-full px-4 py-3 pr-12 bg-transparent resize-none rounded-2xl focus:outline-none text-sm"
